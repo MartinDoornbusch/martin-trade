@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -33,7 +34,8 @@ def create_app():
     scheduler = BackgroundScheduler(timezone="UTC")
     minutes = int(cfg.schedule["analysis_interval_minutes"])
     scheduler.add_job(cycle.run_once, "interval", minutes=minutes, id="analysis",
-                      max_instances=1, coalesce=True)
+                      max_instances=1, coalesce=True,
+                      next_run_time=datetime.now(timezone.utc))  # eerste run direct bij start
     scheduler.add_job(snapshot_equity, "interval", hours=6, args=[cycle], id="equity")
 
     @asynccontextmanager
