@@ -24,6 +24,8 @@ Fee-bewust AI swing-tradingplatform (Bitvavo, paper trading). Volledige document
 | Optie | Uitleg |
 |---|---|
 | `trading_mode` | `paper` (default). `live` is vergrendeld tot fase 2 is afgerond. |
+| `markets` | Comma-separated, bijv. `BTC-EUR,ETH-EUR`. Hierin handelt de bot (paper). Houd deze lijst kort; veel alt-markten was een verliesoorzaak van de oude bot. |
+| `watchlist` | Comma-separated. Alleen analyse/instap-advies op het dashboard, de bot handelt hier nooit. Vrij uit te breiden. |
 | `bitvavo_api_key/secret` | Voor paper volstaat een key zonder trade-rechten. |
 | `groq_api_key` | Primaire LLM (gratis, console.groq.com). Minimaal één LLM-key vereist. |
 | `gemini_api_key`, `mistral_api_key` | Optionele fallbacks. |

@@ -1,6 +1,6 @@
 # Home Assistant add-on manifest (local add-on)
 name: AI Trade Platform
-version: "0.6.0"
+version: "0.6.1"
 slug: tradebot
 description: Fee-bewust AI swing-tradingplatform (Bitvavo, paper trading)
 url: "https://github.com/MartinDoornbusch/martin-trade"
@@ -26,6 +26,8 @@ map:
   - addon_config:rw
 options:
   trading_mode: paper
+  markets: "BTC-EUR,ETH-EUR"
+  watchlist: "SOL-EUR,XRP-EUR,LINK-EUR"
   bitvavo_api_key: ""
   bitvavo_api_secret: ""
   groq_api_key: ""
@@ -40,6 +42,8 @@ options:
   mqtt_password: ""
 schema:
   trading_mode: list(paper|live)
+  markets: str
+  watchlist: str
   bitvavo_api_key: str
   bitvavo_api_secret: password
   groq_api_key: password

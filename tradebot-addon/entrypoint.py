@@ -9,6 +9,8 @@ OPTIONS_FILE = Path("/data/options.json")
 
 ENV_MAP = {
     "trading_mode": "TRADING_MODE",
+    "markets": "TRADEBOT_MARKETS",
+    "watchlist": "TRADEBOT_WATCHLIST",
     "bitvavo_api_key": "BITVAVO_API_KEY",
     "bitvavo_api_secret": "BITVAVO_API_SECRET",
     "groq_api_key": "GROQ_API_KEY",

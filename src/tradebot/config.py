@@ -58,7 +58,22 @@ def get_secrets() -> Secrets:
     return Secrets()
 
 
+def _csv_env(name: str) -> list[str] | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    return [m.strip().upper() for m in raw.split(",") if m.strip()]
+
+
 @lru_cache
 def get_config() -> AppConfig:
     with open(CONFIG_PATH, encoding="utf-8") as fh:
-        return AppConfig(**yaml.safe_load(fh))
+        data = yaml.safe_load(fh)
+    # HA add-on opties overschrijven de yaml (comma-separated, bijv. "BTC-EUR,ETH-EUR")
+    markets = _csv_env("TRADEBOT_MARKETS")
+    watchlist = _csv_env("TRADEBOT_WATCHLIST")
+    if markets:
+        data["markets"] = markets
+    if watchlist is not None:
+        data["watchlist"] = watchlist
+    return AppConfig(**data)
