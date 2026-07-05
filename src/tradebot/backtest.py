@@ -13,6 +13,16 @@ from .exchange import BitvavoClient, Candle
 from .strategy import build_snapshot, check_exit, evaluate_buy
 
 
+def max_drawdown_pct(equity: list[float]) -> float:
+    """Grootste piek-naar-dal terugval in procenten."""
+    peak, max_dd = float("-inf"), 0.0
+    for v in equity:
+        peak = max(peak, v)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - v) / peak * 100)
+    return round(max_dd, 1)
+
+
 def run_backtest(candles: list[Candle], cfg, fee_model: FeeModel,
                  start_eur: float = 1000.0) -> dict:
     strategy_cfg = cfg.strategy
@@ -59,16 +69,13 @@ def run_backtest(candles: list[Candle], cfg, fee_model: FeeModel,
         equity_curve.append(cash + (position[0] * price if position else 0.0))
 
     final = equity_curve[-1] if equity_curve else start_eur
-    peak, max_dd = start_eur, 0.0
-    for v in equity_curve:
-        peak = max(peak, v)
-        max_dd = max(max_dd, (peak - v) / peak * 100)
+    max_dd = max_drawdown_pct(equity_curve)
     return {
         "closed_trades": trades,
         "win_rate_pct": round(wins / trades * 100, 1) if trades else None,
         "net_return_pct": round((final / start_eur - 1) * 100, 2),
         "total_fees_eur": round(total_fees, 2),
-        "max_drawdown_pct": round(max_dd, 1),
+        "max_drawdown_pct": max_dd,
         "final_eur": round(final, 2),
     }
 
@@ -81,7 +88,10 @@ def main() -> None:
     args = parser.parse_args()
     cfg = get_config()
     feed = BitvavoClient()
-    candles = feed.get_candles(args.market, args.interval, args.limit)
+    if args.limit > 1440:
+        candles = feed.get_candles_history(args.market, args.interval, args.limit)
+    else:
+        candles = feed.get_candles(args.market, args.interval, args.limit)
     fee_model = FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
                          cfg.fees["slippage_buffer_pct"])
     result = run_backtest(candles, cfg, fee_model)

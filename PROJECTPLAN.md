@@ -56,15 +56,18 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 ### Hergebruik-analyse oude app (Claude-project)
 - [x] `mqtt_publisher` → herbouwd in v0.3.0 (alleen status, geen commando-kanaal)
 - [ ] `live_trader` order/fill-afhandeling → referentie voor fase 3
-- [ ] `optimizer` parameter-tuning → kandidaat fase 2, let op overfitting
+- [x] `optimizer` parameter-tuning → herbouwd in v0.6.0 mét train/test-split tegen overfitting
 - [x] `correlation` → herbouwd in v0.5.0 als risk-gate + onderdeel instap-advies
 - [x] Afgewezen: market_scanner, news_feed, sentiment, whale_tracker, DCA, house-money (zie post-mortem)
 
-### Fase 2 — Validatie (volgende stap, handmatig af te vinken)
-- [ ] API-keys aanmaken (Bitvavo read-only + Groq/Gemini) en `.env` vullen
-- [ ] 4-8 weken paper trading draaien
-- [ ] Wekelijkse evaluatie: win-rate, netto P&L na fees, max drawdown (dashboard)
-- [ ] Backtests op 2+ jaar data per markt
+### Fase 2 — Validatie (loopt)
+- [x] API-keys aangemaakt en geconfigureerd (Bitvavo read-only, Groq/Gemini/Mistral, MQTT)
+- [x] Tooling: candle-paginatie (2+ jaar data), optimizer, drawdown/veto-metrics op dashboard (v0.6.0)
+- [ ] 4-8 weken paper trading draaien (gestart 2026-07-05)
+- [ ] Wekelijkse evaluatie: win-rate, netto P&L na fees, max drawdown, LLM-veto-rate (dashboard)
+- [ ] Backtests op 2+ jaar data per markt: `python -m tradebot.backtest BTC-EUR --interval 4h --limit 4400`
+- [ ] Parameter-tuning: `python -m tradebot.optimizer BTC-EUR --limit 3000` (kies op test-kolom, niet train)
+- [ ] LLM-veto-waarde beoordelen: veto-rate + steekproef veto-redenen vs. koersverloop erna
 - [ ] Go/no-go criteria vastleggen (voorstel: win-rate > 45% én netto positief na fees over 100+ trades)
 
 ### Fase 3 — Live (pas na fase 2)
@@ -105,3 +108,4 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 | 2026-07-05 | v0.3.0: MQTT-publisher met HA discovery (8 sensoren: portfolio, cash, posities, trades, win-rate, P&L, fees, laatste besluit) | 35 tests (5 nieuw), ruff |
 | 2026-07-05 | v0.4.0: balans-fix (available + inOrder — available-only toonde alleen niet-in-order kruimels), markttabel met koersen/indicatoren, GUI-opfrissing (aandeel-%, dust-aggregatie, tabular nums, nl-NL formatting) | 35 tests, ruff |
 | 2026-07-05 | v0.5.0: correlatie-gate (blokkeert 2e positie bij return-correlatie > 0,85), instap-adviestabel op dashboard (score, fee-gate, correlatie, advies) met watchlist SOL/XRP/LINK (analyse-only) | 39 tests (4 nieuw), ruff |
+| 2026-07-05 | v0.6.0: candle-paginatie voor lange backtests (>1440), optimizer CLI met 70/30 train/test-split, dashboard: max drawdown, LLM-veto-rate, equity-grafiek | 43 tests (4 nieuw), ruff |

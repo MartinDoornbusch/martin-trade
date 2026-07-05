@@ -48,6 +48,10 @@ class ExchangeAdapter(ABC):
     @abstractmethod
     def get_candles(self, market: str, interval: str, limit: int) -> list[Candle]: ...
 
+    def get_candles_history(self, market: str, interval: str, total: int) -> list[Candle]:
+        """Default: één get_candles-call; BitvavoClient overridet met paginatie."""
+        return self.get_candles(market, interval, total)
+
     @abstractmethod
     def get_price(self, market: str) -> float: ...
 
@@ -105,6 +109,27 @@ class BitvavoClient(ExchangeAdapter):
         candles = [Candle(int(c[0]), float(c[1]), float(c[2]), float(c[3]),
                           float(c[4]), float(c[5])) for c in raw]
         return sorted(candles, key=lambda c: c.ts)
+
+    def get_candles_history(self, market: str, interval: str, total: int) -> list[Candle]:
+        """Haalt meer dan 1440 candles op via paginatie met de end-parameter."""
+        out: list[Candle] = []
+        end_ms: int | None = None
+        while len(out) < total:
+            batch = min(1440, total - len(out))
+            path = f"/{market}/candles?interval={interval}&limit={batch}"
+            if end_ms is not None:
+                path += f"&end={end_ms}"
+            raw = self._request("GET", path)
+            if not raw:
+                break
+            chunk = sorted((Candle(int(c[0]), float(c[1]), float(c[2]), float(c[3]),
+                                   float(c[4]), float(c[5])) for c in raw),
+                           key=lambda c: c.ts)
+            out = chunk + out
+            end_ms = chunk[0].ts - 1
+            if len(raw) < batch:
+                break
+        return out[-total:]
 
     def get_price(self, market: str) -> float:
         raw = self._request("GET", f"/ticker/price?market={market}")

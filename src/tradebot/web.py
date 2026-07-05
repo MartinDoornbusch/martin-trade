@@ -5,6 +5,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
+from .backtest import max_drawdown_pct
 from .config import get_config, get_secrets
 from .correlation import correlation_from_closes
 from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, session
@@ -245,11 +246,19 @@ def stats():
         sells = s.execute(select(TradeRow).where(TradeRow.side == "sell")).scalars().all()
         fees = sum(r.fee_eur for r in s.execute(select(TradeRow)).scalars().all())
     wins = [t for t in sells if t.pnl_eur > 0]
+    with session() as s:
+        eq = [r.total_eur for r in s.execute(
+            select(EquityRow).order_by(EquityRow.ts.asc())).scalars().all()]
+        llm_rows = s.execute(select(LLMCallRow)).scalars().all()
+    vetoes = [r for r in llm_rows if r.verdict == "veto"]
     return {
         "closed_trades": len(sells),
         "win_rate_pct": round(len(wins) / len(sells) * 100, 1) if sells else None,
         "net_pnl_eur": round(sum(t.pnl_eur for t in sells), 2),
         "total_fees_eur": round(fees, 2),
+        "max_drawdown_pct": max_drawdown_pct(eq) if len(eq) >= 2 else None,
+        "llm_calls": len(llm_rows),
+        "llm_veto_rate_pct": round(len(vetoes) / len(llm_rows) * 100, 1) if llm_rows else None,
     }
 
 
@@ -278,6 +287,7 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 <header><h1>AI Trade Platform — paper trading</h1><span id="upd"></span></header>
 <main>
 <div class="cards" id="cards"></div>
+<section><h2>Equity-verloop (paper)</h2><svg id="equity" width="100%" height="80" preserveAspectRatio="none"></svg></section>
 <section><h2>Markten (wat de bot ziet)</h2><table id="markets"></table></section>
 <section><h2>Instap-advies <span class="muted">(watchlist wordt niet door de bot verhandeld)</span></h2><table id="advice"></table></section>
 <section><h2>Paper portfolio — open posities</h2><table id="positions"></table></section>
@@ -302,6 +312,8 @@ async function load(){
     ['Win-rate', s.win_rate_pct==null?'—':s.win_rate_pct+'%'],
     ['Netto P&L', '€ '+fmt(s.net_pnl_eur)],
     ['Totaal fees', '€ '+fmt(s.total_fees_eur)],
+    ['Max drawdown', s.max_drawdown_pct==null?'—':s.max_drawdown_pct+'%'],
+    ['LLM veto-rate', s.llm_veto_rate_pct==null?'—':s.llm_veto_rate_pct+'% ('+s.llm_calls+')'],
   ].map(([k,v])=>`<div class="card"><span>${k}</span><b>${v}</b></div>`).join('');
   document.getElementById('markets').innerHTML =
     '<tr><th>markt</th><th class="num">koers</th><th class="num">24h</th><th class="num">RSI</th><th>trend</th><th class="num">EMA-gap</th><th class="num">MACD-hist</th><th class="num">ATR</th></tr>' +
@@ -341,6 +353,16 @@ async function load(){
     '<tr><th>tijd</th><th>provider</th><th>markt</th><th>verdict</th><th class="num">conf</th><th>reden</th></tr>' +
     (llm.length ? llm.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.provider}</td><td>${r.market}</td><td>${r.verdict}</td><td class="num">${fmt(r.confidence)}</td><td>${r.reasoning}</td></tr>`).join('')
       : '<tr><td colspan="6" class="muted">nog geen LLM-calls — die volgen zodra een koopsignaal alle mechanische gates passeert</td></tr>');
+  const eq = await q('api/equity');
+  if (eq.length >= 2) {
+    const vals = eq.map(e=>e.total_eur), mn = Math.min(...vals), mx = Math.max(...vals);
+    const w = document.getElementById('equity').clientWidth || 600;
+    const pts = vals.map((v,i)=>`${(i/(vals.length-1)*w).toFixed(1)},${(72-(mx>mn?(v-mn)/(mx-mn):0.5)*64).toFixed(1)}`).join(' ');
+    document.getElementById('equity').innerHTML =
+      `<polyline points="${pts}" fill="none" stroke="#3b82f6" stroke-width="2"/>`;
+  } else {
+    document.getElementById('equity').outerHTML = '<span class="muted">nog te weinig equity-snapshots (elke 6 uur één)</span>';
+  }
   document.getElementById('upd').textContent = 'bijgewerkt ' + new Date().toLocaleTimeString('nl-NL');
 }
 load(); setInterval(load, 60000);
