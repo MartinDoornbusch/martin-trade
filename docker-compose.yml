@@ -1,0 +1,16 @@
+services:
+  tradebot:
+    build: .
+    image: tradebot:latest
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"   # alleen lokaal; extern via reverse proxy met TLS
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,13 @@
+.env
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+*.db
+# add-on build context (gegenereerd door tradebot-addon/sync.sh, niet committen)
+tradebot-addon/src/
+tradebot-addon/config/
+tradebot-addon/requirements.txt

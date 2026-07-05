@@ -1,0 +1,51 @@
+# Strategie- en risicoconfiguratie. Wijzigingen hier vereisen geen code-aanpassing.
+
+markets:            # Bitvavo marktnotatie
+  - BTC-EUR
+  - ETH-EUR
+
+schedule:
+  analysis_interval_minutes: 60      # swing: 1x per uur is voldoende
+  candle_interval: "4h"              # candles voor analyse
+  candle_limit: 200
+
+strategy:
+  ema_fast: 12
+  ema_slow: 26
+  rsi_period: 14
+  rsi_oversold: 35
+  rsi_overbought: 70
+  atr_period: 14
+  min_signal_score: 3                # aantal bevestigende condities voor kandidaat-BUY
+
+fees:
+  maker_pct: 0.15                    # fallback; live worden fees via GET /account opgehaald
+  taker_pct: 0.25
+  slippage_buffer_pct: 0.10
+
+decision:
+  min_profit_pct: 0.50               # minimale winst boven fees+slippage
+  atr_stop_multiplier: 2.0           # stop loss = entry - 2*ATR
+  reward_risk_ratio: 2.0             # take profit = entry + 2*(2*ATR)
+  use_llm_second_opinion: true
+  llm_min_confidence: 0.6            # LLM moet >= 0.6 confident zijn, anders veto
+
+risk:
+  paper_start_eur: 1000.0
+  max_position_pct: 25.0             # max % van portfolio per positie
+  max_open_positions: 3
+  cooldown_hours_after_trade: 12     # per markt; voorkomt fee-vretende flip-flops
+  daily_loss_cap_pct: 3.0            # stop met kopen als dagverlies dit overschrijdt
+
+llm:
+  providers:                          # volgorde = voorkeursvolgorde
+    - name: groq
+      model: llama-3.1-8b-instant
+      daily_budget: 200               # max calls per dag (ruim onder 14.400 free tier)
+    - name: gemini
+      model: gemini-2.5-flash
+      daily_budget: 100
+    - name: mistral
+      model: mistral-small-latest
+      daily_budget: 100
+  timeout_seconds: 20

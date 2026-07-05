@@ -1,0 +1,46 @@
+# Home Assistant add-on manifest (local add-on)
+name: AI Trade Platform
+version: "0.1.0"
+slug: tradebot
+description: Fee-bewust AI swing-tradingplatform (Bitvavo, paper trading)
+url: "https://github.com/MartinDoornbusch/martin-trade"
+arch:
+  - aarch64
+  - amd64
+# Voor de add-on-repository flow (optie B, automatische updates): regel hieronder
+# aanzetten met je GitHub-gebruikersnaam. Supervisor pullt dan het CI-gebouwde image
+# i.p.v. lokaal te bouwen.
+image: ghcr.io/martindoornbusch/tradebot-addon-{arch}
+init: false
+startup: application
+boot: auto
+ingress: true
+ingress_port: 8000
+panel_icon: mdi:finance
+panel_title: Trade Platform
+ports:
+  8000/tcp: null        # standaard dicht; ingress volstaat. Zet op 8000 voor directe LAN-toegang.
+ports_description:
+  8000/tcp: Dashboard (optioneel, alleen nodig zonder ingress)
+map:
+  - addon_config:rw
+options:
+  trading_mode: paper
+  bitvavo_api_key: ""
+  bitvavo_api_secret: ""
+  groq_api_key: ""
+  gemini_api_key: ""
+  mistral_api_key: ""
+  telegram_bot_token: ""
+  telegram_chat_id: ""
+  dashboard_token: ""
+schema:
+  trading_mode: list(paper|live)
+  bitvavo_api_key: str
+  bitvavo_api_secret: password
+  groq_api_key: password
+  gemini_api_key: password
+  mistral_api_key: password
+  telegram_bot_token: password
+  telegram_chat_id: str
+  dashboard_token: str
