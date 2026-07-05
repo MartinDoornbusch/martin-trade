@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from .config import AppConfig, Secrets
+from .correlation import correlation_from_closes
 from .db import SignalRow, session
 from .decision import Decision, DecisionEngine, FeeModel, RiskManager
 from .exchange import BitvavoClient
@@ -42,9 +43,15 @@ class TradingCycle:
         free = self.broker.cash_eur()
         daily_pnl = self.broker.daily_pnl_eur()
 
+        candles_map = {}
         for market in self.cfg.markets:
             try:
-                candles = self.feed.get_candles(market, interval, limit)
+                candles_map[market] = self.feed.get_candles(market, interval, limit)
+            except Exception:  # noqa: BLE001
+                log.exception("candles ophalen mislukt voor %s", market)
+
+        for market, candles in candles_map.items():
+            try:
                 snap = build_snapshot(market, candles, self.cfg.strategy)
 
                 # 1) Mechanical exits first — no AI involved.
@@ -65,7 +72,24 @@ class TradingCycle:
                                                      self.broker.last_trade_at(market),
                                                      portfolio, free, daily_pnl)
 
-                # 3) LLM second opinion only for BUYs that passed every gate.
+                # 3) Correlatie-gate: geen 2e positie in een sterk gecorreleerde markt.
+                if decision.action == "buy" and positions:
+                    max_corr = float(self.cfg.risk.get("max_correlation", 0.85))
+                    lookback = int(self.cfg.risk.get("correlation_lookback", 60))
+                    closes = [c.close for c in candles]
+                    for pos in positions:
+                        other = candles_map.get(pos.market)
+                        if other is None:
+                            continue
+                        corr = correlation_from_closes(closes, [c.close for c in other], lookback)
+                        if corr is not None and corr > max_corr:
+                            decision = Decision(
+                                market, "skip",
+                                f"correlatie-gate: {corr:.2f} met open positie {pos.market} "
+                                f"> {max_corr}")
+                            break
+
+                # 4) LLM second opinion only for BUYs that passed every gate.
                 if decision.action == "buy" and self.cfg.decision.get("use_llm_second_opinion"):
                     verdict = self.llm.second_opinion(candidate)
                     min_conf = float(self.cfg.decision["llm_min_confidence"])
@@ -78,7 +102,7 @@ class TradingCycle:
                             f"LLM veto ({verdict.provider}, conf {verdict.confidence:.2f}): "
                             f"{verdict.reasoning}")
 
-                # 4) Execute.
+                # 5) Execute.
                 if decision.action == "buy":
                     self.broker.buy(market, decision.amount_quote_eur,
                                     decision.stop_loss, decision.take_profit, decision.reason)

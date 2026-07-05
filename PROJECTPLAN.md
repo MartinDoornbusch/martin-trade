@@ -57,7 +57,7 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [x] `mqtt_publisher` → herbouwd in v0.3.0 (alleen status, geen commando-kanaal)
 - [ ] `live_trader` order/fill-afhandeling → referentie voor fase 3
 - [ ] `optimizer` parameter-tuning → kandidaat fase 2, let op overfitting
-- [ ] `correlation` → pas relevant bij meer markten dan BTC/ETH
+- [x] `correlation` → herbouwd in v0.5.0 als risk-gate + onderdeel instap-advies
 - [x] Afgewezen: market_scanner, news_feed, sentiment, whale_tracker, DCA, house-money (zie post-mortem)
 
 ### Fase 2 — Validatie (volgende stap, handmatig af te vinken)
@@ -103,3 +103,5 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 | 2026-07-05 | v0.2.0: dashboard toont paper portfolio (cash, posities, ongerealiseerde P&L) en echte Bitvavo-balans (read-only); eerste analysecyclus direct bij start | 30 tests, ruff, compile-check |
 | 2026-07-05 | Post-mortem oude bot + hergebruik-analyse vastgelegd | n.v.t. (documentatie) |
 | 2026-07-05 | v0.3.0: MQTT-publisher met HA discovery (8 sensoren: portfolio, cash, posities, trades, win-rate, P&L, fees, laatste besluit) | 35 tests (5 nieuw), ruff |
+| 2026-07-05 | v0.4.0: balans-fix (available + inOrder — available-only toonde alleen niet-in-order kruimels), markttabel met koersen/indicatoren, GUI-opfrissing (aandeel-%, dust-aggregatie, tabular nums, nl-NL formatting) | 35 tests, ruff |
+| 2026-07-05 | v0.5.0: correlatie-gate (blokkeert 2e positie bij return-correlatie > 0,85), instap-adviestabel op dashboard (score, fee-gate, correlatie, advies) met watchlist SOL/XRP/LINK (analyse-only) | 39 tests (4 nieuw), ruff |

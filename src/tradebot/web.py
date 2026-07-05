@@ -1,4 +1,4 @@
-"""FastAPI dashboard: paper portfolio, echte Bitvavo-balans, trades, signalen, LLM verdicts."""
+"""FastAPI dashboard: markten, paper portfolio, echte Bitvavo-balans, trades, signalen, LLM."""
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -6,12 +6,17 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
 from .config import get_config, get_secrets
+from .correlation import correlation_from_closes
 from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, session
+from .decision import FeeModel
 from .exchange import BitvavoClient
+from .strategy import build_snapshot, evaluate_buy
 
 app = FastAPI(title="AI Trade Platform", docs_url=None, redoc_url=None)
 
 _feed: BitvavoClient | None = None
+
+DUST_EUR = 1.0  # assets onder deze waarde worden samengevat als 'overig'
 
 
 def get_feed() -> BitvavoClient:
@@ -36,6 +41,105 @@ def healthz():
     return {"status": "ok"}
 
 
+@app.get("/api/markets", dependencies=[Depends(check_token)])
+def markets():
+    """Actuele koers + indicator-snapshot per geconfigureerde markt: wat de bot ziet."""
+    cfg = get_config()
+    feed = get_feed()
+    out = []
+    for market in cfg.markets:
+        try:
+            candles = feed.get_candles(market, cfg.schedule["candle_interval"], 80)
+            snap = build_snapshot(market, candles, cfg.strategy)
+            out.append({
+                "market": market,
+                "price": snap.price,
+                "rsi": round(snap.rsi, 1),
+                "trend": "up" if snap.ema_fast > snap.ema_slow else "down",
+                "ema_gap_pct": round((snap.ema_fast / snap.ema_slow - 1) * 100, 2),
+                "macd_hist": round(snap.macd_hist, 4),
+                "atr_pct": round(snap.atr / snap.price * 100, 2),
+                "change_24h_pct": round(snap.change_24c_pct, 2),
+            })
+        except Exception as exc:  # noqa: BLE001 - één markt mag de tabel niet breken
+            out.append({"market": market, "error": str(exc)[:100]})
+    return out
+
+
+@app.get("/api/advice", dependencies=[Depends(check_token)])
+def advice():
+    """Instap-advies per markt (trading + watchlist). Advies aan de gebruiker;
+    de bot gebruikt dit NIET als koop-trigger (zie post-mortem in PROJECTPLAN)."""
+    cfg = get_config()
+    feed = get_feed()
+    fee_model = FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
+                         cfg.fees["slippage_buffer_pct"])
+    min_edge = fee_model.min_edge_pct(float(cfg.decision["min_profit_pct"]))
+    with session() as s:
+        open_markets = [r.market for r in s.execute(select(PositionRow)).scalars().all()]
+    lookback = int(cfg.risk.get("correlation_lookback", 60))
+    max_corr = float(cfg.risk.get("max_correlation", 0.85))
+    interval = cfg.schedule["candle_interval"]
+    all_markets = list(dict.fromkeys(list(cfg.markets) + list(cfg.watchlist)))
+    closes_cache: dict[str, list[float]] = {}
+
+    def closes_for(m: str) -> list[float]:
+        if m not in closes_cache:
+            closes_cache[m] = [c.close for c in feed.get_candles(m, interval, 80)]
+        return closes_cache[m]
+
+    out = []
+    for market in all_markets:
+        try:
+            candles = feed.get_candles(market, interval, 80)
+            closes_cache[market] = [c.close for c in candles]
+            snap = build_snapshot(market, candles, cfg.strategy)
+            cand = evaluate_buy(snap, cfg.strategy)
+            stop_dist = snap.atr * float(cfg.decision["atr_stop_multiplier"])
+            expected = stop_dist * float(cfg.decision["reward_risk_ratio"]) / snap.price * 100
+            fee_ok = expected >= min_edge
+            corr_max, corr_with = None, None
+            for om in open_markets:
+                if om == market:
+                    continue
+                try:
+                    c = correlation_from_closes(closes_cache[market], closes_for(om), lookback)
+                except Exception:  # noqa: BLE001, S112 - watchlist-markt zonder data overslaan
+                    continue
+                if c is not None and (corr_max is None or c > corr_max):
+                    corr_max, corr_with = c, om
+            corr_ok = corr_max is None or corr_max <= max_corr
+            trend_up = snap.ema_fast > snap.ema_slow
+            score_needed = int(cfg.strategy["min_signal_score"])
+            if market in open_markets:
+                label = "positie open"
+            elif cand.score >= score_needed and fee_ok and corr_ok and trend_up:
+                label = "instappen overwegen"
+            elif not corr_ok:
+                label = "vermijden (correlatie)"
+            elif not trend_up and snap.rsi >= float(cfg.strategy["rsi_overbought"]):
+                label = "vermijden"
+            else:
+                label = "afwachten"
+            out.append({
+                "market": market,
+                "tradeable": market in cfg.markets,
+                "advies": label,
+                "score": cand.score, "score_needed": score_needed,
+                "trend": "up" if trend_up else "down",
+                "rsi": round(snap.rsi, 0),
+                "expected_move_pct": round(expected, 2),
+                "min_edge_pct": round(min_edge, 2),
+                "fee_ok": fee_ok,
+                "correlation": round(corr_max, 2) if corr_max is not None else None,
+                "correlation_with": corr_with,
+                "reasons": cand.reasons,
+            })
+        except Exception as exc:  # noqa: BLE001
+            out.append({"market": market, "error": str(exc)[:100]})
+    return out
+
+
 @app.get("/api/portfolio", dependencies=[Depends(check_token)])
 def portfolio():
     """Paper-portfolio: cash + open posities tegen actuele prijzen."""
@@ -50,7 +154,7 @@ def portfolio():
     for p in positions:
         try:
             price = feed.get_price(p.market)
-        except Exception:  # noqa: BLE001 - dashboard mag niet omvallen op een prijsfout
+        except Exception:  # noqa: BLE001
             price = p.entry_price
         value = p.amount * price
         total += value
@@ -67,15 +171,16 @@ def portfolio():
 
 @app.get("/api/balance", dependencies=[Depends(check_token)])
 def real_balance():
-    """Echte Bitvavo-balans (read-only key). Puur informatief; de bot handelt hier niet op."""
+    """Echte Bitvavo-balans (available + inOrder). Informatief; de bot handelt hier niet op."""
     secrets = get_secrets()
     if not secrets.bitvavo_api_key:
-        return {"enabled": False, "assets": [], "total_eur": 0}
+        return {"enabled": False, "assets": [], "total_eur": 0, "dust": None}
     feed = get_feed()
     try:
         balances = feed.get_balances()
-    except Exception as exc:  # noqa: BLE001 - toon fout i.p.v. 500
-        return {"enabled": False, "error": str(exc)[:200], "assets": [], "total_eur": 0}
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": False, "error": str(exc)[:200], "assets": [], "total_eur": 0,
+                "dust": None}
     assets, total = [], 0.0
     for sym, amount in balances.items():
         if amount <= 0:
@@ -85,13 +190,19 @@ def real_balance():
         else:
             try:
                 value = amount * feed.get_price(f"{sym}-EUR")
-            except Exception:  # noqa: BLE001 - geen EUR-markt voor dit asset
+            except Exception:  # noqa: BLE001 - geen EUR-markt
                 value = None
         assets.append({"symbol": sym, "amount": amount,
                        "value_eur": round(value, 2) if value is not None else None})
         total += value or 0.0
-    assets.sort(key=lambda a: -(a["value_eur"] or 0))
-    return {"enabled": True, "total_eur": round(total, 2), "assets": assets}
+    for a in assets:
+        a["share_pct"] = round((a["value_eur"] or 0) / total * 100, 1) if total else 0.0
+    main = [a for a in assets if (a["value_eur"] or 0) >= DUST_EUR]
+    dust = [a for a in assets if (a["value_eur"] or 0) < DUST_EUR]
+    main.sort(key=lambda a: -(a["value_eur"] or 0))
+    dust_row = {"count": len(dust), "value_eur": round(sum(a["value_eur"] or 0 for a in dust), 2)} \
+        if dust else None
+    return {"enabled": True, "total_eur": round(total, 2), "assets": main, "dust": dust_row}
 
 
 @app.get("/api/trades", dependencies=[Depends(check_token)])
@@ -145,63 +256,92 @@ def stats():
 DASHBOARD_HTML = """<!doctype html><html lang="nl"><head><meta charset="utf-8">
 <title>AI Trade Platform</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-body{font-family:system-ui,sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
-header{padding:16px 24px;background:#1e293b;display:flex;justify-content:space-between;align-items:center}
-h1{font-size:18px;margin:0}main{padding:24px;display:grid;gap:24px;max-width:1100px;margin:auto}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
-.card{background:#1e293b;border-radius:8px;padding:16px}.card b{font-size:22px;display:block}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #334155}
-h2{font-size:15px;margin:0 0 8px}.pos{color:#4ade80}.neg{color:#f87171}.muted{color:#94a3b8}
-section{background:#1e293b;border-radius:8px;padding:16px;overflow-x:auto}
+:root{--bg:#0b1220;--panel:#151e2e;--line:#26334a;--txt:#e2e8f0;--sub:#8ea0b8}
+body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
+header{padding:14px 24px;background:var(--panel);border-bottom:1px solid var(--line);
+display:flex;justify-content:space-between;align-items:center}
+h1{font-size:17px;margin:0}#upd{font-size:12px;color:var(--sub)}
+main{padding:20px;display:grid;gap:16px;max-width:1200px;margin:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.card span{font-size:12px;color:var(--sub)}.card b{font-size:20px;display:block;margin-top:2px}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+th{color:var(--sub);font-weight:500;font-size:12px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+th.num,td.num{text-align:right}
+h2{font-size:14px;margin:0 0 10px;color:var(--txt)}
+.pos{color:#4ade80}.neg{color:#f87171}.muted{color:var(--sub)}
+.up{color:#4ade80}.down{color:#f87171}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto}
+.bar{display:inline-block;height:6px;background:#3b82f6;border-radius:3px;vertical-align:middle;margin-right:6px}
 </style></head><body>
-<header><h1>AI Trade Platform — paper trading</h1><span id="mode"></span></header>
+<header><h1>AI Trade Platform — paper trading</h1><span id="upd"></span></header>
 <main>
 <div class="cards" id="cards"></div>
+<section><h2>Markten (wat de bot ziet)</h2><table id="markets"></table></section>
+<section><h2>Instap-advies <span class="muted">(watchlist wordt niet door de bot verhandeld)</span></h2><table id="advice"></table></section>
 <section><h2>Paper portfolio — open posities</h2><table id="positions"></table></section>
-<section><h2>Echte Bitvavo-balans <span class="muted">(read-only, bot handelt hier niet op)</span></h2><table id="balance"></table></section>
-<section><h2>Open beslissingen / signalen</h2><table id="signals"></table></section>
+<section><h2>Echte Bitvavo-balans <span class="muted">(incl. in order; bot handelt hier niet op)</span></h2><table id="balance"></table></section>
+<section><h2>Beslissingen / signalen</h2><table id="signals"></table></section>
 <section><h2>Trades (P&amp;L na fees)</h2><table id="trades"></table></section>
 <section><h2>LLM second opinions</h2><table id="llm"></table></section>
 </main>
 <script>
 const T = new URLSearchParams(location.search).get('token') || '';
-// Relatieve basis zodat het dashboard ook achter HA ingress (pad-prefix) werkt.
 const B = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
 const q = p => fetch(B + p + (p.includes('?')?'&':'?') + 'token=' + T).then(r=>r.json());
-const fmt = n => n==null?'—':Number(n).toFixed(2);
+const fmt = (n,d=2) => n==null?'—':Number(n).toLocaleString('nl-NL',{minimumFractionDigits:d,maximumFractionDigits:d});
 const cls = n => n>=0?'pos':'neg';
 async function load(){
-  const [s, pf, bal] = await Promise.all([q('api/stats'), q('api/portfolio'), q('api/balance')]);
+  const [s, pf, bal, mkts, adv] = await Promise.all([
+    q('api/stats'), q('api/portfolio'), q('api/balance'), q('api/markets'), q('api/advice')]);
   document.getElementById('cards').innerHTML = [
-    ['Paper portfolio (EUR)', fmt(pf.total_eur)],
-    ['Cash (EUR)', fmt(pf.cash_eur)],
+    ['Paper portfolio', '€ '+fmt(pf.total_eur)],
+    ['Cash', '€ '+fmt(pf.cash_eur)],
     ['Closed trades', s.closed_trades],
     ['Win-rate', s.win_rate_pct==null?'—':s.win_rate_pct+'%'],
-    ['Netto P&L (EUR)', fmt(s.net_pnl_eur)],
-    ['Totaal fees (EUR)', fmt(s.total_fees_eur)],
-  ].map(([k,v])=>`<div class="card">${k}<b>${v}</b></div>`).join('');
+    ['Netto P&L', '€ '+fmt(s.net_pnl_eur)],
+    ['Totaal fees', '€ '+fmt(s.total_fees_eur)],
+  ].map(([k,v])=>`<div class="card"><span>${k}</span><b>${v}</b></div>`).join('');
+  document.getElementById('markets').innerHTML =
+    '<tr><th>markt</th><th class="num">koers</th><th class="num">24h</th><th class="num">RSI</th><th>trend</th><th class="num">EMA-gap</th><th class="num">MACD-hist</th><th class="num">ATR</th></tr>' +
+    mkts.map(m=> m.error
+      ? `<tr><td>${m.market}</td><td colspan="7" class="muted">${m.error}</td></tr>`
+      : `<tr><td>${m.market}</td><td class="num">€ ${fmt(m.price)}</td><td class="num ${cls(m.change_24h_pct)}">${fmt(m.change_24h_pct,1)}%</td><td class="num">${fmt(m.rsi,0)}</td><td class="${m.trend}">${m.trend==='up'?'▲ up':'▼ down'}</td><td class="num">${fmt(m.ema_gap_pct)}%</td><td class="num ${cls(m.macd_hist)}">${fmt(m.macd_hist,4)}</td><td class="num">${fmt(m.atr_pct,1)}%</td></tr>`).join('');
+  document.getElementById('advice').innerHTML =
+    '<tr><th>markt</th><th>type</th><th>advies</th><th class="num">score</th><th class="num">verw. move</th><th class="num">vereist</th><th class="num">correlatie</th><th>toelichting</th></tr>' +
+    adv.map(a=> a.error
+      ? `<tr><td>${a.market}</td><td colspan="7" class="muted">${a.error}</td></tr>`
+      : `<tr><td>${a.market}</td><td class="muted">${a.tradeable?'trade':'watch'}</td><td class="${a.advies.startsWith('instappen')?'pos':(a.advies.startsWith('vermijden')?'neg':'muted')}">${a.advies}</td><td class="num">${a.score}/${a.score_needed}</td><td class="num ${a.fee_ok?'pos':'neg'}">${fmt(a.expected_move_pct)}%</td><td class="num">${fmt(a.min_edge_pct)}%</td><td class="num">${a.correlation==null?'—':fmt(a.correlation)+(a.correlation_with?' ('+a.correlation_with+')':'')}</td><td>${(a.reasons||[]).join('; ')||'—'}</td></tr>`).join('');
   document.getElementById('positions').innerHTML =
-    '<tr><th>markt</th><th>aantal</th><th>entry</th><th>nu</th><th>waarde</th><th>ongereal. P&L</th><th>SL</th><th>TP</th></tr>' +
-    (pf.positions.length ? pf.positions.map(p=>`<tr><td>${p.market}</td><td>${p.amount.toFixed(6)}</td><td>${fmt(p.entry_price)}</td><td>${fmt(p.current_price)}</td><td>${fmt(p.value_eur)}</td><td class="${cls(p.unrealized_pnl_eur)}">${fmt(p.unrealized_pnl_eur)}</td><td>${fmt(p.stop_loss)}</td><td>${fmt(p.take_profit)}</td></tr>`).join('')
+    '<tr><th>markt</th><th class="num">aantal</th><th class="num">entry</th><th class="num">nu</th><th class="num">waarde</th><th class="num">ongereal. P&L</th><th class="num">SL</th><th class="num">TP</th></tr>' +
+    (pf.positions.length ? pf.positions.map(p=>`<tr><td>${p.market}</td><td class="num">${p.amount.toFixed(6)}</td><td class="num">${fmt(p.entry_price)}</td><td class="num">${fmt(p.current_price)}</td><td class="num">€ ${fmt(p.value_eur)}</td><td class="num ${cls(p.unrealized_pnl_eur)}">€ ${fmt(p.unrealized_pnl_eur)}</td><td class="num">${fmt(p.stop_loss)}</td><td class="num">${fmt(p.take_profit)}</td></tr>`).join('')
       : '<tr><td colspan="8" class="muted">geen open posities — de bot wacht op een signaal dat door alle gates komt</td></tr>');
-  document.getElementById('balance').innerHTML = bal.enabled
-    ? ('<tr><th>asset</th><th>aantal</th><th>waarde (EUR)</th></tr>' +
-       bal.assets.map(a=>`<tr><td>${a.symbol}</td><td>${a.amount}</td><td>${fmt(a.value_eur)}</td></tr>`).join('') +
-       `<tr><td><b>Totaal</b></td><td></td><td><b>${fmt(bal.total_eur)}</b></td></tr>`)
-    : `<tr><td class="muted">${bal.error ? 'fout: '+bal.error : 'geen Bitvavo API-key geconfigureerd'}</td></tr>`;
+  let balRows;
+  if (bal.enabled) {
+    balRows = '<tr><th>asset</th><th class="num">aantal</th><th class="num">waarde</th><th>aandeel</th></tr>' +
+      bal.assets.map(a=>`<tr><td>${a.symbol}</td><td class="num">${a.amount}</td><td class="num">€ ${fmt(a.value_eur)}</td><td><span class="bar" style="width:${Math.max(2,a.share_pct)}px"></span>${fmt(a.share_pct,1)}%</td></tr>`).join('');
+    if (bal.dust) balRows += `<tr><td class="muted">overig (${bal.dust.count} assets &lt; €1)</td><td></td><td class="num muted">€ ${fmt(bal.dust.value_eur)}</td><td></td></tr>`;
+    balRows += `<tr><td><b>Totaal</b></td><td></td><td class="num"><b>€ ${fmt(bal.total_eur)}</b></td><td></td></tr>`;
+  } else {
+    balRows = `<tr><td class="muted">${bal.error ? 'fout: '+bal.error : 'geen Bitvavo API-key geconfigureerd'}</td></tr>`;
+  }
+  document.getElementById('balance').innerHTML = balRows;
   const sig = await q('api/signals?limit=20');
   document.getElementById('signals').innerHTML =
     '<tr><th>tijd</th><th>markt</th><th>signaal</th><th>besluit</th><th>reden</th></tr>' +
-    sig.map(r=>`<tr><td>${r.ts.slice(0,16)}</td><td>${r.market}</td><td>${r.action}</td><td>${r.decision}</td><td>${r.reason}</td></tr>`).join('');
+    sig.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.market}</td><td>${r.action}</td><td>${r.decision}</td><td>${r.reason}</td></tr>`).join('');
   const tr = await q('api/trades?limit=20');
   document.getElementById('trades').innerHTML =
-    '<tr><th>tijd</th><th>markt</th><th>kant</th><th>prijs</th><th>fee</th><th>P&L</th></tr>' +
-    tr.map(r=>`<tr><td>${r.ts.slice(0,16)}</td><td>${r.market}</td><td>${r.side}</td><td>${fmt(r.price)}</td><td>${fmt(r.fee_eur)}</td><td class="${cls(r.pnl_eur)}">${fmt(r.pnl_eur)}</td></tr>`).join('');
+    '<tr><th>tijd</th><th>markt</th><th>kant</th><th class="num">prijs</th><th class="num">fee</th><th class="num">P&L</th></tr>' +
+    (tr.length ? tr.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.market}</td><td>${r.side}</td><td class="num">${fmt(r.price)}</td><td class="num">${fmt(r.fee_eur)}</td><td class="num ${cls(r.pnl_eur)}">${fmt(r.pnl_eur)}</td></tr>`).join('')
+      : '<tr><td colspan="6" class="muted">nog geen trades</td></tr>');
   const llm = await q('api/llm?limit=15');
   document.getElementById('llm').innerHTML =
-    '<tr><th>tijd</th><th>provider</th><th>markt</th><th>verdict</th><th>conf</th><th>reden</th></tr>' +
-    llm.map(r=>`<tr><td>${r.ts.slice(0,16)}</td><td>${r.provider}</td><td>${r.market}</td><td>${r.verdict}</td><td>${fmt(r.confidence)}</td><td>${r.reasoning}</td></tr>`).join('');
+    '<tr><th>tijd</th><th>provider</th><th>markt</th><th>verdict</th><th class="num">conf</th><th>reden</th></tr>' +
+    (llm.length ? llm.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.provider}</td><td>${r.market}</td><td>${r.verdict}</td><td class="num">${fmt(r.confidence)}</td><td>${r.reasoning}</td></tr>`).join('')
+      : '<tr><td colspan="6" class="muted">nog geen LLM-calls — die volgen zodra een koopsignaal alle mechanische gates passeert</td></tr>');
+  document.getElementById('upd').textContent = 'bijgewerkt ' + new Date().toLocaleTimeString('nl-NL');
 }
 load(); setInterval(load, 60000);
 </script></body></html>"""

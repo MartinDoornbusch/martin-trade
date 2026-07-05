@@ -1,8 +1,13 @@
 # Strategie- en risicoconfiguratie. Wijzigingen hier vereisen geen code-aanpassing.
 
-markets:            # Bitvavo marktnotatie
+markets:            # Bitvavo marktnotatie — hierin handelt de bot (paper)
   - BTC-EUR
   - ETH-EUR
+
+watchlist:          # alleen analyse/advies op het dashboard, bot handelt hier NIET
+  - SOL-EUR
+  - XRP-EUR
+  - LINK-EUR
 
 schedule:
   analysis_interval_minutes: 60      # swing: 1x per uur is voldoende
@@ -36,6 +41,8 @@ risk:
   max_open_positions: 3
   cooldown_hours_after_trade: 12     # per markt; voorkomt fee-vretende flip-flops
   daily_loss_cap_pct: 3.0            # stop met kopen als dagverlies dit overschrijdt
+  max_correlation: 0.85              # blokkeer 2e positie als return-correlatie hoger is
+  correlation_lookback: 60           # aantal candles voor de correlatieschatting
 
 llm:
   providers:                          # volgorde = voorkeursvolgorde

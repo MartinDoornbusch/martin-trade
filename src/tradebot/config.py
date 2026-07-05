@@ -40,6 +40,7 @@ class LLMProviderCfg(BaseModel):
 
 class AppConfig(BaseModel):
     markets: list[str]
+    watchlist: list[str] = []
     schedule: dict[str, Any]
     strategy: dict[str, Any]
     fees: dict[str, float]

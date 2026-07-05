@@ -113,7 +113,8 @@ class BitvavoClient(ExchangeAdapter):
     # --- authenticated -----------------------------------------------------
     def get_balances(self) -> dict[str, float]:
         raw = self._request("GET", "/balance", auth=True)
-        return {b["symbol"]: float(b["available"]) for b in raw}
+        # available + inOrder: anders zie je alleen wat niet in een open order zit
+        return {b["symbol"]: float(b["available"]) + float(b.get("inOrder", 0)) for b in raw}
 
     def get_fees_pct(self) -> tuple[float, float]:
         try:
