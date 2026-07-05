@@ -51,6 +51,15 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [x] Deployment-handleiding Raspberry Pi
 - [x] Home Assistant add-on (Pi 5 draait HAOS): manifest, ingress-dashboard, options→env entrypoint, CI-job voor add-on image (GHCR), add-on-repository structuur voor auto-updates
 
+- [x] v0.3.0: MQTT/HA-discovery integratie (bot-status als HA-sensoren; concept hergebruikt uit oude bot)
+
+### Hergebruik-analyse oude app (Claude-project)
+- [x] `mqtt_publisher` → herbouwd in v0.3.0 (alleen status, geen commando-kanaal)
+- [ ] `live_trader` order/fill-afhandeling → referentie voor fase 3
+- [ ] `optimizer` parameter-tuning → kandidaat fase 2, let op overfitting
+- [ ] `correlation` → pas relevant bij meer markten dan BTC/ETH
+- [x] Afgewezen: market_scanner, news_feed, sentiment, whale_tracker, DCA, house-money (zie post-mortem)
+
 ### Fase 2 — Validatie (volgende stap, handmatig af te vinken)
 - [ ] API-keys aanmaken (Bitvavo read-only + Groq/Gemini) en `.env` vullen
 - [ ] 4-8 weken paper trading draaien
@@ -69,6 +78,21 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] `ExchangeAdapter` implementatie voor gekozen broker
 - [ ] Markturen-logica (crypto is 24/7, aandelen niet)
 
+## Post-mortem oude bot (Claude-project repo, -15% kapitaal)
+
+Analyse van de vorige bot (272 commits, live gedraaid). Fees werden geboekt in P&L maar nergens als beslisdrempel gebruikt. Oorzaken van het verlies en de tegenmaatregel in dit platform:
+
+| # | Oude bot | Nieuw platform |
+|---|----------|----------------|
+| 1 | LLM was beslisser: tactical AI-chain gaf elk uur BUY/HOLD/SELL per markt | LLM alleen veto op deterministisch kandidaat-signaal |
+| 2 | Geen fee-gate op entry; fee pas zichtbaar bij P&L | Harde gate: verwachte move ≥ round-trip fees + slippage + winstdrempel (1,10%) |
+| 3 | DCA-bijkopen bij -5% onder inkoop, in lagen | Geen DCA; één positie per markt met ATR-stop |
+| 4 | MAX_TRADE_EUR=25: winst per trade verwaarloosbaar t.o.v. ruis | Positie 25% van portfolio, minimum €10 |
+| 5 | Tientallen alt-markten, spread nergens gemodelleerd | Alleen BTC/ETH + 0,10% slippage-buffer |
+| 6 | Zes koop-triggers (AI, DCA, house-money, hodl-accu, scanner, sentiment), nul validatielagen | Eén koop-pad, vier gates (score, risk, fee, LLM-veto); exits 100% mechanisch |
+
+Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aantal manieren om er een tegen te houden.
+
 ## Wijzigingslog
 
 | Datum | Wijziging | Getest |
@@ -77,3 +101,5 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 | 2026-07-05 | HA add-on verpakking (HAOS op Pi 5), dashboard ingress-compatibel, CI bouwt add-on image | 30 tests, ruff, YAML-validatie, compile-check |
 | 2026-07-05 | CI-fixes (lowercase GHCR-tags addon-job), fastapi 0.139 / starlette >= 1.3.1 (8 CVE's opgelost) | 30 tests, pip-audit schoon |
 | 2026-07-05 | v0.2.0: dashboard toont paper portfolio (cash, posities, ongerealiseerde P&L) en echte Bitvavo-balans (read-only); eerste analysecyclus direct bij start | 30 tests, ruff, compile-check |
+| 2026-07-05 | Post-mortem oude bot + hergebruik-analyse vastgelegd | n.v.t. (documentatie) |
+| 2026-07-05 | v0.3.0: MQTT-publisher met HA discovery (8 sensoren: portfolio, cash, posities, trades, win-rate, P&L, fees, laatste besluit) | 35 tests (5 nieuw), ruff |

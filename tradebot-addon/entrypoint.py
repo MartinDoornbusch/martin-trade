@@ -17,6 +17,10 @@ ENV_MAP = {
     "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
     "telegram_chat_id": "TELEGRAM_CHAT_ID",
     "dashboard_token": "DASHBOARD_TOKEN",
+    "mqtt_host": "MQTT_HOST",
+    "mqtt_port": "MQTT_PORT",
+    "mqtt_user": "MQTT_USER",
+    "mqtt_password": "MQTT_PASSWORD",
 }
 
 

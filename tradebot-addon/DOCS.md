@@ -29,5 +29,7 @@ Fee-bewust AI swing-tradingplatform (Bitvavo, paper trading). Volledige document
 | `gemini_api_key`, `mistral_api_key` | Optionele fallbacks. |
 | `telegram_bot_token/chat_id` | Optioneel, trade-notificaties. |
 | `dashboard_token` | Leeg laten bij gebruik via ingress (HA regelt auth). Zetten als je poort 8000 opent. |
+| `mqtt_host` | Optioneel. Zet op `core-mosquitto` (met de Mosquitto broker add-on) en de bot verschijnt als apparaat "AI Trade Platform" met 8 sensoren in HA. Leeg = uit. |
+| `mqtt_user/password` | HA-gebruiker voor de broker (of aparte broker-login). |
 
 Dashboard: via het zijbalk-icoon (ingress). De database staat op `/data` en overleeft updates.

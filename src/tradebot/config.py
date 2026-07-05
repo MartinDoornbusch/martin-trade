@@ -24,6 +24,10 @@ class Secrets(BaseSettings):
     mistral_api_key: str = ""
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    mqtt_host: str = ""
+    mqtt_port: int = 1883
+    mqtt_user: str = ""
+    mqtt_password: str = ""
     dashboard_token: str = ""
     database_url: str = "sqlite:///data/tradebot.db"
 
