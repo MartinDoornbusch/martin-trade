@@ -84,5 +84,5 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/tradebot-addon-aarch64:${{ steps.ver.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/tradebot-addon-aarch64:latest
+            ghcr.io/martindoornbusch/tradebot-addon-aarch64:${{ steps.ver.outputs.version }}
+            ghcr.io/martindoornbusch/tradebot-addon-aarch64:latest

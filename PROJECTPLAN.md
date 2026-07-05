@@ -75,3 +75,4 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 |-------|-----------|--------|
 | 2026-07-05 | Initiële bouw fase 1 compleet | pytest suite, backtest dry-run |
 | 2026-07-05 | HA add-on verpakking (HAOS op Pi 5), dashboard ingress-compatibel, CI bouwt add-on image | 30 tests, ruff, YAML-validatie, compile-check |
+| 2026-07-05 | CI-fixes (lowercase GHCR-tags addon-job), fastapi 0.139 / starlette >= 1.3.1 (8 CVE's opgelost) | 30 tests, pip-audit schoon |
