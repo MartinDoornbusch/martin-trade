@@ -11,6 +11,7 @@ from .correlation import correlation_from_closes
 from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, session
 from .decision import FeeModel
 from .exchange import BitvavoClient
+from .scanner import scan
 from .strategy import build_snapshot, evaluate_buy
 
 app = FastAPI(title="AI Trade Platform", docs_url=None, redoc_url=None)
@@ -18,6 +19,8 @@ app = FastAPI(title="AI Trade Platform", docs_url=None, redoc_url=None)
 _feed: BitvavoClient | None = None
 
 DUST_EUR = 1.0  # assets onder deze waarde worden samengevat als 'overig'
+SCANNER_TTL_S = 1800  # scan is duur (ticker/24h + ~40 candle-calls); max 1x per half uur
+_scanner_cache: dict = {"ts": 0.0, "data": None}
 
 
 def get_feed() -> BitvavoClient:
@@ -139,6 +142,25 @@ def advice():
         except Exception as exc:  # noqa: BLE001
             out.append({"market": market, "error": str(exc)[:100]})
     return out
+
+
+@app.get("/api/scanner", dependencies=[Depends(check_token)])
+def scanner(refresh: bool = False):
+    """Screent alle Bitvavo EUR-markten. Advies: toevoegen doe je zelf via de
+    add-on-configuratie; de bot handelt nooit zelf in een gescande markt."""
+    import time as _time
+    now = _time.time()
+    if not refresh and _scanner_cache["data"] is not None \
+            and now - _scanner_cache["ts"] < SCANNER_TTL_S:
+        return _scanner_cache["data"]
+    cfg = get_config()
+    try:
+        results = scan(get_feed(), cfg)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)[:200], "results": [], "cached_at": None}
+    payload = {"results": results, "cached_at": now, "ttl_s": SCANNER_TTL_S, "error": None}
+    _scanner_cache.update(ts=now, data=payload)
+    return payload
 
 
 @app.get("/api/portfolio", dependencies=[Depends(check_token)])
@@ -290,6 +312,7 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 <section><h2>Equity-verloop (paper)</h2><svg id="equity" width="100%" height="80" preserveAspectRatio="none"></svg></section>
 <section><h2>Markten (wat de bot ziet)</h2><table id="markets"></table></section>
 <section><h2>Instap-advies <span class="muted">(watchlist wordt niet door de bot verhandeld)</span></h2><table id="advice"></table></section>
+<section><h2>Scanner — alle Bitvavo-markten <span class="muted">(kandidaten; toevoegen via add-on-config, elk half uur ververst)</span></h2><table id="scanner"></table></section>
 <section><h2>Paper portfolio — open posities</h2><table id="positions"></table></section>
 <section><h2>Echte Bitvavo-balans <span class="muted">(incl. in order; bot handelt hier niet op)</span></h2><table id="balance"></table></section>
 <section><h2>Beslissingen / signalen</h2><table id="signals"></table></section>
@@ -353,6 +376,11 @@ async function load(){
     '<tr><th>tijd</th><th>provider</th><th>markt</th><th>verdict</th><th class="num">conf</th><th>reden</th></tr>' +
     (llm.length ? llm.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.provider}</td><td>${r.market}</td><td>${r.verdict}</td><td class="num">${fmt(r.confidence)}</td><td>${r.reasoning}</td></tr>`).join('')
       : '<tr><td colspan="6" class="muted">nog geen LLM-calls — die volgen zodra een koopsignaal alle mechanische gates passeert</td></tr>');
+  const sc = await q('api/scanner');
+  document.getElementById('scanner').innerHTML = sc.error
+    ? `<tr><td class="muted">fout: ${sc.error}</td></tr>`
+    : ('<tr><th>markt</th><th class="num">24h volume</th><th class="num">spread</th><th class="num">score</th><th>trend</th><th class="num">RSI</th><th class="num">verw. move</th><th class="num">vereist</th><th>status</th></tr>' +
+       sc.results.map(r=>`<tr><td>${r.market}</td><td class="num">€ ${Number(r.volume_eur).toLocaleString('nl-NL')}</td><td class="num">${fmt(r.spread_pct)}%</td><td class="num">${r.score}/${r.score_needed}</td><td class="${r.trend}">${r.trend==='up'?'▲':'▼'}</td><td class="num">${fmt(r.rsi,0)}</td><td class="num ${r.fee_ok?'pos':'neg'}">${fmt(r.expected_move_pct)}%</td><td class="num">${fmt(r.required_pct)}%</td><td class="muted">${r.in_markets?'in markets':(r.in_watchlist?'in watchlist':'nieuw')}</td></tr>`).join(''));
   const eq = await q('api/equity');
   if (eq.length >= 2) {
     const vals = eq.map(e=>e.total_eur), mn = Math.min(...vals), mx = Math.max(...vals);

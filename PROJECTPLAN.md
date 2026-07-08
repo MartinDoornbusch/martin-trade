@@ -58,7 +58,8 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] `live_trader` order/fill-afhandeling → referentie voor fase 3
 - [x] `optimizer` parameter-tuning → herbouwd in v0.6.0 mét train/test-split tegen overfitting
 - [x] `correlation` → herbouwd in v0.5.0 als risk-gate + onderdeel instap-advies
-- [x] Afgewezen: market_scanner, news_feed, sentiment, whale_tracker, DCA, house-money (zie post-mortem)
+- [x] `market_scanner` → herbouwd in v0.7.0, maar advies-only: liquiditeits/spread-filter + score over alle EUR-markten; toevoegen doet de mens, de bot handelt nooit zelf in gescande markten
+- [x] Afgewezen: news_feed, sentiment, whale_tracker, DCA, house-money (zie post-mortem)
 
 ### Fase 2 — Validatie (loopt)
 - [x] API-keys aangemaakt en geconfigureerd (Bitvavo read-only, Groq/Gemini/Mistral, MQTT)
@@ -111,3 +112,4 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 | 2026-07-05 | v0.6.0: candle-paginatie voor lange backtests (>1440), optimizer CLI met 70/30 train/test-split, dashboard: max drawdown, LLM-veto-rate, equity-grafiek | 43 tests (4 nieuw), ruff |
 | 2026-07-05 | v0.6.1: markets en watchlist instelbaar via HA add-on opties (comma-separated, override op config.yaml) | 45 tests (2 nieuw), ruff |
 | 2026-07-08 | v0.6.2: fix Supervisor-update-fout (provenance/SBOM-attestations uit in Docker-builds, "unknown/unknown" manifest brak de pull); schedule- en risk-instellingen als HA-opties met schema-grenzen; strategie-parameters bewust niet | 47 tests (2 nieuw), ruff |
+| 2026-07-08 | v0.7.0: marktscanner over alle Bitvavo EUR-markten (volume ≥ €250k, spread ≤ 0,6%, score + fee-gate incl. werkelijke spread per markt), dashboard-sectie met 30-min cache. Advies-only by design | 52 tests (5 nieuw), ruff |

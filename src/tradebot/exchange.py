@@ -135,6 +135,10 @@ class BitvavoClient(ExchangeAdapter):
         raw = self._request("GET", f"/ticker/price?market={market}")
         return float(raw["price"])
 
+    def get_ticker_24h(self) -> list[dict]:
+        """Alle markten in één call: volume, bid, ask (weight 25)."""
+        return self._request("GET", "/ticker/24h")
+
     # --- authenticated -----------------------------------------------------
     def get_balances(self) -> dict[str, float]:
         raw = self._request("GET", "/balance", auth=True)
