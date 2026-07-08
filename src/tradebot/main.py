@@ -68,12 +68,15 @@ def create_app():
                       args=[cycle, publisher], max_instances=1, coalesce=True,
                       next_run_time=datetime.now(timezone.utc))  # eerste run direct bij start
     scheduler.add_job(snapshot_equity, "interval", hours=6, args=[cycle], id="equity")
+    guard_s = int(cfg.schedule.get("guard_interval_seconds", 60))
+    scheduler.add_job(cycle.check_exits_fast, "interval", seconds=guard_s, id="guard",
+                      max_instances=1, coalesce=True)
 
     @asynccontextmanager
     async def lifespan(_app):
         scheduler.start()
-        log.info("Scheduler started: analysis every %s min, mode=%s",
-                 minutes, secrets.trading_mode)
+        log.info("Scheduler started: analysis every %s min, guard every %ss, mode=%s",
+                 minutes, guard_s, secrets.trading_mode)
         cycle.notify.send("✅ Trade platform gestart (paper mode)")
         yield
         scheduler.shutdown(wait=False)

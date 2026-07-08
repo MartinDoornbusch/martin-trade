@@ -13,6 +13,7 @@ schedule:
   analysis_interval_minutes: 60      # swing: 1x per uur is voldoende
   candle_interval: "4h"              # candles voor analyse
   candle_limit: 200
+  guard_interval_seconds: 60      # SL/TP-bewaking open posities (1 API-call per positie)
 
 strategy:
   ema_fast: 12

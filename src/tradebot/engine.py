@@ -121,6 +121,29 @@ class TradingCycle:
                 log.exception("cycle failed for %s", market)
         return decisions
 
+    def check_exits_fast(self) -> int:
+        """Position guard: alleen prijs vs SL/TP van open posities (elke minuut).
+        Geen indicatoren, geen AI — puur risicobeheersing tussen analysecycli in.
+        Trend-break exits blijven bij de uurcyclus (die hebben candles nodig)."""
+        closed = 0
+        for pos in self.broker.open_positions():
+            try:
+                price = self.feed.get_price(pos.market)
+            except Exception:  # noqa: BLE001 - prijsfout mag de guard niet stoppen
+                log.warning("guard: prijs ophalen mislukt voor %s", pos.market)
+                continue
+            if price <= pos.stop_loss:
+                why = f"guard: stop loss geraakt ({price:.4f} <= {pos.stop_loss:.4f})"
+            elif price >= pos.take_profit:
+                why = f"guard: take profit geraakt ({price:.4f} >= {pos.take_profit:.4f})"
+            else:
+                continue
+            self.broker.sell(pos.market, why)
+            self._log_signal(pos.market, "sell", "executed", 0, why, {})
+            self.notify.send(f"🔴 SELL {pos.market} @ {price:.4f}: {why}")
+            closed += 1
+        return closed
+
     @staticmethod
     def _log_signal(market: str, action: str, decision: str, score: int,
                     reason: str, details: dict) -> None:
