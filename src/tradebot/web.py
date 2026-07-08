@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from .backtest import max_drawdown_pct
@@ -11,6 +12,7 @@ from .correlation import correlation_from_closes
 from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, session
 from .decision import FeeModel
 from .exchange import BitvavoClient
+from .lists import get_lists, modify
 from .scanner import scan
 from .strategy import build_snapshot, evaluate_buy
 
@@ -51,7 +53,7 @@ def markets():
     cfg = get_config()
     feed = get_feed()
     out = []
-    for market in cfg.markets:
+    for market in get_lists(cfg)["markets"]:
         try:
             candles = feed.get_candles(market, cfg.schedule["candle_interval"], 80)
             snap = build_snapshot(market, candles, cfg.strategy)
@@ -84,7 +86,8 @@ def advice():
     lookback = int(cfg.risk.get("correlation_lookback", 60))
     max_corr = float(cfg.risk.get("max_correlation", 0.85))
     interval = cfg.schedule["candle_interval"]
-    all_markets = list(dict.fromkeys(list(cfg.markets) + list(cfg.watchlist)))
+    active = get_lists(cfg)
+    all_markets = list(dict.fromkeys(active["markets"] + active["watchlist"]))
     closes_cache: dict[str, list[float]] = {}
 
     def closes_for(m: str) -> list[float]:
@@ -127,7 +130,7 @@ def advice():
                 label = "afwachten"
             out.append({
                 "market": market,
-                "tradeable": market in cfg.markets,
+                "tradeable": market in active["markets"],
                 "advies": label,
                 "score": cand.score, "score_needed": score_needed,
                 "trend": "up" if trend_up else "down",
@@ -155,12 +158,37 @@ def scanner(refresh: bool = False):
         return _scanner_cache["data"]
     cfg = get_config()
     try:
-        results = scan(get_feed(), cfg)
+        results, stats = scan(get_feed(), cfg)
     except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc)[:200], "results": [], "cached_at": None}
-    payload = {"results": results, "cached_at": now, "ttl_s": SCANNER_TTL_S, "error": None}
+        return {"error": str(exc)[:200], "results": [], "stats": None, "cached_at": None}
+    payload = {"results": results, "stats": stats, "cached_at": now,
+               "ttl_s": SCANNER_TTL_S, "error": None}
     _scanner_cache.update(ts=now, data=payload)
     return payload
+
+
+class ListEdit(BaseModel):
+    list_name: str
+    market: str
+    action: str  # add | remove
+
+
+@app.get("/api/lists", dependencies=[Depends(check_token)])
+def lists_get():
+    return get_lists(get_config())
+
+
+@app.post("/api/lists", dependencies=[Depends(check_token)])
+def lists_edit(edit: ListEdit):
+    cfg = get_config()
+    if edit.action == "add":
+        try:
+            get_feed().get_price(edit.market.strip().upper())
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "message": f"{edit.market} bestaat niet op Bitvavo",
+                    "lists": get_lists(cfg)}
+    ok, message = modify(cfg, edit.list_name, edit.market, edit.action)
+    return {"ok": ok, "message": message, "lists": get_lists(cfg)}
 
 
 @app.get("/api/portfolio", dependencies=[Depends(check_token)])
@@ -305,10 +333,25 @@ h2{font-size:14px;margin:0 0 10px;color:var(--txt)}
 .up{color:#4ade80}.down{color:#f87171}
 section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto}
 .bar{display:inline-block;height:6px;background:#3b82f6;border-radius:3px;vertical-align:middle;margin-right:6px}
+.chip{display:inline-flex;align-items:center;gap:6px;background:#0b1220;border:1px solid var(--line);border-radius:14px;padding:3px 10px;margin:2px 4px 2px 0;font-size:13px}
+.chip button,.rowbtn{background:#26334a;border:0;color:var(--txt);border-radius:6px;padding:1px 7px;font-size:12px;cursor:pointer}
+.chip button:hover,.rowbtn:hover{background:#3b82f6}
+#addmarket{background:#0b1220;border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:5px 8px;width:130px}
+#listmsg{font-size:12px;margin-left:8px}
 </style></head><body>
 <header><h1>AI Trade Platform — paper trading</h1><span id="upd"></span></header>
 <main>
 <div class="cards" id="cards"></div>
+<section><h2>Instellingen — markten</h2>
+<div id="listbox"></div>
+<div style="margin-top:10px">
+  <input id="addmarket" placeholder="bijv. SOL-EUR">
+  <button class="rowbtn" onclick="act('watchlist', document.getElementById('addmarket').value, 'add')">+ watchlist</button>
+  <button class="rowbtn" onclick="act('markets', document.getElementById('addmarket').value, 'add')">+ trading</button>
+  <span id="listmsg" class="muted"></span>
+</div>
+<p class="muted" style="margin-bottom:0">Wijzigingen gelden direct (volgende analysecyclus), geen herstart nodig. Trading max 5 markten (bewust), watchlist max 15. Frequentie, candle-interval, positiegrootte, cooldown en API-keys beheer je in HA: Add-on → Configuratie.</p>
+</section>
 <section><h2>Equity-verloop (paper)</h2><svg id="equity" width="100%" height="80" preserveAspectRatio="none"></svg></section>
 <section><h2>Markten (wat de bot ziet)</h2><table id="markets"></table></section>
 <section><h2>Instap-advies <span class="muted">(watchlist wordt niet door de bot verhandeld)</span></h2><table id="advice"></table></section>
@@ -324,10 +367,29 @@ const T = new URLSearchParams(location.search).get('token') || '';
 const B = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
 const q = p => fetch(B + p + (p.includes('?')?'&':'?') + 'token=' + T).then(r=>r.json());
 const fmt = (n,d=2) => n==null?'—':Number(n).toLocaleString('nl-NL',{minimumFractionDigits:d,maximumFractionDigits:d});
+function renderLists(l){
+  const chip = (m, listName) => `<span class="chip">${m}` +
+    (listName==='watchlist' ? ` <button title="promoveer naar trading" onclick="act('markets','${m}','add')">→ trade</button>` : '') +
+    ((listName==='markets' && l.markets.length<=1) ? '' : ` <button title="verwijder" onclick="act('${listName}','${m}','remove')">✕</button>`) + '</span>';
+  document.getElementById('listbox').innerHTML =
+    `<div><b>Trading</b> (${l.markets.length}/${l.max_markets}): ` + l.markets.map(m=>chip(m,'markets')).join('') + '</div>' +
+    `<div style="margin-top:6px"><b>Watchlist</b> (${l.watchlist.length}/${l.max_watchlist}): ` + (l.watchlist.length? l.watchlist.map(m=>chip(m,'watchlist')).join('') : '<span class="muted">leeg</span>') + '</div>';
+}
+async function act(listName, market, action){
+  if(!market){ return; }
+  const r = await fetch(B + 'api/lists?token=' + T, {method:'POST',
+    headers:{'content-type':'application/json'},
+    body: JSON.stringify({list_name:listName, market:market.trim().toUpperCase(), action:action})}).then(x=>x.json());
+  const msg = document.getElementById('listmsg');
+  msg.textContent = r.message; msg.className = r.ok ? 'pos' : 'neg';
+  renderLists(r.lists);
+  if(r.ok){ document.getElementById('addmarket').value=''; load(); }
+}
 const cls = n => n>=0?'pos':'neg';
 async function load(){
-  const [s, pf, bal, mkts, adv] = await Promise.all([
-    q('api/stats'), q('api/portfolio'), q('api/balance'), q('api/markets'), q('api/advice')]);
+  const [s, pf, bal, mkts, adv, lst] = await Promise.all([
+    q('api/stats'), q('api/portfolio'), q('api/balance'), q('api/markets'), q('api/advice'), q('api/lists')]);
+  renderLists(lst);
   document.getElementById('cards').innerHTML = [
     ['Paper portfolio', '€ '+fmt(pf.total_eur)],
     ['Cash', '€ '+fmt(pf.cash_eur)],
@@ -377,10 +439,11 @@ async function load(){
     (llm.length ? llm.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.provider}</td><td>${r.market}</td><td>${r.verdict}</td><td class="num">${fmt(r.confidence)}</td><td>${r.reasoning}</td></tr>`).join('')
       : '<tr><td colspan="6" class="muted">nog geen LLM-calls — die volgen zodra een koopsignaal alle mechanische gates passeert</td></tr>');
   const sc = await q('api/scanner');
+  const scStats = sc.stats ? `<tr><td colspan="9" class="muted">trechter: ${sc.stats.eur_markets} EUR-markten gescand → ${sc.stats.liquid} door liquiditeitsfilter (volume ≥ € ${Number(sc.stats.min_volume_eur).toLocaleString('nl-NL')}, spread ≤ ${sc.stats.max_spread_pct}%) → ${sc.stats.analyzed} geanalyseerd → top ${sc.stats.shown} getoond</td></tr>` : '';
   document.getElementById('scanner').innerHTML = sc.error
     ? `<tr><td class="muted">fout: ${sc.error}</td></tr>`
-    : ('<tr><th>markt</th><th class="num">24h volume</th><th class="num">spread</th><th class="num">score</th><th>trend</th><th class="num">RSI</th><th class="num">verw. move</th><th class="num">vereist</th><th>status</th></tr>' +
-       sc.results.map(r=>`<tr><td>${r.market}</td><td class="num">€ ${Number(r.volume_eur).toLocaleString('nl-NL')}</td><td class="num">${fmt(r.spread_pct)}%</td><td class="num">${r.score}/${r.score_needed}</td><td class="${r.trend}">${r.trend==='up'?'▲':'▼'}</td><td class="num">${fmt(r.rsi,0)}</td><td class="num ${r.fee_ok?'pos':'neg'}">${fmt(r.expected_move_pct)}%</td><td class="num">${fmt(r.required_pct)}%</td><td class="muted">${r.in_markets?'in markets':(r.in_watchlist?'in watchlist':'nieuw')}</td></tr>`).join(''));
+    : (scStats + '<tr><th>markt</th><th class="num">24h volume</th><th class="num">spread</th><th class="num">score</th><th>trend</th><th class="num">RSI</th><th class="num">verw. move</th><th class="num">vereist</th><th>actie</th></tr>' +
+       sc.results.map(r=>`<tr><td>${r.market}</td><td class="num">€ ${Number(r.volume_eur).toLocaleString('nl-NL')}</td><td class="num">${fmt(r.spread_pct)}%</td><td class="num">${r.score}/${r.score_needed}</td><td class="${r.trend}">${r.trend==='up'?'▲':'▼'}</td><td class="num">${fmt(r.rsi,0)}</td><td class="num ${r.fee_ok?'pos':'neg'}">${fmt(r.expected_move_pct)}%</td><td class="num">${fmt(r.required_pct)}%</td><td>${r.in_markets?'<span class="muted">in trading</span>':(r.in_watchlist?`<span class="muted">in watchlist</span> <button class="rowbtn" onclick="act('markets','${r.market}','add')">→ trade</button>`:`<button class="rowbtn" onclick="act('watchlist','${r.market}','add')">+ watch</button> <button class="rowbtn" onclick="act('markets','${r.market}','add')">+ trade</button>`)}</td></tr>`).join(''));
   const eq = await q('api/equity');
   if (eq.length >= 2) {
     const vals = eq.map(e=>e.total_eur), mn = Math.min(...vals), mx = Math.max(...vals);

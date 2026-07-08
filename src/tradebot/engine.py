@@ -8,6 +8,7 @@ from .correlation import correlation_from_closes
 from .db import SignalRow, session
 from .decision import Decision, DecisionEngine, FeeModel, RiskManager
 from .exchange import BitvavoClient
+from .lists import get_lists
 from .llm import LLMRouter, build_router
 from .notify import Notifier
 from .paper import PaperBroker
@@ -43,8 +44,9 @@ class TradingCycle:
         free = self.broker.cash_eur()
         daily_pnl = self.broker.daily_pnl_eur()
 
+        active_markets = get_lists(self.cfg)["markets"]
         candles_map = {}
-        for market in self.cfg.markets:
+        for market in active_markets:
             try:
                 candles_map[market] = self.feed.get_candles(market, interval, limit)
             except Exception:  # noqa: BLE001

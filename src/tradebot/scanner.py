@@ -44,13 +44,21 @@ def liquidity_filter(tickers: list[dict], min_volume: float = MIN_VOLUME_EUR,
     return out
 
 
-def scan(feed, cfg, top_n: int = 15) -> list[dict]:
-    """Volledige scan: liquiditeitsfilter + indicator-score voor de top-volume markten."""
+def scan(feed, cfg, top_n: int = 20) -> tuple[list[dict], dict]:
+    """Volledige scan. Returns (resultaten, statistieken over de trechter)."""
     fee_model = FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
                          cfg.fees["slippage_buffer_pct"])
     min_profit = float(cfg.decision["min_profit_pct"])
     interval = cfg.schedule["candle_interval"]
-    candidates = liquidity_filter(feed.get_ticker_24h())
+    try:
+        from .lists import get_lists
+        active = get_lists(cfg)
+        in_markets, in_watchlist = set(active["markets"]), set(active["watchlist"])
+    except Exception:  # noqa: BLE001 - buiten app-context (tests/CLI) terugvallen op config
+        in_markets, in_watchlist = set(cfg.markets), set(cfg.watchlist)
+    tickers = feed.get_ticker_24h()
+    eur_total = sum(1 for t in tickers if t.get("market", "").endswith("-EUR"))
+    candidates = liquidity_filter(tickers)
     results = []
     for c in candidates[:CANDLE_TOP]:
         market = c["market"]
@@ -74,11 +82,14 @@ def scan(feed, cfg, top_n: int = 15) -> list[dict]:
                 "expected_move_pct": round(expected, 2),
                 "required_pct": round(required, 2),
                 "fee_ok": expected >= required,
-                "in_markets": market in cfg.markets,
-                "in_watchlist": market in cfg.watchlist,
+                "in_markets": market in in_markets,
+                "in_watchlist": market in in_watchlist,
                 "reasons": cand.reasons,
             })
         except Exception as exc:  # noqa: BLE001 - één markt mag de scan niet breken
             log.debug("scanner sloeg %s over: %s", market, exc)
     results.sort(key=lambda r: (-r["score"], -r["expected_move_pct"]))
-    return results[:top_n]
+    stats = {"eur_markets": eur_total, "liquid": len(candidates),
+             "analyzed": min(len(candidates), CANDLE_TOP), "shown": min(len(results), top_n),
+             "min_volume_eur": MIN_VOLUME_EUR, "max_spread_pct": MAX_SPREAD_PCT}
+    return results[:top_n], stats

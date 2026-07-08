@@ -24,8 +24,8 @@ Fee-bewust AI swing-tradingplatform (Bitvavo, paper trading). Volledige document
 | Optie | Uitleg |
 |---|---|
 | `trading_mode` | `paper` (default). `live` is vergrendeld tot fase 2 is afgerond. |
-| `markets` | Comma-separated, bijv. `BTC-EUR,ETH-EUR`. Hierin handelt de bot (paper). Houd deze lijst kort; veel alt-markten was een verliesoorzaak van de oude bot. |
-| `watchlist` | Comma-separated. Alleen analyse/instap-advies op het dashboard, de bot handelt hier nooit. Vrij uit te breiden. |
+| `markets` | Startwaarde; sinds v0.8.0 beheer je de lijsten in het dashboard zelf (sectie "Instellingen — markten"). Zodra je daar iets wijzigt, geldt de GUI-lijst en niet meer deze optie. |
+| `watchlist` | Zie `markets`: startwaarde, GUI-beheer heeft voorrang. |
 | `analysis_interval_minutes` | Hoe vaak de bot analyseert (15-1440, default 60). Vaker = meer API/LLM-verbruik, niet meer rendement. |
 | `candle_interval` | Candle-granulariteit voor de analyse (1h t/m 1d, default 4h). Korter = meer signalen én meer fee-druk. |
 | `max_position_pct` | Max % van portfolio per positie (5-50, default 25). |
