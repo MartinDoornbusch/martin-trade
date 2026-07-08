@@ -12,6 +12,7 @@ from .correlation import correlation_from_closes
 from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, session
 from .decision import FeeModel
 from .exchange import BitvavoClient
+from .indicators import ema
 from .lists import get_lists, modify
 from .scanner import scan
 from .strategy import build_snapshot, evaluate_buy
@@ -191,6 +192,37 @@ def lists_edit(edit: ListEdit):
     return {"ok": ok, "message": message, "lists": get_lists(cfg)}
 
 
+def build_chart_payload(market: str, candles, cfg, position=None) -> dict:
+    """Puur en testbaar: koers + EMA-reeksen + positieniveaus voor de grafiek."""
+    closes = [c.close for c in candles]
+    ef = ema(closes, int(cfg.strategy["ema_fast"]))
+    es = ema(closes, int(cfg.strategy["ema_slow"]))
+    return {
+        "market": market,
+        "interval": cfg.schedule["candle_interval"],
+        "ts": [c.ts for c in candles],
+        "close": [round(v, 8) for v in closes],
+        "ema_fast": [round(float(v), 8) for v in ef],
+        "ema_slow": [round(float(v), 8) for v in es],
+        "position": {"entry": position.entry_price, "stop_loss": position.stop_loss,
+                     "take_profit": position.take_profit} if position else None,
+    }
+
+
+@app.get("/api/chart", dependencies=[Depends(check_token)])
+def chart(market: str):
+    cfg = get_config()
+    market = market.strip().upper()
+    active = get_lists(cfg)
+    if market not in active["markets"] + active["watchlist"]:
+        raise HTTPException(status_code=400, detail="markt niet in markets/watchlist")
+    candles = get_feed().get_candles(market, cfg.schedule["candle_interval"], 140)
+    with session() as s:
+        pos = s.execute(select(PositionRow).where(PositionRow.market == market)
+                        ).scalar_one_or_none()
+    return build_chart_payload(market, candles, cfg, pos)
+
+
 @app.get("/api/portfolio", dependencies=[Depends(check_token)])
 def portfolio():
     """Paper-portfolio: cash + open posities tegen actuele prijzen."""
@@ -336,7 +368,8 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 .chip{display:inline-flex;align-items:center;gap:6px;background:#0b1220;border:1px solid var(--line);border-radius:14px;padding:3px 10px;margin:2px 4px 2px 0;font-size:13px}
 .chip button,.rowbtn{background:#26334a;border:0;color:var(--txt);border-radius:6px;padding:1px 7px;font-size:12px;cursor:pointer}
 .chip button:hover,.rowbtn:hover{background:#3b82f6}
-#addmarket{background:#0b1220;border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:5px 8px;width:130px}
+#addmarket,#chartsel{background:#0b1220;border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:5px 8px}
+#addmarket{width:130px}
 #listmsg{font-size:12px;margin-left:8px}
 </style></head><body>
 <header><h1>AI Trade Platform — paper trading</h1><span id="upd"></span></header>
@@ -354,6 +387,7 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 </section>
 <section><h2>Equity-verloop (paper)</h2><svg id="equity" width="100%" height="80" preserveAspectRatio="none"></svg></section>
 <section><h2>Markten (wat de bot ziet)</h2><table id="markets"></table></section>
+<section><h2>Grafiek <select id="chartsel" onchange="loadChart(this.value)"></select> <span class="muted" id="chartinfo"></span></h2><svg id="chart" width="100%" height="260" preserveAspectRatio="none"></svg></section>
 <section><h2>Instap-advies <span class="muted">(watchlist wordt niet door de bot verhandeld)</span></h2><table id="advice"></table></section>
 <section><h2>Scanner — alle Bitvavo-markten <span class="muted">(kandidaten; toevoegen via add-on-config, elk half uur ververst)</span></h2><table id="scanner"></table></section>
 <section><h2>Paper portfolio — open posities</h2><table id="positions"></table></section>
@@ -361,13 +395,62 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 <section><h2>Beslissingen / signalen</h2><table id="signals"></table></section>
 <section><h2>Trades (P&amp;L na fees)</h2><table id="trades"></table></section>
 <section><h2>LLM second opinions</h2><table id="llm"></table></section>
+<section><details><summary style="cursor:pointer;font-size:14px"><b>Uitleg van de begrippen</b></summary>
+<dl style="font-size:13px;line-height:1.5">
+<dt><b>Candle (4h)</b></dt><dd>Eén blokje koershistorie: open-, hoogste, laagste en slotkoers over 4 uur. Alle analyse draait op deze candles.</dd>
+<dt><b>RSI (14)</b></dt><dd>Relative Strength Index, 0-100: meet hoe hard de koers recent steeg of daalde. Onder ~30 = oversold, boven ~70 = overbought. De bot koopt bij voorkeur in de herstelzone (35-45): niet meer in vrije val, nog niet duur.</dd>
+<dt><b>EMA &amp; EMA-gap</b></dt><dd>Exponential Moving Average: voortschrijdend koersgemiddelde dat recente candles zwaarder weegt. De bot vergelijkt een snelle (12 candles) met een trage (26). Snel boven traag = uptrend. De EMA-gap is dat verschil in %.</dd>
+<dt><b>MACD-hist</b></dt><dd>Momentum-meter: verschil tussen de MACD-lijn en zijn signaallijn. Omslag van negatief naar positief = vers opwaarts momentum (telt zwaar in de score). De absolute waarde schaalt met de koers, vandaar grote getallen bij BTC.</dd>
+<dt><b>ATR (14)</b></dt><dd>Average True Range: hoeveel de koers gemiddeld per candle beweegt. Hierop worden SL en TP gezet: rustige markt = krappe niveaus, wilde markt = ruime.</dd>
+<dt><b>Bollinger Bands</b></dt><dd>Banden op ±2 standaarddeviaties rond het 20-candle gemiddelde. Koers bij de onderband = relatief laag t.o.v. de eigen recente beweging.</dd>
+<dt><b>Score</b></dt><dd>Aantal bevestigende koopcondities tegelijk (uptrend, RSI-herstelzone, MACD-omslag, koers bij onderband). Pas bij 3+ ontstaat een kandidaat-signaal.</dd>
+<dt><b>SL (stop loss)</b></dt><dd>Mechanische verkoop bij entry − 2×ATR: begrenst het verlies per trade. Geen AI-inspraak.</dd>
+<dt><b>TP (take profit)</b></dt><dd>Mechanische verkoop bij entry + 4×ATR (2× de stop-afstand, reward/risk 2:1).</dd>
+<dt><b>Verw. move / vereist</b></dt><dd>Verwachte gunstige beweging tot de TP (ATR-gebaseerd) versus het minimum: round-trip fees (0,50%) + spread/slippage + minimale winst (0,50%). Alleen kopen als verwacht &gt; vereist: de fee-gate, dé les uit de vorige bot.</dd>
+<dt><b>Spread</b></dt><dd>Verschil tussen bied- en laatprijs; onzichtbare kost bovenop de fees. Bij kleine coins vaak groter dan de fee zelf, daarom telt de scanner hem mee in "vereist".</dd>
+<dt><b>Cooldown</b></dt><dd>Wachttijd per markt na een trade (12u): voorkomt fee-vretend heen-en-weer handelen.</dd>
+<dt><b>Correlatie-gate</b></dt><dd>Geen tweede positie in een markt die vrijwel gelijk beweegt met een open positie (correlatie &gt; 0,85): twee keer hetzelfde risico is geen spreiding.</dd>
+<dt><b>Win-rate / Netto P&amp;L / Max drawdown</b></dt><dd>Percentage winstgevende gesloten trades; totaalresultaat ná fees; grootste terugval van piek naar dal. De fase 2 go/no-go kijkt naar alle drie.</dd>
+<dt><b>LLM veto-rate</b></dt><dd>Hoe vaak de AI-second-opinion een kandidaat-koop blokkeerde. De AI mag alleen "nee" zeggen tegen een signaal dat alle mechanische gates al doorstond, nooit zelf kopen.</dd>
+</dl></details></section>
 </main>
 <script>
 const T = new URLSearchParams(location.search).get('token') || '';
 const B = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
 const q = p => fetch(B + p + (p.includes('?')?'&':'?') + 'token=' + T).then(r=>r.json());
 const fmt = (n,d=2) => n==null?'—':Number(n).toLocaleString('nl-NL',{minimumFractionDigits:d,maximumFractionDigits:d});
+let chartMarket = null;
+async function loadChart(market){
+  chartMarket = market;
+  const d = await q('api/chart?market=' + market);
+  const svg = document.getElementById('chart');
+  const w = svg.clientWidth || 900, h = 260, padL = 64, padR = 10, padY = 14;
+  const series = [d.close, d.ema_fast, d.ema_slow];
+  let lo = Math.min(...series.map(a=>Math.min(...a))), hi = Math.max(...series.map(a=>Math.max(...a)));
+  if (d.position){ lo = Math.min(lo, d.position.stop_loss); hi = Math.max(hi, d.position.take_profit); }
+  const span = (hi-lo)||1;
+  const X = i => padL + i/(d.close.length-1)*(w-padL-padR);
+  const Y = v => padY + (1-(v-lo)/span)*(h-2*padY);
+  const line = (arr,color,width,dash='') => `<polyline points="${arr.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="${width}" ${dash?`stroke-dasharray="${dash}"`:''}/>`;
+  const hline = (v,color,label) => `<line x1="${padL}" y1="${Y(v).toFixed(1)}" x2="${w-padR}" y2="${Y(v).toFixed(1)}" stroke="${color}" stroke-dasharray="5,4"/><text x="${w-padR-4}" y="${(Y(v)-4).toFixed(1)}" fill="${color}" font-size="11" text-anchor="end">${label} ${fmt(v)}</text>`;
+  let out = `<text x="4" y="${Y(hi)+10}" fill="#8ea0b8" font-size="11">${fmt(hi)}</text>` +
+            `<text x="4" y="${Y(lo)}" fill="#8ea0b8" font-size="11">${fmt(lo)}</text>` +
+            line(d.ema_slow, '#f59e0b', 1) + line(d.ema_fast, '#22d3ee', 1) + line(d.close, '#3b82f6', 2);
+  if (d.position){
+    out += hline(d.position.stop_loss, '#f87171', 'SL') + hline(d.position.take_profit, '#4ade80', 'TP') + hline(d.position.entry, '#8ea0b8', 'entry');
+  }
+  svg.innerHTML = out;
+  const from = new Date(d.ts[0]).toLocaleDateString('nl-NL');
+  document.getElementById('chartinfo').textContent = `${d.close.length} candles (${d.interval}) sinds ${from} — blauw: koers, cyaan: EMA-snel, oranje: EMA-traag`;
+}
+function fillChartSel(l){
+  const sel = document.getElementById('chartsel');
+  const all = [...l.markets, ...l.watchlist];
+  sel.innerHTML = all.map(m=>`<option value="${m}" ${m===chartMarket?'selected':''}>${m}</option>`).join('');
+  if (!chartMarket && all.length) loadChart(all[0]);
+}
 function renderLists(l){
+  fillChartSel(l);
   const chip = (m, listName) => `<span class="chip">${m}` +
     (listName==='watchlist' ? ` <button title="promoveer naar trading" onclick="act('markets','${m}','add')">→ trade</button>` : '') +
     ((listName==='markets' && l.markets.length<=1) ? '' : ` <button title="verwijder" onclick="act('${listName}','${m}','remove')">✕</button>`) + '</span>';
@@ -401,7 +484,7 @@ async function load(){
     ['LLM veto-rate', s.llm_veto_rate_pct==null?'—':s.llm_veto_rate_pct+'% ('+s.llm_calls+')'],
   ].map(([k,v])=>`<div class="card"><span>${k}</span><b>${v}</b></div>`).join('');
   document.getElementById('markets').innerHTML =
-    '<tr><th>markt</th><th class="num">koers</th><th class="num">24h</th><th class="num">RSI</th><th>trend</th><th class="num">EMA-gap</th><th class="num">MACD-hist</th><th class="num">ATR</th></tr>' +
+    '<tr><th>markt</th><th class="num">koers</th><th class="num" title="koersverandering laatste 24 uur">24h</th><th class="num" title="momentum 0-100: onder 30 oversold, boven 70 overbought; koopzone 35-45">RSI</th><th title="EMA-snel boven EMA-traag = uptrend">trend</th><th class="num" title="verschil snelle en trage EMA in procenten; groter = sterkere trend">EMA-gap</th><th class="num" title="momentum-omslag: van negatief naar positief = koopconditie">MACD-hist</th><th class="num" title="gemiddelde beweging per candle; bepaalt SL/TP-afstand">ATR</th></tr>' +
     mkts.map(m=> m.error
       ? `<tr><td>${m.market}</td><td colspan="7" class="muted">${m.error}</td></tr>`
       : `<tr><td>${m.market}</td><td class="num">€ ${fmt(m.price)}</td><td class="num ${cls(m.change_24h_pct)}">${fmt(m.change_24h_pct,1)}%</td><td class="num">${fmt(m.rsi,0)}</td><td class="${m.trend}">${m.trend==='up'?'▲ up':'▼ down'}</td><td class="num">${fmt(m.ema_gap_pct)}%</td><td class="num ${cls(m.macd_hist)}">${fmt(m.macd_hist,4)}</td><td class="num">${fmt(m.atr_pct,1)}%</td></tr>`).join('');
