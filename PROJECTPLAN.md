@@ -84,6 +84,10 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] `ExchangeAdapter` implementatie voor gekozen broker
 - [ ] Markturen-logica (crypto is 24/7, aandelen niet)
 
+## Bekende beperking: update-knop bij rode CI
+
+HA leest de add-on versie uit git (main), maar het image bestaat pas na een groene CI-run. Bij een rode run biedt HA dus tijdelijk een update aan die faalt met "unknown error" — dit is de quality gate die uitrol van kapotte code blokkeert, niet een defect. Herstel: fix pushen, groene run afwachten, opnieuw updaten. Structurele oplossing (CI promoot pas na image-push naar een `stable`-branch waar HA naar wijst) is bewust uitgesteld tot na fase 2: wisselen van repository-URL betekent herinstallatie van de add-on en verlies van de paper-historie in /data.
+
 ## Post-mortem oude bot (Claude-project repo, -15% kapitaal)
 
 Analyse van de vorige bot (272 commits, live gedraaid). Fees werden geboekt in P&L maar nergens als beslisdrempel gebruikt. Oorzaken van het verlies en de tegenmaatregel in dit platform:
