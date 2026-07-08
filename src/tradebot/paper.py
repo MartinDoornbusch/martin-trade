@@ -51,7 +51,7 @@ class PaperBroker:
 
     def open_positions(self) -> list[Position]:
         with session() as s:
-            rows = s.execute(select(PositionRow)).scalars().all()
+            rows = s.execute(select(PositionRow).where(PositionRow.mode == "paper")).scalars().all()
         return [Position(r.market, r.amount, r.entry_price, r.stop_loss,
                          r.take_profit, r.opened_at, r.fees_paid_eur) for r in rows]
 
@@ -89,7 +89,7 @@ class PaperBroker:
                 raise ValueError(f"insufficient paper cash: {cash:.2f} < {amount_quote_eur:.2f}")
             self._set_cash(s, cash - amount_quote_eur)
             self._add_fees(s, fee)
-            s.add(PositionRow(market=market, amount=amount, entry_price=price,
+            s.add(PositionRow(market=market, mode="paper", amount=amount, entry_price=price,
                               stop_loss=stop_loss, take_profit=take_profit, fees_paid_eur=fee))
             s.add(TradeRow(market=market, side="buy", amount=amount, price=price,
                            fee_eur=fee, mode="paper", reason=reason[:500]))
@@ -100,7 +100,8 @@ class PaperBroker:
     def sell(self, market: str, reason: str) -> OrderResult:
         price = self.feed.get_price(market)
         with session() as s:
-            pos = s.execute(select(PositionRow).where(PositionRow.market == market)
+            pos = s.execute(select(PositionRow).where(PositionRow.market == market,
+                                          PositionRow.mode == "paper")
                             ).scalar_one_or_none()
             if pos is None:
                 raise ValueError(f"no open paper position in {market}")

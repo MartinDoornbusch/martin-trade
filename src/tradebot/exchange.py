@@ -139,6 +139,23 @@ class BitvavoClient(ExchangeAdapter):
         """Alle markten in één call: volume, bid, ask (weight 25)."""
         return self._request("GET", "/ticker/24h")
 
+    def get_book_ticker(self, market: str) -> dict:
+        """Beste bied/laat: {'bid': str, 'ask': str, ...}."""
+        return self._request("GET", f"/ticker/book?market={market}")
+
+    def place_limit_order(self, market: str, side: str, amount: str, price: str,
+                          post_only: bool = True) -> dict:
+        body = {"market": market, "side": side, "orderType": "limit",
+                "amount": amount, "price": price, "postOnly": post_only,
+                "operatorId": OPERATOR_ID}
+        return self._request("POST", "/order", body=body, auth=True)
+
+    def get_order(self, market: str, order_id: str) -> dict:
+        return self._request("GET", f"/order?market={market}&orderId={order_id}", auth=True)
+
+    def cancel_order(self, market: str, order_id: str) -> dict:
+        return self._request("DELETE", f"/order?market={market}&orderId={order_id}", auth=True)
+
     # --- authenticated -----------------------------------------------------
     def get_balances(self) -> dict[str, float]:
         raw = self._request("GET", "/balance", auth=True)

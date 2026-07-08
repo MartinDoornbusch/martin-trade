@@ -34,6 +34,7 @@ class PositionRow(Base):
     __tablename__ = "positions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     market: Mapped[str] = mapped_column(String(20), unique=True)
+    mode: Mapped[str] = mapped_column(String(6), default="paper")
     amount: Mapped[float] = mapped_column(Float)
     entry_price: Mapped[float] = mapped_column(Float)
     stop_loss: Mapped[float] = mapped_column(Float)
@@ -93,6 +94,14 @@ def init_db(database_url: str) -> None:
     _engine = create_engine(database_url, future=True)
     _Session = sessionmaker(_engine, expire_on_commit=False)
     Base.metadata.create_all(_engine)
+    # Mini-migratie: mode-kolom op bestaande sqlite-databases (create_all voegt geen kolommen toe)
+    if _engine.dialect.name == "sqlite":
+        with _engine.connect() as conn:
+            cols = [r[1] for r in conn.exec_driver_sql("PRAGMA table_info(positions)")]
+            if "mode" not in cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE positions ADD COLUMN mode VARCHAR(6) DEFAULT 'paper'")
+                conn.commit()
 
 
 def session() -> Session:

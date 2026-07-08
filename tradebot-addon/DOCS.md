@@ -31,6 +31,8 @@ Fee-bewust AI swing-tradingplatform (Bitvavo, paper trading). Volledige document
 | `max_position_pct` | Max % van portfolio per positie (5-50, default 25). |
 | `max_open_positions` | Max gelijktijdige posities (1-5, default 3). |
 | `cooldown_hours` | Wachttijd per markt na een trade (1-72, default 12). Verlagen vergroot het flip-flop/fee-risico. |
+| `live_confirm` | Fase 3. Leeg = live onmogelijk. Alleen met de exacte zin "IK BEGRIJP DAT DIT ECHT GELD IS" start de bot in live mode. Niet invullen vóór de fase 2 go/no-go. |
+| `live_max_capital_eur` | Fase 3. Hard plafond op live-inleg (10-1000, default 100), los van je rekeningbalans. |
 
 Strategie-parameters (EMA-periodes, signaalscore, fee-gate drempels, LLM-confidence) zijn bewust géén opties: die wijzig je op basis van optimizer/backtest-bewijs via een commit, niet op gevoel via de UI.
 | `bitvavo_api_key/secret` | Voor paper volstaat een key zonder trade-rechten. |

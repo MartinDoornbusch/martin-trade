@@ -8,7 +8,8 @@ from .correlation import correlation_from_closes
 from .db import SignalRow, session
 from .decision import Decision, DecisionEngine, FeeModel, RiskManager
 from .exchange import BitvavoClient
-from .lists import get_lists
+from .lists import get_lists, is_paused
+from .live import LiveBroker
 from .llm import LLMRouter, build_router
 from .notify import Notifier
 from .paper import PaperBroker
@@ -16,20 +17,30 @@ from .strategy import build_snapshot, check_exit, evaluate_buy
 
 log = logging.getLogger(__name__)
 
+LIVE_CONFIRM_PHRASE = "IK BEGRIJP DAT DIT ECHT GELD IS"
+
 
 class TradingCycle:
     def __init__(self, cfg: AppConfig, secrets: Secrets):
         self.cfg = cfg
         self.secrets = secrets
-        if secrets.trading_mode == "live":
-            raise NotImplementedError(
-                "Live mode is intentionally locked until phase 2 validation passes. "
-                "See PROJECTPLAN.md — go/no-go criteria first.")
         self.feed = BitvavoClient(secrets.bitvavo_api_key, secrets.bitvavo_api_secret,
                                   cfg.fees["maker_pct"], cfg.fees["taker_pct"])
         self.fee_model = FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
                                   cfg.fees["slippage_buffer_pct"])
-        self.broker = PaperBroker(self.feed, self.fee_model, cfg.risk["paper_start_eur"])
+        if secrets.trading_mode == "live":
+            # Dubbel slot: mode=live is niet genoeg, de bevestigingszin moet exact kloppen.
+            if secrets.live_confirm.strip() != LIVE_CONFIRM_PHRASE:
+                raise RuntimeError(
+                    "Live mode geweigerd: zet de add-on optie live_confirm exact op "
+                    f"'{LIVE_CONFIRM_PHRASE}'. Zie PROJECTPLAN fase 2 go/no-go criteria "
+                    "voordat je dit doet.")
+            self.broker = LiveBroker(self.feed, self.fee_model,
+                                     secrets.live_max_capital_eur)
+            log.warning("LIVE MODE ACTIEF — exposure-plafond %.2f EUR",
+                        secrets.live_max_capital_eur)
+        else:
+            self.broker = PaperBroker(self.feed, self.fee_model, cfg.risk["paper_start_eur"])
         self.decider = DecisionEngine(self.fee_model, RiskManager(cfg.risk), cfg.decision)
         self.llm: LLMRouter = build_router(cfg.llm_providers, secrets,
                                            int(cfg.llm.get("timeout_seconds", 20)))
@@ -73,6 +84,11 @@ class TradingCycle:
                 decision = self.decider.evaluate_buy(candidate, positions,
                                                      self.broker.last_trade_at(market),
                                                      portfolio, free, daily_pnl)
+
+                # 3a) Kill-switch: gebruiker heeft kopen gepauzeerd (exits lopen door).
+                if decision.action == "buy" and is_paused():
+                    decision = Decision(market, "skip",
+                                        "kill-switch: kopen gepauzeerd door gebruiker")
 
                 # 3) Correlatie-gate: geen 2e positie in een sterk gecorreleerde markt.
                 if decision.action == "buy" and positions:

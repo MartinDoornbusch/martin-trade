@@ -28,6 +28,8 @@ class Secrets(BaseSettings):
     mqtt_port: int = 1883
     mqtt_user: str = ""
     mqtt_password: str = ""
+    live_confirm: str = ""
+    live_max_capital_eur: float = 100.0
     dashboard_token: str = ""
     database_url: str = "sqlite:///data/tradebot.db"
 

@@ -71,11 +71,13 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] LLM-veto-waarde beoordelen: veto-rate + steekproef veto-redenen vs. koersverloop erna
 - [ ] Go/no-go criteria vastleggen (voorstel: win-rate > 45% én netto positief na fees over 100+ trades)
 
-### Fase 3 — Live (pas na fase 2)
-- [ ] Bitvavo API-key met trade-rechten (géén withdrawal-rechten, IP-whitelist aan)
-- [ ] `TRADING_MODE=live` met klein kapitaal (max 10% van portfolio)
-- [ ] Maker (limit post-only) orders i.p.v. market orders
-- [ ] Kill-switch en daily loss cap monitoring
+### Fase 3 — Live (code gebouwd in v0.11.0, activering pas na fase 2 go)
+- [x] LiveBroker: maker (limit post-only) entries met fill-polling en timeout-cancel; market exits (kapitaalbescherming boven fee-optimalisatie)
+- [x] Hard exposure-plafond (`live_max_capital_eur`, default €100) los van de rekeningbalans
+- [x] Dubbel slot: `trading_mode=live` én letterlijke bevestigingszin "IK BEGRIJP DAT DIT ECHT GELD IS" in `live_confirm`, anders weigert de bot te starten
+- [x] Kill-switch: pauzeknop in dashboard stopt alle aankopen (paper én live); exits en guard lopen altijd door
+- [x] Mode-scheiding: posities/trades/stats gelabeld paper|live, historie vermengt nooit
+- [ ] ACTIVERING (handmatig, pas na fase 2 go): Bitvavo API-key met trade-rechten (géén withdrawal, IP-whitelist), `trading_mode=live` + bevestigingszin invullen, klein kapitaal
 
 ### Fase 4 — Aandelen
 - [ ] Brokerkeuze definitief: Alpaca (US-only, beste API, $0 commissie) vs IBKR (breder, complexere API)
@@ -116,3 +118,4 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 | 2026-07-08 | v0.8.0: markten beheren vanuit de GUI (instellingen-sectie met chips, add/remove/promote-knoppen in scanner, DB-override boven HA-opties, direct actief zonder herstart). Vangrails: max 5 trading / 15 watchlist, min 1 trading, marktvalidatie tegen Bitvavo. Scanner toont trechter-statistieken (gescand → liquide → geanalyseerd → getoond) | 58 tests (6 nieuw), ruff |
 | 2026-07-08 | v0.9.0: grafiek per markt (koers + EMA-snel/traag + SL/TP/entry-lijnen bij open positie, selector over markets+watchlist), uitklapbare begrippenuitleg (NL) en tooltips op kolomkoppen | 61 tests (3 nieuw), ruff |
 | 2026-07-08 | v0.10.0: position guard — SL/TP-bewaking van open posities elke 60s (alleen prijscheck, geen indicatoren/AI). Dicht het gat dat exits alleen bij de uurcyclus werden gecheckt. Hype-detectie/news/sentiment opnieuw beoordeeld en afgewezen (post-mortem); regime-filter genoteerd als fase 3-kandidaat na backtest-bewijs | 64 tests (3 nieuw), ruff |
+| 2026-07-08 | v0.11.0: fase 3-fundament — LiveBroker (maker-entries, market-exits, exposure-cap), interlock met bevestigingszin, kill-switch in GUI, mode-scheiding paper/live incl. sqlite-migratie | 74 tests (10 nieuw), ruff |

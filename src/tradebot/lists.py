@@ -85,3 +85,14 @@ def modify(cfg, list_name: str, market: str, action: str) -> tuple[bool, str]:
     _set_kv(MARKETS_KEY, ",".join(markets))
     _set_kv(WATCHLIST_KEY, ",".join(watchlist))
     return True, f"{market} {'toegevoegd aan' if action == 'add' else 'verwijderd uit'} {list_name}"
+
+
+PAUSED_KEY = "trading_paused"
+
+
+def is_paused() -> bool:
+    return _get_kv(PAUSED_KEY) == "1"
+
+
+def set_paused(paused: bool) -> None:
+    _set_kv(PAUSED_KEY, "1" if paused else "0")

@@ -13,7 +13,7 @@ from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, 
 from .decision import FeeModel
 from .exchange import BitvavoClient
 from .indicators import ema
-from .lists import get_lists, modify
+from .lists import get_lists, is_paused, modify, set_paused
 from .scanner import scan
 from .strategy import build_snapshot, evaluate_buy
 
@@ -223,6 +223,23 @@ def chart(market: str):
     return build_chart_payload(market, candles, cfg, pos)
 
 
+@app.get("/api/mode", dependencies=[Depends(check_token)])
+def mode():
+    secrets = get_secrets()
+    return {"mode": secrets.trading_mode, "paused": is_paused(),
+            "live_max_capital_eur": secrets.live_max_capital_eur}
+
+
+class PauseEdit(BaseModel):
+    paused: bool
+
+
+@app.post("/api/pause", dependencies=[Depends(check_token)])
+def pause(edit: PauseEdit):
+    set_paused(edit.paused)
+    return {"ok": True, "paused": is_paused()}
+
+
 @app.get("/api/portfolio", dependencies=[Depends(check_token)])
 def portfolio():
     """Paper-portfolio: cash + open posities tegen actuele prijzen."""
@@ -291,7 +308,8 @@ def real_balance():
 @app.get("/api/trades", dependencies=[Depends(check_token)])
 def trades(limit: int = 100):
     with session() as s:
-        rows = s.execute(select(TradeRow).order_by(TradeRow.ts.desc()).limit(limit)).scalars().all()
+        rows = s.execute(select(TradeRow).where(TradeRow.mode == get_secrets().trading_mode)
+                         .order_by(TradeRow.ts.desc()).limit(limit)).scalars().all()
     return [{"ts": r.ts.isoformat(), "market": r.market, "side": r.side, "amount": r.amount,
              "price": r.price, "fee_eur": r.fee_eur, "pnl_eur": r.pnl_eur,
              "reason": r.reason} for r in rows]
@@ -324,9 +342,12 @@ def equity(limit: int = 365):
 
 @app.get("/api/stats", dependencies=[Depends(check_token)])
 def stats():
+    current_mode = get_secrets().trading_mode
     with session() as s:
-        sells = s.execute(select(TradeRow).where(TradeRow.side == "sell")).scalars().all()
-        fees = sum(r.fee_eur for r in s.execute(select(TradeRow)).scalars().all())
+        sells = s.execute(select(TradeRow).where(TradeRow.side == "sell",
+                                                 TradeRow.mode == current_mode)).scalars().all()
+        fees = sum(r.fee_eur for r in s.execute(
+            select(TradeRow).where(TradeRow.mode == current_mode)).scalars().all())
     wins = [t for t in sells if t.pnl_eur > 0]
     with session() as s:
         eq = [r.total_eur for r in s.execute(
@@ -372,7 +393,7 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 #addmarket{width:130px}
 #listmsg{font-size:12px;margin-left:8px}
 </style></head><body>
-<header><h1>AI Trade Platform — paper trading</h1><span id="upd"></span></header>
+<header><h1>AI Trade Platform <span id="modebadge" class="chip"></span></h1><span id="upd"></span></header>
 <main>
 <div class="cards" id="cards"></div>
 <section><h2>Instellingen — markten</h2>
@@ -382,6 +403,7 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
   <button class="rowbtn" onclick="act('watchlist', document.getElementById('addmarket').value, 'add')">+ watchlist</button>
   <button class="rowbtn" onclick="act('markets', document.getElementById('addmarket').value, 'add')">+ trading</button>
   <span id="listmsg" class="muted"></span>
+  <button id="pausebtn" class="rowbtn" style="float:right" onclick="togglePause()"></button>
 </div>
 <p class="muted" style="margin-bottom:0">Wijzigingen gelden direct (volgende analysecyclus), geen herstart nodig. Trading max 5 markten (bewust), watchlist max 15. Frequentie, candle-interval, positiegrootte, cooldown en API-keys beheer je in HA: Add-on → Configuratie.</p>
 </section>
@@ -419,6 +441,20 @@ const T = new URLSearchParams(location.search).get('token') || '';
 const B = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
 const q = p => fetch(B + p + (p.includes('?')?'&':'?') + 'token=' + T).then(r=>r.json());
 const fmt = (n,d=2) => n==null?'—':Number(n).toLocaleString('nl-NL',{minimumFractionDigits:d,maximumFractionDigits:d});
+let botPaused = false;
+async function togglePause(){
+  const r = await fetch(B + 'api/pause?token=' + T, {method:'POST',
+    headers:{'content-type':'application/json'}, body: JSON.stringify({paused: !botPaused})}).then(x=>x.json());
+  botPaused = r.paused; renderMode();
+}
+let botMode = 'paper';
+function renderMode(){
+  const b = document.getElementById('modebadge');
+  b.textContent = botMode + (botPaused ? ' — GEPAUZEERD' : '');
+  b.style.color = botMode === 'live' ? '#f87171' : (botPaused ? '#f59e0b' : '#4ade80');
+  const btn = document.getElementById('pausebtn');
+  btn.textContent = botPaused ? '▶ kopen hervatten' : '⏸ kopen pauzeren (kill-switch)';
+}
 let chartMarket = null;
 async function loadChart(market){
   chartMarket = market;
@@ -470,8 +506,9 @@ async function act(listName, market, action){
 }
 const cls = n => n>=0?'pos':'neg';
 async function load(){
-  const [s, pf, bal, mkts, adv, lst] = await Promise.all([
-    q('api/stats'), q('api/portfolio'), q('api/balance'), q('api/markets'), q('api/advice'), q('api/lists')]);
+  const [s, pf, bal, mkts, adv, lst, md] = await Promise.all([
+    q('api/stats'), q('api/portfolio'), q('api/balance'), q('api/markets'), q('api/advice'), q('api/lists'), q('api/mode')]);
+  botMode = md.mode; botPaused = md.paused; renderMode();
   renderLists(lst);
   document.getElementById('cards').innerHTML = [
     ['Paper portfolio', '€ '+fmt(pf.total_eur)],

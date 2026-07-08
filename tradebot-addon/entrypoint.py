@@ -16,6 +16,8 @@ ENV_MAP = {
     "max_position_pct": "TRADEBOT_MAX_POSITION_PCT",
     "max_open_positions": "TRADEBOT_MAX_OPEN_POSITIONS",
     "cooldown_hours": "TRADEBOT_COOLDOWN_HOURS",
+    "live_confirm": "LIVE_CONFIRM",
+    "live_max_capital_eur": "LIVE_MAX_CAPITAL_EUR",
     "bitvavo_api_key": "BITVAVO_API_KEY",
     "bitvavo_api_secret": "BITVAVO_API_SECRET",
     "groq_api_key": "GROQ_API_KEY",
