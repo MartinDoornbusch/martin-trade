@@ -26,6 +26,13 @@ Fee-bewust AI swing-tradingplatform (Bitvavo, paper trading). Volledige document
 | `trading_mode` | `paper` (default). `live` is vergrendeld tot fase 2 is afgerond. |
 | `markets` | Comma-separated, bijv. `BTC-EUR,ETH-EUR`. Hierin handelt de bot (paper). Houd deze lijst kort; veel alt-markten was een verliesoorzaak van de oude bot. |
 | `watchlist` | Comma-separated. Alleen analyse/instap-advies op het dashboard, de bot handelt hier nooit. Vrij uit te breiden. |
+| `analysis_interval_minutes` | Hoe vaak de bot analyseert (15-1440, default 60). Vaker = meer API/LLM-verbruik, niet meer rendement. |
+| `candle_interval` | Candle-granulariteit voor de analyse (1h t/m 1d, default 4h). Korter = meer signalen én meer fee-druk. |
+| `max_position_pct` | Max % van portfolio per positie (5-50, default 25). |
+| `max_open_positions` | Max gelijktijdige posities (1-5, default 3). |
+| `cooldown_hours` | Wachttijd per markt na een trade (1-72, default 12). Verlagen vergroot het flip-flop/fee-risico. |
+
+Strategie-parameters (EMA-periodes, signaalscore, fee-gate drempels, LLM-confidence) zijn bewust géén opties: die wijzig je op basis van optimizer/backtest-bewijs via een commit, niet op gevoel via de UI.
 | `bitvavo_api_key/secret` | Voor paper volstaat een key zonder trade-rechten. |
 | `groq_api_key` | Primaire LLM (gratis, console.groq.com). Minimaal één LLM-key vereist. |
 | `gemini_api_key`, `mistral_api_key` | Optionele fallbacks. |

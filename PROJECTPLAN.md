@@ -110,3 +110,4 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 | 2026-07-05 | v0.5.0: correlatie-gate (blokkeert 2e positie bij return-correlatie > 0,85), instap-adviestabel op dashboard (score, fee-gate, correlatie, advies) met watchlist SOL/XRP/LINK (analyse-only) | 39 tests (4 nieuw), ruff |
 | 2026-07-05 | v0.6.0: candle-paginatie voor lange backtests (>1440), optimizer CLI met 70/30 train/test-split, dashboard: max drawdown, LLM-veto-rate, equity-grafiek | 43 tests (4 nieuw), ruff |
 | 2026-07-05 | v0.6.1: markets en watchlist instelbaar via HA add-on opties (comma-separated, override op config.yaml) | 45 tests (2 nieuw), ruff |
+| 2026-07-08 | v0.6.2: fix Supervisor-update-fout (provenance/SBOM-attestations uit in Docker-builds, "unknown/unknown" manifest brak de pull); schedule- en risk-instellingen als HA-opties met schema-grenzen; strategie-parameters bewust niet | 47 tests (2 nieuw), ruff |

@@ -50,6 +50,8 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: false   # attestation-manifest (unknown/unknown) breekt HA Supervisor-pull
+          sbom: false
           tags: ghcr.io/martindoornbusch/martin-trade:latest  # GHCR eist lowercase
 
   addon-image:
@@ -83,6 +85,8 @@ jobs:
           context: tradebot-addon
           platforms: linux/arm64
           push: true
+          provenance: false   # attestation-manifest (unknown/unknown) breekt HA Supervisor-pull
+          sbom: false
           tags: |
             ghcr.io/martindoornbusch/tradebot-addon-aarch64:${{ steps.ver.outputs.version }}
             ghcr.io/martindoornbusch/tradebot-addon-aarch64:latest

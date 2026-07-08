@@ -65,15 +65,40 @@ def _csv_env(name: str) -> list[str] | None:
     return [m.strip().upper() for m in raw.split(",") if m.strip()]
 
 
+def _num_env(name: str, cast):
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return cast(raw)
+    except ValueError:
+        return None
+
+
 @lru_cache
 def get_config() -> AppConfig:
     with open(CONFIG_PATH, encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
-    # HA add-on opties overschrijven de yaml (comma-separated, bijv. "BTC-EUR,ETH-EUR")
+    # HA add-on opties overschrijven de yaml. Alleen operationele knoppen;
+    # strategie-parameters (EMA/score/fee-gate) bewust niet, die gaan via optimizer + commit.
     markets = _csv_env("TRADEBOT_MARKETS")
     watchlist = _csv_env("TRADEBOT_WATCHLIST")
     if markets:
         data["markets"] = markets
     if watchlist is not None:
         data["watchlist"] = watchlist
+    interval_min = _num_env("TRADEBOT_INTERVAL_MINUTES", int)
+    if interval_min:
+        data["schedule"]["analysis_interval_minutes"] = interval_min
+    candle = os.environ.get("TRADEBOT_CANDLE_INTERVAL", "").strip()
+    if candle:
+        data["schedule"]["candle_interval"] = candle
+    for env, section, key, cast in [
+        ("TRADEBOT_MAX_POSITION_PCT", "risk", "max_position_pct", float),
+        ("TRADEBOT_MAX_OPEN_POSITIONS", "risk", "max_open_positions", float),
+        ("TRADEBOT_COOLDOWN_HOURS", "risk", "cooldown_hours_after_trade", float),
+    ]:
+        val = _num_env(env, cast)
+        if val is not None:
+            data[section][key] = val
     return AppConfig(**data)
