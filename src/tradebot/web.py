@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from .analysis import analyze_vetos
 from .backtest import max_drawdown_pct
 from .config import get_config, get_secrets
 from .correlation import correlation_from_closes
@@ -24,6 +25,8 @@ _feed: BitvavoClient | None = None
 DUST_EUR = 1.0  # assets onder deze waarde worden samengevat als 'overig'
 SCANNER_TTL_S = 1800  # scan is duur (ticker/24h + ~40 candle-calls); max 1x per half uur
 _scanner_cache: dict = {"ts": 0.0, "data": None}
+VETO_TTL_S = 1800  # veto-analyse haalt candle-historie per markt; max 1x per half uur
+_veto_cache: dict = {"ts": 0.0, "data": None}
 
 
 def get_feed() -> BitvavoClient:
@@ -365,6 +368,27 @@ def stats():
     }
 
 
+@app.get("/api/veto-analysis", dependencies=[Depends(check_token)])
+def veto_analysis(refresh: bool = False):
+    """Counterfactual van de LLM-veto-gate: voorkwam elk veto verlies of sneed
+    het winst weg? Haalt candle-historie per markt (duur), daarom gecachet."""
+    import time as _time
+    now = _time.time()
+    if not refresh and _veto_cache["data"] is not None \
+            and now - _veto_cache["ts"] < VETO_TTL_S:
+        return _veto_cache["data"]
+    cfg = get_config()
+    try:
+        data = analyze_vetos(get_feed(), cfg)
+        data["error"] = None
+    except Exception as exc:  # noqa: BLE001 - analyse mag het dashboard niet breken
+        return {"error": str(exc)[:200], "n_vetos": 0}
+    data["cached_at"] = now
+    data["ttl_s"] = VETO_TTL_S
+    _veto_cache.update(ts=now, data=data)
+    return data
+
+
 DASHBOARD_HTML = """<!doctype html><html lang="nl"><head><meta charset="utf-8">
 <title>AI Trade Platform</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -417,6 +441,8 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 <section><h2>Beslissingen / signalen</h2><table id="signals"></table></section>
 <section><h2>Trades (P&amp;L na fees)</h2><table id="trades"></table></section>
 <section><h2>LLM second opinions</h2><table id="llm"></table></section>
+<section><h2>Veto-analyse <span class="muted">(counterfactual: voorkwam de veto verlies of sneed hij winst weg?)</span></h2>
+<div id="vetoanalysis"></div></section>
 <section><details><summary style="cursor:pointer;font-size:14px"><b>Uitleg van de begrippen</b></summary>
 <dl style="font-size:13px;line-height:1.5">
 <dt><b>Candle (4h)</b></dt><dd>Eén blokje koershistorie: open-, hoogste, laagste en slotkoers over 4 uur. Alle analyse draait op deze candles.</dd>
@@ -505,6 +531,34 @@ async function act(listName, market, action){
   if(r.ok){ document.getElementById('addmarket').value=''; load(); }
 }
 const cls = n => n>=0?'pos':'neg';
+function renderVeto(d){
+  const el = document.getElementById('vetoanalysis');
+  if(!d || d.error){ el.innerHTML = `<span class="muted">${d && d.error ? 'fout: '+d.error : 'geen data'}</span>`; return; }
+  if(!d.n_vetos){ el.innerHTML = '<span class="muted">nog geen veto\\'s om te analyseren — zodra een koopsignaal alle mechanische gates passeert en de LLM blokkeert, verschijnt hier de counterfactual</span>'; return; }
+  const model = (s, title) => {
+    if(!s) return '';
+    const g = s.net_gate_eur;
+    return `<div class="card" style="min-width:260px">
+      <span>${title}</span>
+      <div style="margin-top:6px;font-size:13px">
+        veto-precisie: <b>${fmt(s.veto_precision_pct,1)}%</b> (${s.n_avoided}/${s.n})<br>
+        vermeden verlies: <b class="pos">€ ${fmt(s.avoided_eur)}</b><br>
+        gemiste winst: <b class="neg">€ ${fmt(s.missed_eur)}</b><br>
+        netto gate: <b class="${cls(g)}">€ ${fmt(g)}</b> ${g>=0?'(voegt waarde toe)':'(kost geld)'}
+      </div></div>`;
+  };
+  const bd = (rows) => '<tr><th>groep</th><th class="num">n</th><th class="num">precisie</th><th class="num">vermeden</th><th class="num">gemist</th><th class="num">netto gate</th></tr>' +
+    rows.map(r=>`<tr><td>${r.group}</td><td class="num">${r.n}</td><td class="num">${fmt(r.veto_precision_pct,1)}%</td><td class="num pos">€ ${fmt(r.avoided_eur)}</td><td class="num neg">€ ${fmt(r.missed_eur)}</td><td class="num ${cls(r.net_gate_eur)}">€ ${fmt(r.net_gate_eur)}</td></tr>`).join('');
+  const suspect = d.suspect_reason_count
+    ? `<p class="neg" style="font-size:13px">⚠ ${d.suspect_reason_count} van de ${d.n_vetos} veto's voeren "koers bij onderste Bollinger-band" aan als reden om te blokkeren, terwijl de strategie datzelfde signaal juist als koopreden telt. Richting-technisch tegenstrijdig.</p>`
+    : '<p class="muted" style="font-size:13px">Geen richting-verdachte veto-redenen gevonden.</p>';
+  el.innerHTML =
+    `<div class="cards" style="margin-bottom:12px">${model(d.fixed_horizon, 'Vaste horizon ('+d.params.horizon_candles+' candles)')}${model(d.tpsl, 'TP/SL (ATR '+d.params.atr_stop_multiplier+'x, R/R '+d.params.reward_risk_ratio+')')}</div>` +
+    `<p class="muted" style="font-size:12px">${d.n_vetos} veto's · positie € ${fmt(d.position_size_eur)} · round-trip kosten ${fmt(d.cost_pct,2)}% · netto negatief = veto voorkwam verlies, positief = veto sneed winst weg</p>` +
+    suspect +
+    '<h2 style="margin-top:14px">Per markt (vaste horizon)</h2><table>' + bd(d.by_market||[]) + '</table>' +
+    '<h2 style="margin-top:14px">Per confidence (vaste horizon)</h2><table>' + bd(d.by_confidence||[]) + '</table>';
+}
 async function load(){
   const [s, pf, bal, mkts, adv, lst, md] = await Promise.all([
     q('api/stats'), q('api/portfolio'), q('api/balance'), q('api/markets'), q('api/advice'), q('api/lists'), q('api/mode')]);
@@ -558,6 +612,7 @@ async function load(){
     '<tr><th>tijd</th><th>provider</th><th>markt</th><th>verdict</th><th class="num">conf</th><th>reden</th></tr>' +
     (llm.length ? llm.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.provider}</td><td>${r.market}</td><td>${r.verdict}</td><td class="num">${fmt(r.confidence)}</td><td>${r.reasoning}</td></tr>`).join('')
       : '<tr><td colspan="6" class="muted">nog geen LLM-calls — die volgen zodra een koopsignaal alle mechanische gates passeert</td></tr>');
+  q('api/veto-analysis').then(renderVeto);
   const sc = await q('api/scanner');
   const scStats = sc.stats ? `<tr><td colspan="9" class="muted">trechter: ${sc.stats.eur_markets} EUR-markten gescand → ${sc.stats.liquid} door liquiditeitsfilter (volume ≥ € ${Number(sc.stats.min_volume_eur).toLocaleString('nl-NL')}, spread ≤ ${sc.stats.max_spread_pct}%) → ${sc.stats.analyzed} geanalyseerd → top ${sc.stats.shown} getoond</td></tr>` : '';
   document.getElementById('scanner').innerHTML = sc.error
@@ -582,4 +637,5 @@ load(); setInterval(load, 60000);
 
 @app.get("/", response_class=HTMLResponse, dependencies=[Depends(check_token)])
 def dashboard():
+    # Serveert het single-page dashboard (incl. veto-analyse-sectie).
     return DASHBOARD_HTML

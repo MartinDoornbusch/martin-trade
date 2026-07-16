@@ -68,7 +68,8 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] Wekelijkse evaluatie: win-rate, netto P&L na fees, max drawdown, LLM-veto-rate (dashboard)
 - [ ] Backtests op 2+ jaar data per markt: `python -m tradebot.backtest BTC-EUR --interval 4h --limit 4400`
 - [ ] Parameter-tuning: `python -m tradebot.optimizer BTC-EUR --limit 3000` (kies op test-kolom, niet train)
-- [ ] LLM-veto-waarde beoordelen: veto-rate + steekproef veto-redenen vs. koersverloop erna
+- [x] Tooling LLM-veto-waarde: counterfactual-analyse per veto (voorkwam verlies vs. sneed winst weg), beide exit-modellen, richting-check op veto-redenen — dashboard-sectie + `python -m tradebot.analysis.veto` (v0.12.0)
+- [ ] LLM-veto-waarde beoordelen: veto-rate + steekproef veto-redenen vs. koersverloop erna (met bovenstaande tool zodra er veto's zijn)
 - [ ] Go/no-go criteria vastleggen (voorstel: win-rate > 45% én netto positief na fees over 100+ trades)
 
 ### Fase 3 — Live (code gebouwd in v0.11.0, activering pas na fase 2 go)
@@ -124,3 +125,4 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 | 2026-07-08 | v0.10.0: position guard — SL/TP-bewaking van open posities elke 60s (alleen prijscheck, geen indicatoren/AI). Dicht het gat dat exits alleen bij de uurcyclus werden gecheckt. Hype-detectie/news/sentiment opnieuw beoordeeld en afgewezen (post-mortem); regime-filter genoteerd als fase 3-kandidaat na backtest-bewijs | 64 tests (3 nieuw), ruff |
 | 2026-07-08 | v0.11.0: fase 3-fundament — LiveBroker (maker-entries, market-exits, exposure-cap), interlock met bevestigingszin, kill-switch in GUI, mode-scheiding paper/live incl. sqlite-migratie | 74 tests (10 nieuw), ruff |
 | 2026-07-08 | v0.11.1: fix CI-fail v0.10.0/v0.11.0 — test-import faalde onder kaal `pytest` (CI) maar niet onder `python -m pytest` (lokaal); tests/__init__.py toegevoegd, lokale verificatie voortaan met exact het CI-commando | 74 tests via `pytest` (CI-identiek), ruff, bandit |
+| 2026-07-16 | v0.12.0: veto-analyse — counterfactual per gevetoode buy (voorkwam verlies vs. sneed winst weg) met beide exit-modellen (vaste horizon + ATR-TP/SL, hergebruik van strategie- en fee-logica), richting-check die veto's op "onderste Bollinger-band" flagt (strategie scoort datzelfde signaal juist als koopreden). Nieuwe module `tradebot.analysis.veto`, dashboard-sectie met 30-min cache, CLI `python -m tradebot.analysis.veto` | 88 tests (14 nieuw + 1 live-marker), ruff |
