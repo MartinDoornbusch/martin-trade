@@ -70,6 +70,8 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] Parameter-tuning: `python -m tradebot.optimizer BTC-EUR --limit 3000` (kies op test-kolom, niet train)
 - [x] Tooling LLM-veto-waarde: counterfactual-analyse per veto (voorkwam verlies vs. sneed winst weg), beide exit-modellen, richting-check op veto-redenen — dashboard-sectie + `python -m tradebot.analysis.veto` (v0.12.0)
 - [ ] LLM-veto-waarde beoordelen: veto-rate + steekproef veto-redenen vs. koersverloop erna (met bovenstaande tool zodra er veto's zijn)
+- [~] Eerste uitkomst v0.12.0-tool (86 veto's): netto gate negatief onder beide modellen (vaste horizon -€32, TP/SL -€272); 67% van de veto's blokkeert op "onderste Bollinger-band" wat de strategie juist als koopreden telt. Veto lijkt waardevernietigend, hypothese: omgekeerde mean-reversion-lezing in de LLM
+- [ ] Shadow-mode-experiment (v0.13.0): `llm_veto_binding: false` in paper, 4 weken met-veto vs. zonder-veto vergelijken; daarna prompt fixen of veto schrappen
 - [ ] Go/no-go criteria vastleggen (voorstel: win-rate > 45% én netto positief na fees over 100+ trades)
 
 ### Fase 3 — Live (code gebouwd in v0.11.0, activering pas na fase 2 go)
@@ -126,3 +128,4 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 | 2026-07-08 | v0.11.0: fase 3-fundament — LiveBroker (maker-entries, market-exits, exposure-cap), interlock met bevestigingszin, kill-switch in GUI, mode-scheiding paper/live incl. sqlite-migratie | 74 tests (10 nieuw), ruff |
 | 2026-07-08 | v0.11.1: fix CI-fail v0.10.0/v0.11.0 — test-import faalde onder kaal `pytest` (CI) maar niet onder `python -m pytest` (lokaal); tests/__init__.py toegevoegd, lokale verificatie voortaan met exact het CI-commando | 74 tests via `pytest` (CI-identiek), ruff, bandit |
 | 2026-07-16 | v0.12.0: veto-analyse — counterfactual per gevetoode buy (voorkwam verlies vs. sneed winst weg) met beide exit-modellen (vaste horizon + ATR-TP/SL, hergebruik van strategie- en fee-logica), richting-check die veto's op "onderste Bollinger-band" flagt (strategie scoort datzelfde signaal juist als koopreden). Nieuwe module `tradebot.analysis.veto`, dashboard-sectie met 30-min cache, CLI `python -m tradebot.analysis.veto` | 88 tests (14 nieuw + 1 live-marker), ruff |
+| 2026-07-16 | v0.13.0: LLM-veto shadow-mode. Schakelaar `decision.llm_veto_binding` (plus env `TRADEBOT_LLM_VETO_BINDING` voor HA-optie zonder commit): false betekent dat het veto gelogd wordt maar de koop niet blokkeert, zodat de gate-waarde gemeten wordt zonder trades te kosten. Veto-logica uit de engine getild naar de testbare `apply_second_opinion()`. Aanleiding: v0.12.0-analyse toonde de bindende veto als netto waardevernietigend | 94 tests (6 nieuw), ruff |

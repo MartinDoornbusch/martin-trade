@@ -6,7 +6,7 @@ import logging
 from .config import AppConfig, Secrets
 from .correlation import correlation_from_closes
 from .db import SignalRow, session
-from .decision import Decision, DecisionEngine, FeeModel, RiskManager
+from .decision import Decision, DecisionEngine, FeeModel, RiskManager, apply_second_opinion
 from .exchange import BitvavoClient
 from .lists import get_lists, is_paused
 from .live import LiveBroker
@@ -108,17 +108,13 @@ class TradingCycle:
                             break
 
                 # 4) LLM second opinion only for BUYs that passed every gate.
+                # De LLM-laag logt het oordeel altijd (llm_calls), ook in shadow-mode.
+                # llm_veto_binding=false laat het veto los: gelogd maar niet-bindend.
                 if decision.action == "buy" and self.cfg.decision.get("use_llm_second_opinion"):
                     verdict = self.llm.second_opinion(candidate)
                     min_conf = float(self.cfg.decision["llm_min_confidence"])
-                    if verdict is None:
-                        decision = Decision(market, "skip",
-                                            "LLM unavailable; conservative skip")
-                    elif not verdict.agree or verdict.confidence < min_conf:
-                        decision = Decision(
-                            market, "skip",
-                            f"LLM veto ({verdict.provider}, conf {verdict.confidence:.2f}): "
-                            f"{verdict.reasoning}")
+                    binding = bool(self.cfg.decision.get("llm_veto_binding", True))
+                    decision = apply_second_opinion(decision, verdict, min_conf, binding)
 
                 # 5) Execute.
                 if decision.action == "buy":

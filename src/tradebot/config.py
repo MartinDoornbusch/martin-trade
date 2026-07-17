@@ -95,6 +95,9 @@ def get_config() -> AppConfig:
     candle = os.environ.get("TRADEBOT_CANDLE_INTERVAL", "").strip()
     if candle:
         data["schedule"]["candle_interval"] = candle
+    veto_binding = os.environ.get("TRADEBOT_LLM_VETO_BINDING", "").strip().lower()
+    if veto_binding in ("true", "false", "1", "0", "yes", "no"):
+        data["decision"]["llm_veto_binding"] = veto_binding in ("true", "1", "yes")
     for env, section, key, cast in [
         ("TRADEBOT_MAX_POSITION_PCT", "risk", "max_position_pct", float),
         ("TRADEBOT_MAX_OPEN_POSITIONS", "risk", "max_open_positions", float),

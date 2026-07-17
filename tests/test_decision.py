@@ -1,6 +1,14 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
-from tradebot.decision import DecisionEngine, FeeModel, Position, RiskManager
+from tradebot.decision import (
+    Decision,
+    DecisionEngine,
+    FeeModel,
+    Position,
+    RiskManager,
+    apply_second_opinion,
+)
 from tradebot.strategy import Candidate, MarketSnapshot
 
 FEES = FeeModel(maker_pct=0.15, taker_pct=0.25, slippage_buffer_pct=0.10)
@@ -27,6 +35,51 @@ def engine() -> DecisionEngine:
 def test_fee_model_round_trip():
     assert FEES.round_trip_pct() == 0.5
     assert FEES.min_edge_pct(0.5) == 1.1  # 0.5 fees + 0.1 slippage + 0.5 profit
+
+
+# --- LLM second opinion / shadow-mode ---------------------------------------
+
+def _buy_decision() -> Decision:
+    return Decision("BTC-EUR", "buy", "score 4", amount_quote_eur=250.0,
+                    stop_loss=98.0, take_profit=104.0, details={"score": 4})
+
+
+def _verdict(agree: bool, conf: float):
+    return SimpleNamespace(agree=agree, confidence=conf, reasoning="near lower band",
+                           provider="groq")
+
+
+def test_binding_veto_blocks_buy():
+    d = apply_second_opinion(_buy_decision(), _verdict(False, 0.8), 0.6, binding=True)
+    assert d.action == "skip" and "LLM veto" in d.reason
+
+
+def test_binding_low_confidence_blocks_buy():
+    d = apply_second_opinion(_buy_decision(), _verdict(True, 0.4), 0.6, binding=True)
+    assert d.action == "skip"
+
+
+def test_agree_leaves_buy_untouched():
+    d = apply_second_opinion(_buy_decision(), _verdict(True, 0.9), 0.6, binding=True)
+    assert d.action == "buy" and "SHADOW" not in d.reason
+
+
+def test_shadow_veto_keeps_buy_but_annotates():
+    d = apply_second_opinion(_buy_decision(), _verdict(False, 0.8), 0.6, binding=False)
+    assert d.action == "buy"
+    assert "SHADOW-VETO genegeerd" in d.reason
+    assert d.details["shadow_veto"].startswith("LLM veto")
+    assert d.stop_loss == 98.0 and d.take_profit == 104.0  # niveaus behouden
+
+
+def test_binding_none_is_conservative_skip():
+    d = apply_second_opinion(_buy_decision(), None, 0.6, binding=True)
+    assert d.action == "skip"
+
+
+def test_shadow_none_keeps_buy():
+    d = apply_second_opinion(_buy_decision(), None, 0.6, binding=False)
+    assert d.action == "buy"
 
 
 def test_fee_gate_blocks_small_expected_move():

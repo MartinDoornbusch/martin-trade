@@ -130,3 +130,36 @@ class DecisionEngine:
                         stop_loss=stop, take_profit=target,
                         details={"expected_pct": expected, "min_edge_pct": min_edge,
                                  "score": candidate.score})
+
+
+def apply_second_opinion(decision: Decision, verdict, min_conf: float,
+                         binding: bool = True) -> Decision:
+    """Pas het LLM-tweede-oordeel toe op een buy-besluit.
+
+    binding=True (normaal): een veto (LLM oneens of confidence < drempel) blokkeert
+    de koop en wordt een skip.
+
+    binding=False (shadow-mode): het veto wordt nog steeds door de LLM-laag gelogd,
+    maar is niet bindend. De koop blijft staan, geannoteerd met de veto-reden, zodat
+    de waarde van de gate gemeten kan worden zonder dat hij trades kost. LLM
+    onbereikbaar telt in shadow-mode niet als veto (de koop gaat door).
+
+    `verdict` is duck-typed (velden agree, confidence, reasoning, provider) of None.
+    """
+    if verdict is None:
+        if binding:
+            return Decision(decision.market, "skip", "LLM unavailable; conservative skip")
+        return decision
+    vetoed = (not verdict.agree) or (verdict.confidence < min_conf)
+    if not vetoed:
+        return decision
+    veto_reason = (f"LLM veto ({verdict.provider}, conf {verdict.confidence:.2f}): "
+                   f"{verdict.reasoning}")
+    if binding:
+        return Decision(decision.market, "skip", veto_reason)
+    return Decision(
+        decision.market, "buy",
+        f"{decision.reason} | SHADOW-VETO genegeerd: {veto_reason}",
+        amount_quote_eur=decision.amount_quote_eur,
+        stop_loss=decision.stop_loss, take_profit=decision.take_profit,
+        details={**decision.details, "shadow_veto": veto_reason})

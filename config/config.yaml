@@ -35,6 +35,7 @@ decision:
   reward_risk_ratio: 2.0             # take profit = entry + 2*(2*ATR)
   use_llm_second_opinion: true
   llm_min_confidence: 0.6            # LLM moet >= 0.6 confident zijn, anders veto
+  llm_veto_binding: true             # false = shadow-mode: veto wordt gelogd maar blokkeert de koop niet (meet gate-waarde zonder trades te kosten)
 
 risk:
   paper_start_eur: 1000.0
