@@ -16,8 +16,8 @@ schedule:
   guard_interval_seconds: 60      # SL/TP-bewaking open posities (1 API-call per positie)
 
 strategy:
-  ema_fast: 12
-  ema_slow: 26
+  ema_fast: 20
+  ema_slow: 50
   rsi_period: 14
   rsi_oversold: 35
   rsi_overbought: 70
@@ -32,10 +32,10 @@ fees:
 decision:
   min_profit_pct: 0.50               # minimale winst boven fees+slippage
   atr_stop_multiplier: 2.0           # stop loss = entry - 2*ATR
-  reward_risk_ratio: 2.0             # take profit = entry + 2*(2*ATR)
+  reward_risk_ratio: 1.5             # take profit = entry + 1.5*(2*ATR)
   use_llm_second_opinion: true
   llm_min_confidence: 0.6            # LLM moet >= 0.6 confident zijn, anders veto
-  llm_veto_binding: true             # false = shadow-mode: veto wordt gelogd maar blokkeert de koop niet (meet gate-waarde zonder trades te kosten)
+  llm_veto_binding: false            # false = shadow-mode: veto wordt gelogd maar blokkeert de koop niet (meet gate-waarde zonder trades te kosten)
 
 risk:
   paper_start_eur: 1000.0
