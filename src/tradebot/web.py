@@ -467,6 +467,26 @@ const T = new URLSearchParams(location.search).get('token') || '';
 const B = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
 const q = p => fetch(B + p + (p.includes('?')?'&':'?') + 'token=' + T).then(r=>r.json());
 const fmt = (n,d=2) => n==null?'—':Number(n).toLocaleString('nl-NL',{minimumFractionDigits:d,maximumFractionDigits:d});
+// nette as-schaal: geeft tick-waarden + passend aantal decimalen voor een bereik
+function niceScale(lo,hi,n){
+  const span=(hi-lo)||Math.abs(hi)||1;
+  const mag=Math.pow(10,Math.floor(Math.log10(span/n)));
+  const norm=(span/n)/mag;
+  const step=(norm<1.5?1:norm<3?2:norm<7?5:10)*mag;
+  const ticks=[]; for(let v=Math.ceil(lo/step)*step; v<=hi+step*1e-6; v+=step) ticks.push(v);
+  return {ticks, dec:Math.min(8,Math.max(0,-Math.floor(Math.log10(step))))};
+}
+// datumlabels langs de x-as op ~count posities
+function xAxis(ts,X,yText,count){
+  const m=ts.length, k=Math.min(count,m); let s='';
+  for(let j=0;j<k;j++){
+    const i=k>1?Math.round(j*(m-1)/(k-1)):0;
+    const anchor=j===0?'start':(j===k-1?'end':'middle');
+    const dt=new Date(ts[i]).toLocaleDateString('nl-NL',{day:'numeric',month:'numeric'});
+    s+=`<text x="${X(i).toFixed(1)}" y="${yText}" fill="var(--sub)" font-size="10" text-anchor="${anchor}">${dt}</text>`;
+  }
+  return s;
+}
 let botPaused = false;
 async function togglePause(){
   const r = await fetch(B + 'api/pause?token=' + T, {method:'POST',
@@ -486,18 +506,27 @@ async function loadChart(market){
   chartMarket = market;
   const d = await q('api/chart?market=' + market);
   const svg = document.getElementById('chart');
-  const w = svg.clientWidth || 900, h = 260, padL = 64, padR = 10, padY = 14;
+  const w = svg.clientWidth || 900, h = 260, padL = 68, padR = 12, padT = 12, padB = 26;
   const series = [d.close, d.ema_fast, d.ema_slow];
   let lo = Math.min(...series.map(a=>Math.min(...a))), hi = Math.max(...series.map(a=>Math.max(...a)));
   if (d.position){ lo = Math.min(lo, d.position.stop_loss); hi = Math.max(hi, d.position.take_profit); }
   const span = (hi-lo)||1;
-  const X = i => padL + i/(d.close.length-1)*(w-padL-padR);
-  const Y = v => padY + (1-(v-lo)/span)*(h-2*padY);
+  const n = d.close.length;
+  const X = i => padL + (n>1? i/(n-1):0)*(w-padL-padR);
+  const Y = v => padT + (1-(v-lo)/span)*(h-padT-padB);
   const line = (arr,color,width,dash='') => `<polyline points="${arr.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="${width}" ${dash?`stroke-dasharray="${dash}"`:''}/>`;
   const hline = (v,color,label) => `<line x1="${padL}" y1="${Y(v).toFixed(1)}" x2="${w-padR}" y2="${Y(v).toFixed(1)}" stroke="${color}" stroke-dasharray="5,4"/><text x="${w-padR-4}" y="${(Y(v)-4).toFixed(1)}" fill="${color}" font-size="11" text-anchor="end">${label} ${fmt(v)}</text>`;
-  let out = `<text x="4" y="${Y(hi)+10}" fill="#8ea0b8" font-size="11">${fmt(hi)}</text>` +
-            `<text x="4" y="${Y(lo)}" fill="#8ea0b8" font-size="11">${fmt(lo)}</text>` +
-            line(d.ema_slow, '#f59e0b', 1) + line(d.ema_fast, '#22d3ee', 1) + line(d.close, '#3b82f6', 2);
+  const sc = niceScale(lo, hi, 5);
+  let out = '';
+  for (const t of sc.ticks){
+    const y = Y(t).toFixed(1);
+    out += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="#1e2a40"/>`
+         + `<text x="${padL-6}" y="${(Y(t)+3).toFixed(1)}" fill="var(--sub)" font-size="11" text-anchor="end">${fmt(t,sc.dec)}</text>`;
+  }
+  out += `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${(h-padB).toFixed(1)}" stroke="var(--line)"/>`
+       + `<line x1="${padL}" y1="${(h-padB).toFixed(1)}" x2="${w-padR}" y2="${(h-padB).toFixed(1)}" stroke="var(--line)"/>`
+       + xAxis(d.ts, X, h-8, 6)
+       + line(d.ema_slow, '#f59e0b', 1) + line(d.ema_fast, '#22d3ee', 1) + line(d.close, '#3b82f6', 2);
   if (d.position){
     out += hline(d.position.stop_loss, '#f87171', 'SL') + hline(d.position.take_profit, '#4ade80', 'TP') + hline(d.position.entry, '#8ea0b8', 'entry');
   }
@@ -620,14 +649,29 @@ async function load(){
     : (scStats + '<tr><th>markt</th><th class="num">24h volume</th><th class="num">spread</th><th class="num">score</th><th>trend</th><th class="num">RSI</th><th class="num">verw. move</th><th class="num">vereist</th><th>actie</th></tr>' +
        sc.results.map(r=>`<tr><td>${r.market}</td><td class="num">€ ${Number(r.volume_eur).toLocaleString('nl-NL')}</td><td class="num">${fmt(r.spread_pct)}%</td><td class="num">${r.score}/${r.score_needed}</td><td class="${r.trend}">${r.trend==='up'?'▲':'▼'}</td><td class="num">${fmt(r.rsi,0)}</td><td class="num ${r.fee_ok?'pos':'neg'}">${fmt(r.expected_move_pct)}%</td><td class="num">${fmt(r.required_pct)}%</td><td>${r.in_markets?'<span class="muted">in trading</span>':(r.in_watchlist?`<span class="muted">in watchlist</span> <button class="rowbtn" onclick="act('markets','${r.market}','add')">→ trade</button>`:`<button class="rowbtn" onclick="act('watchlist','${r.market}','add')">+ watch</button> <button class="rowbtn" onclick="act('markets','${r.market}','add')">+ trade</button>`)}</td></tr>`).join(''));
   const eq = await q('api/equity');
+  const eqEl = document.getElementById('equity');
   if (eq.length >= 2) {
-    const vals = eq.map(e=>e.total_eur), mn = Math.min(...vals), mx = Math.max(...vals);
-    const w = document.getElementById('equity').clientWidth || 600;
-    const pts = vals.map((v,i)=>`${(i/(vals.length-1)*w).toFixed(1)},${(72-(mx>mn?(v-mn)/(mx-mn):0.5)*64).toFixed(1)}`).join(' ');
-    document.getElementById('equity').innerHTML =
-      `<polyline points="${pts}" fill="none" stroke="#3b82f6" stroke-width="2"/>`;
+    const vals = eq.map(e=>e.total_eur), ts = eq.map(e=>e.ts);
+    const lo = Math.min(...vals), hi = Math.max(...vals), span = (hi-lo)||1;
+    const h = 120, padL = 68, padR = 12, padT = 10, padB = 22;
+    const w = eqEl.clientWidth || 600;
+    const X = i => padL + (vals.length>1? i/(vals.length-1):0)*(w-padL-padR);
+    const Y = v => padT + (1-(v-lo)/span)*(h-padT-padB);
+    const sc = niceScale(lo, hi, 4);
+    let out = '';
+    for (const t of sc.ticks){
+      const y = Y(t).toFixed(1);
+      out += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="#1e2a40"/>`
+           + `<text x="${padL-6}" y="${(Y(t)+3).toFixed(1)}" fill="var(--sub)" font-size="11" text-anchor="end">${fmt(t,sc.dec)}</text>`;
+    }
+    out += `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${(h-padB).toFixed(1)}" stroke="var(--line)"/>`
+         + `<line x1="${padL}" y1="${(h-padB).toFixed(1)}" x2="${w-padR}" y2="${(h-padB).toFixed(1)}" stroke="var(--line)"/>`
+         + xAxis(ts, X, h-6, 5)
+         + `<polyline points="${vals.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ')}" fill="none" stroke="#3b82f6" stroke-width="2"/>`;
+    eqEl.setAttribute('height', h);
+    eqEl.innerHTML = out;
   } else {
-    document.getElementById('equity').outerHTML = '<span class="muted">nog te weinig equity-snapshots (elke 6 uur één)</span>';
+    eqEl.outerHTML = '<span class="muted">nog te weinig equity-snapshots (elke 6 uur één)</span>';
   }
   document.getElementById('upd').textContent = 'bijgewerkt ' + new Date().toLocaleTimeString('nl-NL');
 }
