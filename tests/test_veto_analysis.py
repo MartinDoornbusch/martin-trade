@@ -171,6 +171,22 @@ def test_analyze_vetos_no_vetos_returns_empty_summary():
     assert result["skipped"] == {"geen_vetos": 1}
 
 
+def test_injected_vetos_never_touch_db_for_trades(monkeypatch):
+    """Regressie: met geinjecteerde vetos mag analyze_vetos de trades-DB niet
+    raadplegen (anders faalt de live-test zonder init_db). Trades default = []."""
+    def boom():
+        raise AssertionError("DB mag niet geraadpleegd worden bij geinjecteerde vetos")
+    monkeypatch.setattr(veto, "_load_roundtrips_from_db", boom)
+    cfg = make_cfg()
+    closes = [100.0] * 70 + [98, 96, 94, 92, 90, 88, 86]
+    cs = candles(closes)
+    vetos = [{"ts": cs[70].ts, "market": "BTC-EUR", "confidence": 0.6, "reasoning": "x"}]
+    result = veto.analyze_vetos(adapter=None, cfg=cfg, vetos=vetos,
+                                candles_by_market={"BTC-EUR": cs})
+    assert result["n_vetos"] == 1
+    assert result["n_real_matched"] == 0   # geen trades geinjecteerd
+
+
 def test_analyze_vetos_with_injected_candles():
     cfg = make_cfg()
     closes = [100.0] * 70 + [98, 96, 94, 92, 90, 88, 86]

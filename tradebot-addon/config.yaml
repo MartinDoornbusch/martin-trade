@@ -1,6 +1,6 @@
 # Home Assistant add-on manifest (local add-on)
 name: AI Trade Platform
-version: "0.14.0"
+version: "0.14.1"
 slug: tradebot
 description: Fee-bewust AI swing-tradingplatform (Bitvavo, paper trading)
 url: "https://github.com/MartinDoornbusch/martin-trade"

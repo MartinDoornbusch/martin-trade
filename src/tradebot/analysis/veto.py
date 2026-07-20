@@ -463,14 +463,16 @@ def analyze_vetos(adapter: ExchangeAdapter, cfg, *, vetos: list[dict] | None = N
     `trades` om DB/netwerk te omzeilen (gebruikt in tests).
     """
     p = params_from_config(cfg, horizon_candles, tpsl_max_candles)
+    vetos_injected = vetos is not None
     if vetos is None:
         vetos = _load_vetos_from_db(config_hash)
     if not vetos:
         return summarize([], {"geen_vetos": 1}, p, config_hash)
     if trades is None:
-        # candles_by_market == None duidt een echte (online) run aan; alleen dan
-        # de DB raadplegen. Bij geinjecteerde candles (offline tests) geen DB.
-        trades = _load_roundtrips_from_db() if candles_by_market is None else []
+        # Alleen bij een echte run (vetos uit de DB) ook de trades uit de DB
+        # halen. Zijn de vetos geinjecteerd (tests), dan geen DB tenzij de
+        # aanroeper zelf trades meegeeft.
+        trades = [] if vetos_injected else _load_roundtrips_from_db()
     roundtrips = build_roundtrips(trades)
     if candles_by_market is None:
         markets = sorted({v["market"] for v in vetos})
