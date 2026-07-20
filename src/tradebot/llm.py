@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from .config import config_fingerprint, get_config
 from .db import LLMCallRow, session
 from .strategy import Candidate
 
@@ -117,11 +118,16 @@ class LLMRouter:
                 continue
             try:
                 verdict, latency = self._call(p, prompt)
+                try:
+                    chash = config_fingerprint(get_config())
+                except Exception:  # noqa: BLE001 - hash mag het loggen nooit breken
+                    chash = ""
                 with session() as s:
                     s.add(LLMCallRow(provider=p.name, model=p.model, market=candidate.market,
                                      verdict="agree" if verdict.agree else "veto",
                                      confidence=verdict.confidence,
-                                     reasoning=verdict.reasoning, latency_ms=latency))
+                                     reasoning=verdict.reasoning, latency_ms=latency,
+                                     config_hash=chash))
                     s.commit()
                 return verdict
             except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError) as exc:

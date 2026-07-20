@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from tradebot.analysis import veto
+from tradebot.config import config_fingerprint
 from tradebot.exchange import Candle
 
 STRATEGY = {"ema_fast": 12, "ema_slow": 26, "rsi_period": 14, "rsi_oversold": 35,
@@ -180,6 +181,102 @@ def test_analyze_vetos_with_injected_candles():
                                 candles_by_market={"BTC-EUR": cs})
     assert result["n_vetos"] == 1
     assert result["fixed_horizon"]["n_avoided"] == 1  # dalende markt: verlies vermeden
+
+
+# --- config-fingerprint ----------------------------------------------------
+
+def test_config_fingerprint_stable_and_sensitive():
+    a = make_cfg()
+    b = make_cfg()
+    assert config_fingerprint(a) == config_fingerprint(b)  # zelfde config -> zelfde hash
+    b.decision = {**b.decision, "atr_stop_multiplier": 3.0}
+    assert config_fingerprint(a) != config_fingerprint(b)  # gewijzigde config -> andere hash
+    assert len(config_fingerprint(a)) == 12
+
+
+def test_config_scope_filter_db(memory_db):
+    from tradebot.db import LLMCallRow, session
+    with session() as s:
+        s.add_all([
+            LLMCallRow(provider="groq", model="m", market="BTC-EUR", verdict="veto",
+                       confidence=0.7, reasoning="oud", config_hash="OUD"),
+            LLMCallRow(provider="groq", model="m", market="ETH-EUR", verdict="veto",
+                       confidence=0.7, reasoning="nieuw", config_hash="NIEUW"),
+            LLMCallRow(provider="groq", model="m", market="ETH-EUR", verdict="agree",
+                       confidence=0.9, reasoning="geen veto", config_hash="NIEUW"),
+        ])
+        s.commit()
+    assert len(veto._load_vetos_from_db()) == 2               # alle vetoes
+    scoped = veto._load_vetos_from_db("NIEUW")
+    assert len(scoped) == 1 and scoped[0]["market"] == "ETH-EUR"
+
+
+# --- categorisatie ---------------------------------------------------------
+
+def test_categorize():
+    assert veto._categorize("Price near lower Bollinger band") == "mean-reversion"
+    assert veto._categorize("Overbought RSI suggests reversal") == "mean-reversion"
+    assert veto._categorize("Spread too wide, thin liquidity") == "liquiditeit/spread"
+    assert veto._categorize("Very volatile, high ATR whipsaw") == "volatiliteit"
+    assert veto._categorize("Stale data, gap in data feed") == "data-integriteit"
+    assert veto._categorize("Ik vind het geen goed idee") == "overig"
+
+
+# --- Wilson-marge ----------------------------------------------------------
+
+def test_wilson_margin_shrinks_with_n():
+    wide = veto._wilson_half_width(3, 5)
+    narrow = veto._wilson_half_width(30, 50)   # zelfde ratio, groter n
+    assert wide > narrow
+    assert veto._wilson_half_width(0, 0) == 0.0
+    assert 0.0 <= narrow <= 100.0
+
+
+# --- echte shadow-uitkomst -------------------------------------------------
+
+def test_build_roundtrips_pairs_buy_and_sell():
+    trades = [
+        {"ts": 1000, "market": "BTC-EUR", "side": "buy", "amount": 1.0, "price": 100.0,
+         "pnl_eur": 0.0, "reason": "koop"},
+        {"ts": 2000, "market": "BTC-EUR", "side": "sell", "amount": 1.0, "price": 108.0,
+         "pnl_eur": 8.0, "reason": "guard: take profit geraakt"},
+    ]
+    rts = veto.build_roundtrips(trades)
+    assert len(rts) == 1
+    assert rts[0].net_pct == pytest.approx(8.0)   # 8 / (1*100) * 100
+    assert rts[0].exit == "target"
+
+
+def test_match_real_outcome_window():
+    rt = veto.RoundTrip("BTC-EUR", buy_ms=1500, sell_ms=3000, net_pct=-2.0, exit="stop")
+    assert veto.match_real_outcome(1000, "BTC-EUR", [rt], window_ms=1000) is rt
+    assert veto.match_real_outcome(1000, "BTC-EUR", [rt], window_ms=100) is None  # buiten venster
+    assert veto.match_real_outcome(2000, "BTC-EUR", [rt], window_ms=1000) is None  # buy voor veto
+
+
+def test_analyze_with_real_outcome_side_by_side():
+    cfg = make_cfg()
+    closes = [100.0] * 70 + [102, 104, 106, 108, 110, 112, 114]
+    cs = candles(closes)
+    veto_ts = cs[70].ts
+    vetos = [{"ts": veto_ts, "market": "BTC-EUR", "confidence": 0.7,
+              "reasoning": "Price near lower Bollinger band"}]
+    trades = [
+        {"ts": veto_ts, "market": "BTC-EUR", "side": "buy", "amount": 1.0, "price": 100.0,
+         "pnl_eur": 0.0, "reason": "koop"},
+        {"ts": veto_ts + STEP_MS, "market": "BTC-EUR", "side": "sell", "amount": 1.0,
+         "price": 106.0, "pnl_eur": 6.0, "reason": "guard: take profit geraakt"},
+    ]
+    result = veto.analyze_vetos(adapter=None, cfg=cfg, vetos=vetos,
+                                candles_by_market={"BTC-EUR": cs}, trades=trades,
+                                config_hash="NIEUW")
+    assert result["config_hash"] == "NIEUW"
+    assert result["n_real_matched"] == 1
+    assert result["real_outcome"]["n"] == 1
+    assert result["real_outcome"]["n_missed"] == 1        # trade won -> veto sneed winst weg
+    assert result["fixed_horizon"]["precision_margin_pp"] >= 0.0
+    reasons = {r["group"] for r in result["by_reason"]}
+    assert "mean-reversion" in reasons
 
 
 # --- live (netwerk) --------------------------------------------------------

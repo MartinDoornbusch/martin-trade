@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from .analysis import analyze_vetos
 from .backtest import max_drawdown_pct
-from .config import get_config, get_secrets
+from .config import config_fingerprint, get_config, get_secrets
 from .correlation import correlation_from_closes
 from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, session
 from .decision import FeeModel
@@ -26,7 +26,7 @@ DUST_EUR = 1.0  # assets onder deze waarde worden samengevat als 'overig'
 SCANNER_TTL_S = 1800  # scan is duur (ticker/24h + ~40 candle-calls); max 1x per half uur
 _scanner_cache: dict = {"ts": 0.0, "data": None}
 VETO_TTL_S = 1800  # veto-analyse haalt candle-historie per markt; max 1x per half uur
-_veto_cache: dict = {"ts": 0.0, "data": None}
+_veto_cache: dict = {}  # per scope ("current"/"all"): {"ts": float, "data": dict}
 
 
 def get_feed() -> BitvavoClient:
@@ -369,23 +369,28 @@ def stats():
 
 
 @app.get("/api/veto-analysis", dependencies=[Depends(check_token)])
-def veto_analysis(refresh: bool = False):
-    """Counterfactual van de LLM-veto-gate: voorkwam elk veto verlies of sneed
-    het winst weg? Haalt candle-historie per markt (duur), daarom gecachet."""
+def veto_analysis(refresh: bool = False, scope: str = "current"):
+    """Veto-gate-analyse: counterfactual (candle-reconstructie) EN echte
+    shadow-trade-uitkomst naast elkaar, met precisie plus 95%-marge en
+    uitsplitsing per veto-reden. `scope=current` meet alleen de huidige config
+    (schone meting), `scope=all` elke veto ooit. Duur, daarom per scope gecachet.
+    """
     import time as _time
+    scope = "all" if scope == "all" else "current"
     now = _time.time()
-    if not refresh and _veto_cache["data"] is not None \
-            and now - _veto_cache["ts"] < VETO_TTL_S:
-        return _veto_cache["data"]
+    cached = _veto_cache.get(scope)
+    if not refresh and cached is not None and now - cached["ts"] < VETO_TTL_S:
+        return cached["data"]
     cfg = get_config()
     try:
-        data = analyze_vetos(get_feed(), cfg)
+        config_hash = None if scope == "all" else config_fingerprint(cfg)
+        data = analyze_vetos(get_feed(), cfg, config_hash=config_hash)
         data["error"] = None
     except Exception as exc:  # noqa: BLE001 - analyse mag het dashboard niet breken
         return {"error": str(exc)[:200], "n_vetos": 0}
     data["cached_at"] = now
     data["ttl_s"] = VETO_TTL_S
-    _veto_cache.update(ts=now, data=data)
+    _veto_cache[scope] = {"ts": now, "data": data}
     return data
 
 
@@ -441,7 +446,7 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 <section><h2>Beslissingen / signalen</h2><table id="signals"></table></section>
 <section><h2>Trades (P&amp;L na fees)</h2><table id="trades"></table></section>
 <section><h2>LLM second opinions</h2><table id="llm"></table></section>
-<section><h2>Veto-analyse <span class="muted">(counterfactual: voorkwam de veto verlies of sneed hij winst weg?)</span></h2>
+<section><h2>Veto-analyse <span class="muted">(counterfactual + echte shadow-uitkomst; alleen huidige config)</span></h2>
 <div id="vetoanalysis"></div></section>
 <section><details><summary style="cursor:pointer;font-size:14px"><b>Uitleg van de begrippen</b></summary>
 <dl style="font-size:13px;line-height:1.5">
@@ -567,24 +572,31 @@ function renderVeto(d){
   const model = (s, title) => {
     if(!s) return '';
     const g = s.net_gate_eur;
+    const margin = s.precision_margin_pp!=null ? ` ±${fmt(s.precision_margin_pp,1)}pp` : '';
     return `<div class="card" style="min-width:260px">
       <span>${title}</span>
       <div style="margin-top:6px;font-size:13px">
-        veto-precisie: <b>${fmt(s.veto_precision_pct,1)}%</b> (${s.n_avoided}/${s.n})<br>
+        veto-precisie: <b>${fmt(s.veto_precision_pct,1)}%</b>${margin} (${s.n_avoided}/${s.n})<br>
         vermeden verlies: <b class="pos">€ ${fmt(s.avoided_eur)}</b><br>
         gemiste winst: <b class="neg">€ ${fmt(s.missed_eur)}</b><br>
         netto gate: <b class="${cls(g)}">€ ${fmt(g)}</b> ${g>=0?'(voegt waarde toe)':'(kost geld)'}
       </div></div>`;
   };
   const bd = (rows) => '<tr><th>groep</th><th class="num">n</th><th class="num">precisie</th><th class="num">vermeden</th><th class="num">gemist</th><th class="num">netto gate</th></tr>' +
-    rows.map(r=>`<tr><td>${r.group}</td><td class="num">${r.n}</td><td class="num">${fmt(r.veto_precision_pct,1)}%</td><td class="num pos">€ ${fmt(r.avoided_eur)}</td><td class="num neg">€ ${fmt(r.missed_eur)}</td><td class="num ${cls(r.net_gate_eur)}">€ ${fmt(r.net_gate_eur)}</td></tr>`).join('');
+    rows.map(r=>`<tr><td>${r.group}</td><td class="num">${r.n}</td><td class="num">${fmt(r.veto_precision_pct,1)}% ±${fmt(r.precision_margin_pp,1)}</td><td class="num pos">€ ${fmt(r.avoided_eur)}</td><td class="num neg">€ ${fmt(r.missed_eur)}</td><td class="num ${cls(r.net_gate_eur)}">€ ${fmt(r.net_gate_eur)}</td></tr>`).join('');
   const suspect = d.suspect_reason_count
     ? `<p class="neg" style="font-size:13px">⚠ ${d.suspect_reason_count} van de ${d.n_vetos} veto's voeren "koers bij onderste Bollinger-band" aan als reden om te blokkeren, terwijl de strategie datzelfde signaal juist als koopreden telt. Richting-technisch tegenstrijdig.</p>`
     : '<p class="muted" style="font-size:13px">Geen richting-verdachte veto-redenen gevonden.</p>';
+  const real = d.real_outcome
+    ? model(d.real_outcome, 'Echte shadow-uitkomst ('+d.n_real_matched+' gekoppeld)')
+    : '<div class="card" style="min-width:260px"><span>Echte shadow-uitkomst</span><div style="margin-top:6px;font-size:13px" class="muted">nog geen afgewikkelde shadow-trade aan een veto gekoppeld</div></div>';
+  const progress = `<p class="muted" style="font-size:12px">config-scope: <b>${d.config_hash||'alle'}</b> · voortgang naar schone meting: <b>${d.n_real_matched||0}/${d.target_resolved}</b> afgewikkelde shadow-trades gekoppeld ${(d.n_real_matched||0)<d.target_resolved?'(nog te weinig voor een harde uitspraak)':'(genoeg voor een eerste uitspraak)'}</p>`;
   el.innerHTML =
-    `<div class="cards" style="margin-bottom:12px">${model(d.fixed_horizon, 'Vaste horizon ('+d.params.horizon_candles+' candles)')}${model(d.tpsl, 'TP/SL (ATR '+d.params.atr_stop_multiplier+'x, R/R '+d.params.reward_risk_ratio+')')}</div>` +
-    `<p class="muted" style="font-size:12px">${d.n_vetos} veto's · positie € ${fmt(d.position_size_eur)} · round-trip kosten ${fmt(d.cost_pct,2)}% · netto negatief = veto voorkwam verlies, positief = veto sneed winst weg</p>` +
+    `<div class="cards" style="margin-bottom:12px">${model(d.fixed_horizon, 'Vaste horizon ('+d.params.horizon_candles+' candles)')}${model(d.tpsl, 'TP/SL (ATR '+d.params.atr_stop_multiplier+'x, R/R '+d.params.reward_risk_ratio+')')}${real}</div>` +
+    progress +
+    `<p class="muted" style="font-size:12px">${d.n_vetos} veto's · positie € ${fmt(d.position_size_eur)} · round-trip kosten ${fmt(d.cost_pct,2)}% · netto negatief = veto voorkwam verlies, positief = veto sneed winst weg · marge = 95% Wilson</p>` +
     suspect +
+    '<h2 style="margin-top:14px">Per veto-reden (vaste horizon)</h2><table>' + bd(d.by_reason||[]) + '</table>' +
     '<h2 style="margin-top:14px">Per markt (vaste horizon)</h2><table>' + bd(d.by_market||[]) + '</table>' +
     '<h2 style="margin-top:14px">Per confidence (vaste horizon)</h2><table>' + bd(d.by_confidence||[]) + '</table>';
 }

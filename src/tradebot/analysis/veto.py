@@ -20,6 +20,7 @@ wat de bot daadwerkelijk zou hebben gedaan.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 
 from ..exchange import Candle, ExchangeAdapter
@@ -37,6 +38,25 @@ _SUSPECT_SUBSTRINGS = ("lower bollinger", "lower band", "near lower", "onderband
 
 _CONF_BUCKETS = [(0.0, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.01)]
 
+# Categorisatie van veto-redenen. Doel: mean-reversion-vetoes (die een
+# momentum-instap omkeren) los kunnen beoordelen van mechanische redenen die de
+# strategie zelf niet dekt (spread, data, volatiliteit). Eerste match wint.
+_REASON_CATEGORIES: list[tuple[str, tuple[str, ...]]] = [
+    ("mean-reversion", ("bollinger", "lower band", "upper band", "onderband", "bovenband",
+                        "overextension", "overextended", "overbought", "oversold",
+                        "mean revert", "mean-revert", "stretched", "parabolic",
+                        "too far", "extended", "pullback", "reversal")),
+    ("volatiliteit", ("volatile", "volatilit", "atr", "whipsaw", "choppy", "erratic",
+                      "wild swing")),
+    ("liquiditeit/spread", ("spread", "illiquid", "thin", "low volume", "lage volume",
+                            "liquidity", "liquiditeit", "slippage")),
+    ("data-integriteit", ("stale", "missing data", "insufficient data", "no data",
+                          "geen data", "onvoldoende data", "corrupt", "gap in data")),
+]
+
+# Doelaantal afgewikkelde trades voor een schone precisiemeting op een config.
+TARGET_RESOLVED = 20
+
 
 @dataclass
 class VetoOutcome:
@@ -49,9 +69,22 @@ class VetoOutcome:
     net_tpsl_pct: float | None       # TP/SL rendement, netto na kosten
     tpsl_exit: str                   # "stop" | "target" | "timeout"
     suspect_reason: bool             # reden is richting-technisch verdacht
+    category: str = "overig"         # veto-reden-categorie
+    real_net_pct: float | None = None  # ECHTE shadow-trade uitkomst, netto na fees
+    real_exit: str = ""              # "target" | "stop" | "overig" (uit trade-reason)
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class RoundTrip:
+    """Een afgewikkelde paper-trade (buy gekoppeld aan zijn sluitende sell)."""
+    market: str
+    buy_ms: int
+    sell_ms: int
+    net_pct: float                   # gerealiseerde pnl / inleg * 100 (pnl is al netto fees)
+    exit: str                        # "target" | "stop" | "overig"
 
 
 @dataclass
@@ -159,15 +192,91 @@ def _is_suspect(reasoning: str) -> bool:
     return any(sub in t for sub in _SUSPECT_SUBSTRINGS)
 
 
+def _categorize(reasoning: str) -> str:
+    """Wijs een veto-reden toe aan een categorie (eerste match wint)."""
+    t = (reasoning or "").lower()
+    for cat, subs in _REASON_CATEGORIES:
+        if any(s in t for s in subs):
+            return cat
+    return "overig"
+
+
+def _classify_exit(reason: str) -> str:
+    """Leid uit de trade-reden af of de exit een target of stop was."""
+    t = (reason or "").lower()
+    if "take profit" in t or "take-profit" in t or "target" in t:
+        return "target"
+    if "stop" in t:
+        return "stop"
+    return "overig"
+
+
+# --- echte shadow-uitkomst (round-trips uit de trades-tabel) ----------------
+
+def build_roundtrips(trades: list[dict]) -> list[RoundTrip]:
+    """Koppel buys aan hun sluitende sell per markt, chronologisch. Steunt op de
+    invariant "één positie per markt": de eerstvolgende sell sluit de open buy.
+    """
+    by_market: dict[str, list[dict]] = {}
+    for t in sorted(trades, key=lambda x: _to_ms(x["ts"])):
+        by_market.setdefault(t["market"], []).append(t)
+    out: list[RoundTrip] = []
+    for market, seq in by_market.items():
+        open_buy: dict | None = None
+        for t in seq:
+            side = (t.get("side") or "").lower()
+            if side == "buy" and open_buy is None:
+                open_buy = t
+            elif side == "sell" and open_buy is not None:
+                notional = float(open_buy["amount"]) * float(open_buy["price"])
+                net = (float(t.get("pnl_eur") or 0.0) / notional * 100) if notional > 0 else 0.0
+                out.append(RoundTrip(market, _to_ms(open_buy["ts"]), _to_ms(t["ts"]),
+                                     round(net, 4), _classify_exit(t.get("reason", ""))))
+                open_buy = None
+    return out
+
+
+def match_real_outcome(veto_ms: int, market: str, roundtrips: list[RoundTrip],
+                       window_ms: int) -> RoundTrip | None:
+    """Koppel een veto aan de trade die er direct uit volgde: de vroegste buy op
+    dezelfde markt op/na het veto-moment, binnen `window_ms`.
+    """
+    best: RoundTrip | None = None
+    for rt in roundtrips:
+        if rt.market != market or rt.buy_ms < veto_ms or rt.buy_ms - veto_ms > window_ms:
+            continue
+        if best is None or rt.buy_ms < best.buy_ms:
+            best = rt
+    return best
+
+
+def _wilson_half_width(k: int, n: int, z: float = 1.96) -> float:
+    """95%-Wilson-halfbreedte (in procentpunten) voor een aandeel k/n. Bij kleine
+    n eerlijker dan de normale benadering; geeft 0 terug bij n=0.
+    """
+    if n <= 0:
+        return 0.0
+    p = k / n
+    denom = 1 + z * z / n
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return round(half * 100, 1)
+
+
 # --- kern ------------------------------------------------------------------
 
 def evaluate_vetos(vetos: list[dict], candles_by_market: dict[str, list[Candle]],
-                   strategy_cfg: dict, p: VetoParams) -> tuple[list[VetoOutcome], dict]:
+                   strategy_cfg: dict, p: VetoParams,
+                   roundtrips: list[RoundTrip] | None = None
+                   ) -> tuple[list[VetoOutcome], dict]:
     """Reken elke veto door tegen de meegegeven candles. Puur en testbaar:
     geen DB, geen netwerk. `vetos` = [{ts, market, confidence, reasoning}, ...].
+
+    Met `roundtrips` wordt elke veto ook gekoppeld aan de echte paper-trade die
+    er (in shadow-mode) uit volgde, binnen twee candle-intervallen.
     """
     outcomes: list[VetoOutcome] = []
     skipped: dict[str, int] = {}
+    window_ms = 2 * interval_seconds(p.interval) * 1000
 
     def skip(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
@@ -197,16 +306,22 @@ def evaluate_vetos(vetos: list[dict], candles_by_market: dict[str, list[Candle]]
         if net_fixed is None and net_tpsl is None:
             skip("geen_forward_data")
             continue
+        reasoning = v.get("reasoning") or ""
+        real = (match_real_outcome(veto_ms, market, roundtrips, window_ms)
+                if roundtrips else None)
         outcomes.append(VetoOutcome(
             ts=str(v["ts"]),
             market=market,
             confidence=float(v.get("confidence") or 0.0),
-            reasoning=v.get("reasoning") or "",
+            reasoning=reasoning,
             entry_price=round(entry, 8),
             net_fixed_pct=None if net_fixed is None else round(net_fixed, 4),
             net_tpsl_pct=None if net_tpsl is None else round(net_tpsl, 4),
             tpsl_exit=exit_reason,
-            suspect_reason=_is_suspect(v.get("reasoning") or ""),
+            suspect_reason=_is_suspect(reasoning),
+            category=_categorize(reasoning),
+            real_net_pct=None if real is None else real.net_pct,
+            real_exit="" if real is None else real.exit,
         ))
     return outcomes, skipped
 
@@ -224,6 +339,7 @@ def _summ(values: list[float], pos_size: float) -> dict | None:
     return {
         "n": n,
         "veto_precision_pct": round(len(avoided) / n * 100, 1),
+        "precision_margin_pp": _wilson_half_width(len(avoided), n),
         "n_avoided": len(avoided),
         "n_missed": len(missed),
         "avoided_eur": round(avoided_eur, 2),
@@ -257,13 +373,19 @@ def _conf_bucket(conf: float) -> str:
     return "onbekend"
 
 
-def summarize(outcomes: list[VetoOutcome], skipped: dict, p: VetoParams) -> dict:
+def summarize(outcomes: list[VetoOutcome], skipped: dict, p: VetoParams,
+              config_hash: str | None = None) -> dict:
     """Bouw de JSON-vriendelijke samenvatting voor dashboard/CLI."""
     fixed_vals = [o.net_fixed_pct for o in outcomes if o.net_fixed_pct is not None]
     tpsl_vals = [o.net_tpsl_pct for o in outcomes if o.net_tpsl_pct is not None]
+    real_vals = [o.real_net_pct for o in outcomes if o.real_net_pct is not None]
     suspect = [o for o in outcomes if o.suspect_reason]
     return {
         "n_vetos": len(outcomes),
+        "config_hash": config_hash,
+        "config_scope": "current" if config_hash else "all",
+        "n_real_matched": len(real_vals),
+        "target_resolved": TARGET_RESOLVED,
         "position_size_eur": round(p.position_size_eur, 2),
         "cost_pct": round(p.cost_pct, 3),
         "params": {
@@ -274,6 +396,9 @@ def summarize(outcomes: list[VetoOutcome], skipped: dict, p: VetoParams) -> dict
         },
         "fixed_horizon": _summ(fixed_vals, p.position_size_eur),
         "tpsl": _summ(tpsl_vals, p.position_size_eur),
+        "real_outcome": _summ(real_vals, p.position_size_eur),
+        "by_reason": _breakdown(outcomes, lambda o: o.category, "net_fixed_pct",
+                                p.position_size_eur),
         "by_market": _breakdown(outcomes, lambda o: o.market, "net_fixed_pct",
                                 p.position_size_eur),
         "by_confidence": _breakdown(outcomes, lambda o: _conf_bucket(o.confidence),
@@ -286,15 +411,29 @@ def summarize(outcomes: list[VetoOutcome], skipped: dict, p: VetoParams) -> dict
 
 # --- toplevel: DB + Bitvavo ------------------------------------------------
 
-def _load_vetos_from_db() -> list[dict]:
+def _load_vetos_from_db(config_hash: str | None = None) -> list[dict]:
     from sqlalchemy import select
 
     from ..db import LLMCallRow, session
     with session() as s:
-        rows = s.execute(select(LLMCallRow).order_by(LLMCallRow.ts.asc())).scalars().all()
+        stmt = select(LLMCallRow).order_by(LLMCallRow.ts.asc())
+        if config_hash is not None:
+            stmt = stmt.where(LLMCallRow.config_hash == config_hash)
+        rows = s.execute(stmt).scalars().all()
     return [{"ts": r.ts, "market": r.market, "confidence": r.confidence,
              "reasoning": r.reasoning}
             for r in rows if r.verdict == "veto" and r.market]
+
+
+def _load_roundtrips_from_db() -> list[dict]:
+    from sqlalchemy import select
+
+    from ..db import TradeRow, session
+    with session() as s:
+        rows = s.execute(select(TradeRow).where(TradeRow.mode == "paper")
+                         .order_by(TradeRow.ts.asc())).scalars().all()
+    return [{"ts": r.ts, "market": r.market, "side": r.side, "amount": r.amount,
+             "price": r.price, "pnl_eur": r.pnl_eur, "reason": r.reason} for r in rows]
 
 
 def _fetch_candles(adapter: ExchangeAdapter, markets: list[str], min_ms: int,
@@ -315,30 +454,42 @@ def _fetch_candles(adapter: ExchangeAdapter, markets: list[str], min_ms: int,
 
 def analyze_vetos(adapter: ExchangeAdapter, cfg, *, vetos: list[dict] | None = None,
                   candles_by_market: dict[str, list[Candle]] | None = None,
+                  trades: list[dict] | None = None, config_hash: str | None = None,
                   horizon_candles: int = 6, tpsl_max_candles: int = 48) -> dict:
     """Toplevel: laad vetos (DB), haal candles (Bitvavo), reken door, vat samen.
 
-    Injecteer `vetos` en/of `candles_by_market` om DB/netwerk te omzeilen
-    (gebruikt in tests).
+    `config_hash` beperkt de meting tot vetoes van één configuratie (schone
+    meting op de nieuwe config). Injecteer `vetos`, `candles_by_market` en/of
+    `trades` om DB/netwerk te omzeilen (gebruikt in tests).
     """
     p = params_from_config(cfg, horizon_candles, tpsl_max_candles)
     if vetos is None:
-        vetos = _load_vetos_from_db()
+        vetos = _load_vetos_from_db(config_hash)
     if not vetos:
-        return summarize([], {"geen_vetos": 1}, p)
+        return summarize([], {"geen_vetos": 1}, p, config_hash)
+    if trades is None:
+        # candles_by_market == None duidt een echte (online) run aan; alleen dan
+        # de DB raadplegen. Bij geinjecteerde candles (offline tests) geen DB.
+        trades = _load_roundtrips_from_db() if candles_by_market is None else []
+    roundtrips = build_roundtrips(trades)
     if candles_by_market is None:
         markets = sorted({v["market"] for v in vetos})
         min_ms = min(_to_ms(v["ts"]) for v in vetos)
         candles_by_market = _fetch_candles(adapter, markets, min_ms, p)
-    outcomes, skipped = evaluate_vetos(vetos, candles_by_market, cfg.strategy, p)
-    return summarize(outcomes, skipped, p)
+    outcomes, skipped = evaluate_vetos(vetos, candles_by_market, cfg.strategy, p, roundtrips)
+    return summarize(outcomes, skipped, p, config_hash)
 
 
 def main() -> None:
-    """CLI: python -m tradebot.analysis.veto  (leest llm_calls uit de DB)."""
-    import json
+    """CLI: python -m tradebot.analysis.veto [--all]
 
-    from ..config import get_config, get_secrets
+    Standaard alleen de huidige config (schone meting). `--all` meet elke veto
+    ooit, ongeacht configuratie (de vervuilde totaalmeting).
+    """
+    import json
+    import sys
+
+    from ..config import config_fingerprint, get_config, get_secrets
     from ..db import init_db
     from ..exchange import BitvavoClient
     cfg = get_config()
@@ -346,7 +497,9 @@ def main() -> None:
     init_db(secrets.database_url)
     feed = BitvavoClient(secrets.bitvavo_api_key, secrets.bitvavo_api_secret,
                          cfg.fees["maker_pct"], cfg.fees["taker_pct"])
-    result = analyze_vetos(feed, cfg)
+    scope_all = "--all" in sys.argv[1:]
+    config_hash = None if scope_all else config_fingerprint(cfg)
+    result = analyze_vetos(feed, cfg, config_hash=config_hash)
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
 

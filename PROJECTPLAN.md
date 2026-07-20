@@ -1,6 +1,6 @@
 # Projectplan: AI Trade Platform
 
-Laatste update: 2026-07-19
+Laatste update: 2026-07-20
 
 ## Doel
 
@@ -69,10 +69,11 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] Backtests op 2+ jaar data per markt: `python -m tradebot.backtest BTC-EUR --interval 4h --limit 4400`
 - [ ] Parameter-tuning: `python -m tradebot.optimizer BTC-EUR --limit 3000` (kies op test-kolom, niet train)
 - [x] Tooling LLM-veto-waarde: counterfactual-analyse per veto (voorkwam verlies vs. sneed winst weg), beide exit-modellen, richting-check op veto-redenen — dashboard-sectie + `python -m tradebot.analysis.veto` (v0.12.0)
-- [ ] LLM-veto-waarde beoordelen: veto-rate + steekproef veto-redenen vs. koersverloop erna (met bovenstaande tool zodra er veto's zijn)
+- [x] Veto-checker in de app uitgebreid (v0.14.0): config-scoping (config-hash per veto, schone meting op nieuwe config los van de oude), echte shadow-trade-uitkomst naast de counterfactual, precisie plus 95%-Wilson-marge, uitsplitsing per veto-reden (mean-reversion apart). Dashboard-sectie + CLI (`--all` voor de vervuilde totaalmeting). Vervangt de handmatige xlsx-tracker als primaire meting
+- [ ] LLM-veto-waarde beoordelen: veto-rate + veto-redenen vs. echte uitkomst op de nieuwe config (met de uitgebreide tool, doel 15-20 afgewikkelde trades)
 - [~] Eerste uitkomst v0.12.0-tool (86 veto's): netto gate negatief onder beide modellen (vaste horizon -€32, TP/SL -€272); 67% van de veto's blokkeert op "onderste Bollinger-band" wat de strategie juist als koopreden telt. Veto lijkt waardevernietigend, hypothese: omgekeerde mean-reversion-lezing in de LLM
 - [ ] Shadow-mode-experiment (v0.13.0): `llm_veto_binding: false` in paper, 4 weken met-veto vs. zonder-veto vergelijken; daarna prompt fixen of veto schrappen
-- [ ] Handmatige shadow-veto tracker (`docs/shadow-veto-tracker.xlsx`): koppelt elke veto aan uitkomst (TP/SL) en fictieve P&L na fees, meet precisie plus netto euro-impact per veto-reden op de nieuwe config over 15-20 afgewikkelde trades, los van de vervuilde meting van de oude config. Beslismetric is euro-impact na fees, niet precisie; 95%-marge staat op het dashboard zodat n=20 niet als hard bewijs telt
+- [x] Handmatige shadow-veto tracker (`docs/shadow-veto-tracker.xlsx`): koppelt elke veto aan uitkomst (TP/SL) en fictieve P&L na fees. Diende als ontwerp; nu geautomatiseerd in de app (v0.14.0). Blijft bruikbaar voor handmatige sanity-checks
 - [ ] Go/no-go criteria vastleggen (voorstel: win-rate > 45% én netto positief na fees over 100+ trades)
 
 ### Fase 3 — Live (code gebouwd in v0.11.0, activering pas na fase 2 go)
@@ -131,4 +132,5 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 | 2026-07-16 | v0.12.0: veto-analyse — counterfactual per gevetoode buy (voorkwam verlies vs. sneed winst weg) met beide exit-modellen (vaste horizon + ATR-TP/SL, hergebruik van strategie- en fee-logica), richting-check die veto's op "onderste Bollinger-band" flagt (strategie scoort datzelfde signaal juist als koopreden). Nieuwe module `tradebot.analysis.veto`, dashboard-sectie met 30-min cache, CLI `python -m tradebot.analysis.veto` | 88 tests (14 nieuw + 1 live-marker), ruff |
 | 2026-07-16 | v0.13.0: LLM-veto shadow-mode. Schakelaar `decision.llm_veto_binding` (plus env `TRADEBOT_LLM_VETO_BINDING` voor HA-optie zonder commit): false betekent dat het veto gelogd wordt maar de koop niet blokkeert, zodat de gate-waarde gemeten wordt zonder trades te kosten. Veto-logica uit de engine getild naar de testbare `apply_second_opinion()`. Aanleiding: v0.12.0-analyse toonde de bindende veto als netto waardevernietigend | 94 tests (6 nieuw), ruff |
 | 2026-07-19 | docs: handmatige shadow-veto tracker (`docs/shadow-veto-tracker.xlsx`) toegevoegd. Koppelt elke veto aan uitkomst (TP/SL) en fictieve P&L na fees, meet precisie plus netto euro-impact per veto-reden op de nieuwe config, met 95%-marge zodat n=20 niet als hard bewijs telt. Aanleiding: shadow-veto op ETH bleek een momentum-instap om te keren met mean-reversion-argumenten (Bollinger, 24h-change), dezelfde omgekeerde lezing als in v0.12.0 | n.v.t. (analyse-artefact) |
+| 2026-07-20 | v0.14.0: veto-checker in de app. Config-hash per veto (`llm_calls.config_hash`, sqlite-migratie) scheidt configs, zodat precisie schoon op de nieuwe config gemeten wordt los van de vervuilde oude. Echte shadow-trade-uitkomst (round-trip-matching veto->buy->sell binnen 2 candles) naast de bestaande candle-counterfactual. Precisie met 95%-Wilson-marge, uitsplitsing per veto-reden (mean-reversion apart), voortgang naar 20 afgewikkelde trades. Dashboard-sectie uitgebreid, CLI `--all` voor de totaalmeting | 101 tests (7 nieuw), ruff, bandit, pip-audit schoon |
 | 2026-07-20 | v0.13.2: grafiek-assen op dashboard. Zowel equity-verloop als koersgrafiek toonden alleen lijnen zonder assen. Toegevoegd: gedeelde JS-helpers `niceScale` (nette tick-waarden + auto-decimalen, werkt van BTC ~€56k tot sub-cent coins) en `xAxis` (datumlabels). Y-as met gridlines + waarde-labels en x-as met datumlabels op beide grafieken; equity-SVG verhoogd naar 120px voor labelruimte. Alleen inline frontend-JS in `web.py`, geen backend-logica geraakt | node `--check` op gewijzigde JS, niceScale range-check (4 bereiken), `ast.parse` compile-check. Pytest niet in deze omgeving gedraaid (geen backend-wijziging) |

@@ -66,6 +66,7 @@ class LLMCallRow(Base):
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     reasoning: Mapped[str] = mapped_column(String(2000), default="")
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    config_hash: Mapped[str] = mapped_column(String(16), default="")
 
 
 class EquityRow(Base):
@@ -94,14 +95,19 @@ def init_db(database_url: str) -> None:
     _engine = create_engine(database_url, future=True)
     _Session = sessionmaker(_engine, expire_on_commit=False)
     Base.metadata.create_all(_engine)
-    # Mini-migratie: mode-kolom op bestaande sqlite-databases (create_all voegt geen kolommen toe)
+    # Mini-migraties: create_all voegt geen kolommen toe aan bestaande sqlite-tabellen.
+    # Statements bewust volledig literal (geen interpolatie) i.v.m. SQL-injectie-linting.
     if _engine.dialect.name == "sqlite":
         with _engine.connect() as conn:
-            cols = [r[1] for r in conn.exec_driver_sql("PRAGMA table_info(positions)")]
-            if "mode" not in cols:
+            pos_cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info(positions)")}
+            if "mode" not in pos_cols:
                 conn.exec_driver_sql(
                     "ALTER TABLE positions ADD COLUMN mode VARCHAR(6) DEFAULT 'paper'")
-                conn.commit()
+            llm_cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info(llm_calls)")}
+            if "config_hash" not in llm_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE llm_calls ADD COLUMN config_hash VARCHAR(16) DEFAULT ''")
+            conn.commit()
 
 
 def session() -> Session:

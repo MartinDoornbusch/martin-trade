@@ -1,6 +1,8 @@
 """Central configuration: .env secrets + config.yaml strategy parameters."""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -58,6 +60,21 @@ class AppConfig(BaseModel):
 @lru_cache
 def get_secrets() -> Secrets:
     return Secrets()
+
+
+def config_fingerprint(cfg) -> str:
+    """Korte, stabiele hash over de veto-relevante config (strategy, decision,
+    fees). Scheidt metingen per configuratie zodat vetoes van een oude config
+    de precisie van een nieuwe niet vervuilen. Duck-typed: werkt met AppConfig
+    of elk object met dezelfde attributen (SimpleNamespace in tests).
+    """
+    payload = {
+        "strategy": dict(getattr(cfg, "strategy", {}) or {}),
+        "decision": dict(getattr(cfg, "decision", {}) or {}),
+        "fees": dict(getattr(cfg, "fees", {}) or {}),
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
 def _csv_env(name: str) -> list[str] | None:
