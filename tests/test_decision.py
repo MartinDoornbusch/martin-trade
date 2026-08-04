@@ -37,6 +37,47 @@ def test_fee_model_round_trip():
     assert FEES.min_edge_pct(0.5) == 1.1  # 0.5 fees + 0.1 slippage + 0.5 profit
 
 
+# --- sizing-modi ------------------------------------------------------------
+
+BUCKET_CFG = {"sizing": "bucket", "bucket_eur": 250.0, "max_position_pct": 25.0,
+              "max_open_positions": 10, "cooldown_hours_after_trade": 12,
+              "daily_loss_cap_pct": 3.0, "paper_start_eur": 1000.0}
+
+
+def test_percent_mode_is_default_and_unchanged():
+    rm = RiskManager(RISK_CFG)  # geen "sizing" -> percent
+    assert rm.effective_max_positions(1000.0) == 3
+    assert rm.effective_max_positions(5000.0) == 3  # vast
+    assert rm.position_size_eur(1000.0, 1000.0) == 250.0  # 25%
+
+
+def test_bucket_mode_scales_slots_with_capital():
+    rm = RiskManager(BUCKET_CFG)
+    assert rm.effective_max_positions(1000.0) == 4   # 1000/250
+    assert rm.effective_max_positions(1249.0) == 4   # net onder de grens
+    assert rm.effective_max_positions(1250.0) == 5   # extra slot
+    assert rm.effective_max_positions(1500.0) == 6
+    assert rm.effective_max_positions(9999.0) == 10  # geplafonneerd op max_open_positions
+
+
+def test_bucket_mode_fixed_position_size():
+    rm = RiskManager(BUCKET_CFG)
+    assert rm.position_size_eur(2000.0, 2000.0) == 250.0  # vast bedrag, niet 25%
+    assert rm.position_size_eur(2000.0, 120.0) == 120.0   # begrensd door vrije cash
+
+
+def test_bucket_mode_can_open_respects_dynamic_max():
+    rm = RiskManager(BUCKET_CFG)
+    # Bij portfolio 1000 zijn er 4 slots; 4 open posities blokkeert de 5e.
+    open_pos = [Position(f"M{i}-EUR", 1.0, 100.0, 98.0, 104.0,
+                         datetime.now(timezone.utc)) for i in range(4)]
+    ok, why = rm.can_open("NEW-EUR", open_pos, None, 1000.0, 0.0)
+    assert not ok and "max open positions (4)" in why
+    # Bij portfolio 1250 komt er een slot bij; de 5e mag dan wel.
+    ok2, _ = rm.can_open("NEW-EUR", open_pos, None, 1250.0, 0.0)
+    assert ok2
+
+
 # --- LLM second opinion / shadow-mode ---------------------------------------
 
 def _buy_decision() -> Decision:

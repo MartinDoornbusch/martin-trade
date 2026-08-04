@@ -39,8 +39,10 @@ decision:
 
 risk:
   paper_start_eur: 1000.0
-  max_position_pct: 25.0             # max % van portfolio per positie (4 x 25% = 100% inzetbaar over 4 slots)
-  max_open_positions: 4
+  sizing: "bucket"                   # "bucket": vast bedrag per positie, aantal slots schaalt met kapitaal (1 extra per bucket). "percent": vast % van portfolio (legacy)
+  bucket_eur: 250.0                  # bucket-modus: vast bedrag per positie EN kapitaal per extra slot (> EUR1250 = 5 slots, > EUR1500 = 6, enz.)
+  max_position_pct: 25.0             # percent-modus: max % van portfolio per positie
+  max_open_positions: 10             # hard plafond op het aantal open posities (in bucket-modus de bovengrens)
   cooldown_hours_after_trade: 12     # per markt; voorkomt fee-vretende flip-flops
   daily_loss_cap_pct: 3.0            # stop met kopen als dagverlies dit overschrijdt
   max_correlation: 0.85              # blokkeer 2e positie als return-correlatie hoger is

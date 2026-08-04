@@ -104,8 +104,12 @@ def params_from_config(cfg, horizon_candles: int = 6,
     """Bouw analyse-parameters uit de app-config (fees, decision, risk)."""
     taker = float(cfg.fees["taker_pct"])
     slippage = float(cfg.fees.get("slippage_buffer_pct", 0.0))
-    pos = (float(cfg.risk["paper_start_eur"])
-           * float(cfg.risk["max_position_pct"]) / 100.0)
+    risk = cfg.risk
+    bucket = float(risk.get("bucket_eur", 0.0) or 0.0)
+    if str(risk.get("sizing", "percent")).lower() == "bucket" and bucket > 0:
+        pos = bucket
+    else:
+        pos = float(risk["paper_start_eur"]) * float(risk["max_position_pct"]) / 100.0
     return VetoParams(
         interval=cfg.schedule["candle_interval"],
         cost_pct=2 * taker + slippage,

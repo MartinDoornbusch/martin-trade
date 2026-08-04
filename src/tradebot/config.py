@@ -49,7 +49,7 @@ class AppConfig(BaseModel):
     strategy: dict[str, Any]
     fees: dict[str, float]
     decision: dict[str, Any]
-    risk: dict[str, float]
+    risk: dict[str, Any]
     regime: dict[str, Any] = {}
     llm: dict[str, Any]
 
@@ -125,8 +125,12 @@ def get_config() -> AppConfig:
         ("TRADEBOT_MAX_POSITION_PCT", "risk", "max_position_pct", float),
         ("TRADEBOT_MAX_OPEN_POSITIONS", "risk", "max_open_positions", float),
         ("TRADEBOT_COOLDOWN_HOURS", "risk", "cooldown_hours_after_trade", float),
+        ("TRADEBOT_POSITION_BUCKET_EUR", "risk", "bucket_eur", float),
     ]:
         val = _num_env(env, cast)
         if val is not None:
             data[section][key] = val
+    sizing = os.environ.get("TRADEBOT_SIZING", "").strip().lower()
+    if sizing in ("bucket", "percent"):
+        data["risk"]["sizing"] = sizing
     return AppConfig(**data)

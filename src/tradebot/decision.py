@@ -55,19 +55,45 @@ class Decision:
 
 
 class RiskManager:
+    """Positielimieten en -grootte. Twee sizing-modi:
+
+    * "percent" (standaard, legacy): elke positie is `max_position_pct`% van het
+      portfolio; het aantal slots is vast (`max_open_positions`).
+    * "bucket": elke positie is een vast bedrag (`bucket_eur`) en het aantal
+      slots schaalt mee met het kapitaal (1 extra slot per bucket), begrensd door
+      `max_open_positions`. Zo komt er boven elke `bucket_eur` aan groei een
+      positie bij (bijv. > €1250 = 5 slots, > €1500 = 6) zonder bestaande
+      posities te verkleinen. `max_open_positions` is in deze modus het plafond.
+    """
+
     def __init__(self, cfg: dict):
+        self.sizing = str(cfg.get("sizing", "percent")).lower()
+        self.bucket_eur = float(cfg.get("bucket_eur", 0.0) or 0.0)
         self.max_position_pct = float(cfg["max_position_pct"])
         self.max_open_positions = int(cfg["max_open_positions"])
         self.cooldown = timedelta(hours=float(cfg["cooldown_hours_after_trade"]))
         self.daily_loss_cap_pct = float(cfg["daily_loss_cap_pct"])
+
+    def _bucket_mode(self) -> bool:
+        return self.sizing == "bucket" and self.bucket_eur > 0
+
+    def effective_max_positions(self, portfolio_eur: float) -> int:
+        """Aantal toegestane open posities gegeven het huidige kapitaal. In
+        bucket-modus: floor(portfolio / bucket), begrensd op [1, max_open_positions].
+        In percent-modus: het vaste `max_open_positions`."""
+        if not self._bucket_mode():
+            return self.max_open_positions
+        by_capital = int(portfolio_eur // self.bucket_eur)
+        return max(1, min(self.max_open_positions, by_capital))
 
     def can_open(self, market: str, open_positions: list[Position],
                  last_trade_at: datetime | None, portfolio_eur: float,
                  daily_pnl_eur: float) -> tuple[bool, str]:
         if any(p.market == market for p in open_positions):
             return False, "position already open in this market"
-        if len(open_positions) >= self.max_open_positions:
-            return False, f"max open positions ({self.max_open_positions}) reached"
+        eff_max = self.effective_max_positions(portfolio_eur)
+        if len(open_positions) >= eff_max:
+            return False, f"max open positions ({eff_max}) reached"
         if last_trade_at and datetime.now(timezone.utc) - last_trade_at < self.cooldown:
             return False, f"cooldown active until {(last_trade_at + self.cooldown).isoformat()}"
         if portfolio_eur > 0 and daily_pnl_eur < -portfolio_eur * self.daily_loss_cap_pct / 100:
@@ -75,6 +101,8 @@ class RiskManager:
         return True, "ok"
 
     def position_size_eur(self, portfolio_eur: float, free_eur: float) -> float:
+        if self._bucket_mode():
+            return min(self.bucket_eur, free_eur)
         return min(portfolio_eur * self.max_position_pct / 100, free_eur)
 
 

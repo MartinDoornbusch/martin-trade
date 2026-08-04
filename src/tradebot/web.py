@@ -11,7 +11,7 @@ from .backtest import max_drawdown_pct
 from .config import config_fingerprint, get_config, get_secrets
 from .correlation import correlation_from_closes
 from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, session
-from .decision import FeeModel
+from .decision import FeeModel, RiskManager
 from .exchange import BitvavoClient
 from .indicators import ema
 from .lists import get_lists, is_paused, modify, set_paused
@@ -268,8 +268,11 @@ def portfolio():
             "unrealized_pnl_eur": round(value - cost, 2),
             "stop_loss": p.stop_loss, "take_profit": p.take_profit,
         })
+    risk = RiskManager(get_config().risk)
+    max_pos = risk.effective_max_positions(total)
     return {"cash_eur": round(cash, 2), "total_eur": round(total, 2),
-            "fees_cumulative_eur": round(fees_cum, 2), "positions": out}
+            "fees_cumulative_eur": round(fees_cum, 2), "positions": out,
+            "max_positions": max_pos, "open_positions": len(out)}
 
 
 @app.get("/api/balance", dependencies=[Depends(check_token)])
@@ -453,7 +456,7 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 <section><h2>Grafiek <select id="chartsel" onchange="loadChart(this.value)"></select> <span class="muted" id="chartinfo"></span></h2><svg id="chart" width="100%" height="260" preserveAspectRatio="none"></svg></section>
 <section><h2>Instap-advies <span class="muted">(watchlist wordt niet door de bot verhandeld)</span></h2><table id="advice"></table></section>
 <section><h2>Scanner — alle Bitvavo-markten <span class="muted">(kandidaten; toevoegen via add-on-config, elk half uur ververst)</span></h2><table id="scanner"></table></section>
-<section><h2>Paper portfolio — open posities</h2><table id="positions"></table></section>
+<section><h2>Paper portfolio — open posities <span class="muted" id="posmax"></span></h2><table id="positions"></table></section>
 <section><h2>Echte Bitvavo-balans <span class="muted">(incl. in order; bot handelt hier niet op)</span></h2><table id="balance"></table></section>
 <section><h2>Beslissingen / signalen</h2><table id="signals"></table></section>
 <section><h2>Trades (P&amp;L na fees)</h2><table id="trades"></table></section>
@@ -675,6 +678,7 @@ async function load(){
     adv.map(a=> a.error
       ? `<tr><td>${a.market}</td><td colspan="7" class="muted">${a.error}</td></tr>`
       : `<tr><td>${a.market}</td><td class="muted">${a.tradeable?'trade':'watch'}</td><td class="${a.advies.startsWith('instappen')?'pos':(a.advies.startsWith('vermijden')?'neg':'muted')}">${a.advies}</td><td class="num">${a.score}/${a.score_needed}</td><td class="num ${a.fee_ok?'pos':'neg'}">${fmt(a.expected_move_pct)}%</td><td class="num">${fmt(a.min_edge_pct)}%</td><td class="num">${a.correlation==null?'—':fmt(a.correlation)+(a.correlation_with?' ('+a.correlation_with+')':'')}</td><td>${(a.reasons||[]).join('; ')||'—'}</td></tr>`).join('');
+  if(pf.max_positions!=null){ document.getElementById('posmax').textContent = `(${pf.open_positions}/${pf.max_positions} slots)`; }
   document.getElementById('positions').innerHTML =
     '<tr><th>markt</th><th class="num">aantal</th><th class="num">entry</th><th class="num">nu</th><th class="num">waarde</th><th class="num">ongereal. P&L</th><th class="num">SL</th><th class="num">TP</th></tr>' +
     (pf.positions.length ? pf.positions.map(p=>`<tr><td>${p.market}</td><td class="num">${p.amount.toFixed(6)}</td><td class="num">${fmtp(p.entry_price)}</td><td class="num">${fmtp(p.current_price)}</td><td class="num">€ ${fmt(p.value_eur)}</td><td class="num ${cls(p.unrealized_pnl_eur)}">€ ${fmt(p.unrealized_pnl_eur)}</td><td class="num">${fmtp(p.stop_loss)}</td><td class="num">${fmtp(p.take_profit)}</td></tr>`).join('')
