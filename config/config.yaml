@@ -39,8 +39,8 @@ decision:
 
 risk:
   paper_start_eur: 1000.0
-  max_position_pct: 25.0             # max % van portfolio per positie
-  max_open_positions: 3
+  max_position_pct: 20.0             # max % van portfolio per positie (5 x 20% = 100% inzetbaar over 5 slots)
+  max_open_positions: 5
   cooldown_hours_after_trade: 12     # per markt; voorkomt fee-vretende flip-flops
   daily_loss_cap_pct: 3.0            # stop met kopen als dagverlies dit overschrijdt
   max_correlation: 0.85              # blokkeer 2e positie als return-correlatie hoger is
