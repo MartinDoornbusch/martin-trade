@@ -33,10 +33,13 @@ def test_add_to_watchlist_and_promote(cfg):
 
 
 def test_markets_cap_enforced(cfg):
-    for m in ["A-EUR", "B-EUR", "C-EUR"]:
+    # Fixture start met 2 markten; vul aan tot de cap (MAX_MARKETS) is bereikt.
+    fillers = ["A-EUR", "B-EUR", "C-EUR", "D-EUR", "E-EUR", "F-EUR", "G-EUR",
+               "H-EUR", "I-EUR", "J-EUR"][: MAX_MARKETS - 2]
+    for m in fillers:
         assert modify(cfg, "markets", m, "add")[0]
     assert len(get_lists(cfg)["markets"]) == MAX_MARKETS
-    ok, msg = modify(cfg, "markets", "D-EUR", "add")
+    ok, msg = modify(cfg, "markets", "Z-EUR", "add")
     assert not ok and "max" in msg
 
 

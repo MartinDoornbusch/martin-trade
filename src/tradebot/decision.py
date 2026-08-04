@@ -132,6 +132,34 @@ class DecisionEngine:
                                  "score": candidate.score})
 
 
+def apply_regime_filter(decision: Decision, regime_ok: bool, proxy_market: str,
+                        binding: bool = True) -> Decision:
+    """Pas de markt-brede regime-gate toe op een buy-besluit.
+
+    Volledig gecodeerd, geen AI: als de proxy-markt (BTC) in down-trend staat,
+    is het regime risk-off en worden nieuwe entries geweerd. Spiegelt de
+    shadow-semantiek van `apply_second_opinion`:
+
+    binding=True  : regime-down blokkeert de koop (skip).
+    binding=False : de koop blijft staan, geannoteerd met de regime-reden en
+                    `details["shadow_regime"]`, zodat de gate-waarde gemeten
+                    wordt zonder trades te kosten.
+
+    `regime_ok=True` (uptrend of proxy niet beschikbaar) laat het besluit ongemoeid.
+    """
+    if decision.action != "buy" or regime_ok:
+        return decision
+    reason = f"regime gate: {proxy_market} trend down (risk-off)"
+    if binding:
+        return Decision(decision.market, "skip", reason)
+    return Decision(
+        decision.market, "buy",
+        f"{decision.reason} | SHADOW-REGIME genegeerd: {reason}",
+        amount_quote_eur=decision.amount_quote_eur,
+        stop_loss=decision.stop_loss, take_profit=decision.take_profit,
+        details={**decision.details, "shadow_regime": reason})
+
+
 def apply_second_opinion(decision: Decision, verdict, min_conf: float,
                          binding: bool = True) -> Decision:
     """Pas het LLM-tweede-oordeel toe op een buy-besluit.

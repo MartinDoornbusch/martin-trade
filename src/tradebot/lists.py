@@ -11,7 +11,7 @@ from .db import KVRow, session
 
 MARKETS_KEY = "override_markets"
 WATCHLIST_KEY = "override_watchlist"
-MAX_MARKETS = 5
+MAX_MARKETS = 10
 MAX_WATCHLIST = 15
 _MARKET_RE = re.compile(r"^[A-Z0-9]{1,10}-EUR$")
 

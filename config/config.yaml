@@ -46,6 +46,11 @@ risk:
   max_correlation: 0.85              # blokkeer 2e positie als return-correlatie hoger is
   correlation_lookback: 60           # aantal candles voor de correlatieschatting
 
+regime:                              # markt-brede regime-gate (gecodeerd, geen AI)
+  enabled: true
+  proxy_market: "BTC-EUR"            # BTC als markt-proxy: down-trend = risk-off
+  binding: false                     # false = shadow: gelogd maar blokkeert de koop niet (meet gate-waarde). true pas na bewijs (fase 2 go)
+
 llm:
   providers:                          # volgorde = voorkeursvolgorde
     - name: groq

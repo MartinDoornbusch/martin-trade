@@ -50,6 +50,7 @@ class AppConfig(BaseModel):
     fees: dict[str, float]
     decision: dict[str, Any]
     risk: dict[str, float]
+    regime: dict[str, Any] = {}
     llm: dict[str, Any]
 
     @property
@@ -115,6 +116,11 @@ def get_config() -> AppConfig:
     veto_binding = os.environ.get("TRADEBOT_LLM_VETO_BINDING", "").strip().lower()
     if veto_binding in ("true", "false", "1", "0", "yes", "no"):
         data["decision"]["llm_veto_binding"] = veto_binding in ("true", "1", "yes")
+    for env, key in [("TRADEBOT_REGIME_BINDING", "binding"),
+                     ("TRADEBOT_REGIME_ENABLED", "enabled")]:
+        val = os.environ.get(env, "").strip().lower()
+        if val in ("true", "false", "1", "0", "yes", "no"):
+            data.setdefault("regime", {})[key] = val in ("true", "1", "yes")
     for env, section, key, cast in [
         ("TRADEBOT_MAX_POSITION_PCT", "risk", "max_position_pct", float),
         ("TRADEBOT_MAX_OPEN_POSITIONS", "risk", "max_open_positions", float),

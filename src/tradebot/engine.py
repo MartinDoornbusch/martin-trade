@@ -6,7 +6,14 @@ import logging
 from .config import AppConfig, Secrets
 from .correlation import correlation_from_closes
 from .db import SignalRow, session
-from .decision import Decision, DecisionEngine, FeeModel, RiskManager, apply_second_opinion
+from .decision import (
+    Decision,
+    DecisionEngine,
+    FeeModel,
+    RiskManager,
+    apply_regime_filter,
+    apply_second_opinion,
+)
 from .exchange import BitvavoClient
 from .lists import get_lists, is_paused
 from .live import LiveBroker
@@ -63,6 +70,14 @@ class TradingCycle:
             except Exception:  # noqa: BLE001
                 log.exception("candles ophalen mislukt voor %s", market)
 
+        regime_cfg = self.cfg.regime or {}
+        regime_enabled = bool(regime_cfg.get("enabled", False))
+        proxy_market = str(regime_cfg.get("proxy_market", "BTC-EUR"))
+        regime_binding = bool(regime_cfg.get("binding", False))
+        regime_ok = True
+        if regime_enabled:
+            regime_ok = self._proxy_regime_ok(proxy_market, candles_map, interval, limit)
+
         for market, candles in candles_map.items():
             try:
                 snap = build_snapshot(market, candles, self.cfg.strategy)
@@ -107,6 +122,12 @@ class TradingCycle:
                                 f"> {max_corr}")
                             break
 
+                # 3c) Regime-gate (gecodeerd, markt-breed): geen nieuwe entries
+                # als de proxy-markt (BTC) risk-off staat. Shadow tenzij binding.
+                if decision.action == "buy" and regime_enabled:
+                    decision = apply_regime_filter(decision, regime_ok, proxy_market,
+                                                   regime_binding)
+
                 # 4) LLM second opinion only for BUYs that passed every gate.
                 # De LLM-laag logt het oordeel altijd (llm_calls), ook in shadow-mode.
                 # llm_veto_binding=false laat het veto los: gelogd maar niet-bindend.
@@ -132,6 +153,21 @@ class TradingCycle:
             except Exception:  # noqa: BLE001 - one market must not kill the cycle
                 log.exception("cycle failed for %s", market)
         return decisions
+
+    def _proxy_regime_ok(self, proxy_market: str, candles_map: dict,
+                         interval: str, limit: int) -> bool:
+        """Markt-breed regime: proxy (BTC) EMA-snel >= EMA-traag = risk-on.
+        Fail-open: bij een datafout niet blokkeren, want een regime-storing mag
+        entries niet stilleggen op ruis."""
+        try:
+            candles = candles_map.get(proxy_market)
+            if candles is None:
+                candles = self.feed.get_candles(proxy_market, interval, limit)
+            snap = build_snapshot(proxy_market, candles, self.cfg.strategy)
+            return snap.ema_fast >= snap.ema_slow
+        except Exception:  # noqa: BLE001 - regime-datafout mag de cyclus niet blokkeren
+            log.warning("regime-proxy %s ophalen/bouwen mislukt; fail-open", proxy_market)
+            return True
 
     def check_exits_fast(self) -> int:
         """Position guard: alleen prijs vs SL/TP van open posities (elke minuut).
