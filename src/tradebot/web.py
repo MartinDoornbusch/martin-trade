@@ -472,6 +472,14 @@ const T = new URLSearchParams(location.search).get('token') || '';
 const B = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
 const q = p => fetch(B + p + (p.includes('?')?'&':'?') + 'token=' + T).then(r=>r.json());
 const fmt = (n,d=2) => n==null?'—':Number(n).toLocaleString('nl-NL',{minimumFractionDigits:d,maximumFractionDigits:d});
+// koersformatter: schaalt decimalen mee met de magnitude, zodat sub-cent coins (bv. PUMP) niet als 0,00 tonen
+const fmtp = n => {
+  if (n==null) return '—';
+  const a = Math.abs(n);
+  if (a===0) return fmt(0);
+  const d = a>=1 ? 2 : Math.min(8, Math.max(2, 2 - Math.floor(Math.log10(a))));
+  return Number(n).toLocaleString('nl-NL',{minimumFractionDigits:d,maximumFractionDigits:d});
+};
 // nette as-schaal: geeft tick-waarden + passend aantal decimalen voor een bereik
 function niceScale(lo,hi,n){
   const span=(hi-lo)||Math.abs(hi)||1;
@@ -520,7 +528,7 @@ async function loadChart(market){
   const X = i => padL + (n>1? i/(n-1):0)*(w-padL-padR);
   const Y = v => padT + (1-(v-lo)/span)*(h-padT-padB);
   const line = (arr,color,width,dash='') => `<polyline points="${arr.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="${width}" ${dash?`stroke-dasharray="${dash}"`:''}/>`;
-  const hline = (v,color,label) => `<line x1="${padL}" y1="${Y(v).toFixed(1)}" x2="${w-padR}" y2="${Y(v).toFixed(1)}" stroke="${color}" stroke-dasharray="5,4"/><text x="${w-padR-4}" y="${(Y(v)-4).toFixed(1)}" fill="${color}" font-size="11" text-anchor="end">${label} ${fmt(v)}</text>`;
+  const hline = (v,color,label) => `<line x1="${padL}" y1="${Y(v).toFixed(1)}" x2="${w-padR}" y2="${Y(v).toFixed(1)}" stroke="${color}" stroke-dasharray="5,4"/><text x="${w-padR-4}" y="${(Y(v)-4).toFixed(1)}" fill="${color}" font-size="11" text-anchor="end">${label} ${fmtp(v)}</text>`;
   const sc = niceScale(lo, hi, 5);
   let out = '';
   for (const t of sc.ticks){
@@ -619,7 +627,7 @@ async function load(){
     '<tr><th>markt</th><th class="num">koers</th><th class="num" title="koersverandering laatste 24 uur">24h</th><th class="num" title="momentum 0-100: onder 30 oversold, boven 70 overbought; koopzone 35-45">RSI</th><th title="EMA-snel boven EMA-traag = uptrend">trend</th><th class="num" title="verschil snelle en trage EMA in procenten; groter = sterkere trend">EMA-gap</th><th class="num" title="momentum-omslag: van negatief naar positief = koopconditie">MACD-hist</th><th class="num" title="gemiddelde beweging per candle; bepaalt SL/TP-afstand">ATR</th></tr>' +
     mkts.map(m=> m.error
       ? `<tr><td>${m.market}</td><td colspan="7" class="muted">${m.error}</td></tr>`
-      : `<tr><td>${m.market}</td><td class="num">€ ${fmt(m.price)}</td><td class="num ${cls(m.change_24h_pct)}">${fmt(m.change_24h_pct,1)}%</td><td class="num">${fmt(m.rsi,0)}</td><td class="${m.trend}">${m.trend==='up'?'▲ up':'▼ down'}</td><td class="num">${fmt(m.ema_gap_pct)}%</td><td class="num ${cls(m.macd_hist)}">${fmt(m.macd_hist,4)}</td><td class="num">${fmt(m.atr_pct,1)}%</td></tr>`).join('');
+      : `<tr><td>${m.market}</td><td class="num">€ ${fmtp(m.price)}</td><td class="num ${cls(m.change_24h_pct)}">${fmt(m.change_24h_pct,1)}%</td><td class="num">${fmt(m.rsi,0)}</td><td class="${m.trend}">${m.trend==='up'?'▲ up':'▼ down'}</td><td class="num">${fmt(m.ema_gap_pct)}%</td><td class="num ${cls(m.macd_hist)}">${fmt(m.macd_hist,4)}</td><td class="num">${fmt(m.atr_pct,1)}%</td></tr>`).join('');
   document.getElementById('advice').innerHTML =
     '<tr><th>markt</th><th>type</th><th>advies</th><th class="num">score</th><th class="num">verw. move</th><th class="num">vereist</th><th class="num">correlatie</th><th>toelichting</th></tr>' +
     adv.map(a=> a.error
@@ -627,7 +635,7 @@ async function load(){
       : `<tr><td>${a.market}</td><td class="muted">${a.tradeable?'trade':'watch'}</td><td class="${a.advies.startsWith('instappen')?'pos':(a.advies.startsWith('vermijden')?'neg':'muted')}">${a.advies}</td><td class="num">${a.score}/${a.score_needed}</td><td class="num ${a.fee_ok?'pos':'neg'}">${fmt(a.expected_move_pct)}%</td><td class="num">${fmt(a.min_edge_pct)}%</td><td class="num">${a.correlation==null?'—':fmt(a.correlation)+(a.correlation_with?' ('+a.correlation_with+')':'')}</td><td>${(a.reasons||[]).join('; ')||'—'}</td></tr>`).join('');
   document.getElementById('positions').innerHTML =
     '<tr><th>markt</th><th class="num">aantal</th><th class="num">entry</th><th class="num">nu</th><th class="num">waarde</th><th class="num">ongereal. P&L</th><th class="num">SL</th><th class="num">TP</th></tr>' +
-    (pf.positions.length ? pf.positions.map(p=>`<tr><td>${p.market}</td><td class="num">${p.amount.toFixed(6)}</td><td class="num">${fmt(p.entry_price)}</td><td class="num">${fmt(p.current_price)}</td><td class="num">€ ${fmt(p.value_eur)}</td><td class="num ${cls(p.unrealized_pnl_eur)}">€ ${fmt(p.unrealized_pnl_eur)}</td><td class="num">${fmt(p.stop_loss)}</td><td class="num">${fmt(p.take_profit)}</td></tr>`).join('')
+    (pf.positions.length ? pf.positions.map(p=>`<tr><td>${p.market}</td><td class="num">${p.amount.toFixed(6)}</td><td class="num">${fmtp(p.entry_price)}</td><td class="num">${fmtp(p.current_price)}</td><td class="num">€ ${fmt(p.value_eur)}</td><td class="num ${cls(p.unrealized_pnl_eur)}">€ ${fmt(p.unrealized_pnl_eur)}</td><td class="num">${fmtp(p.stop_loss)}</td><td class="num">${fmtp(p.take_profit)}</td></tr>`).join('')
       : '<tr><td colspan="8" class="muted">geen open posities — de bot wacht op een signaal dat door alle gates komt</td></tr>');
   let balRows;
   if (bal.enabled) {
@@ -646,7 +654,7 @@ async function load(){
   const tr = await q('api/trades?limit=20');
   document.getElementById('trades').innerHTML =
     '<tr><th>tijd</th><th>markt</th><th>kant</th><th class="num">prijs</th><th class="num">fee</th><th class="num">P&L</th></tr>' +
-    (tr.length ? tr.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.market}</td><td>${r.side}</td><td class="num">${fmt(r.price)}</td><td class="num">${fmt(r.fee_eur)}</td><td class="num ${cls(r.pnl_eur)}">${fmt(r.pnl_eur)}</td></tr>`).join('')
+    (tr.length ? tr.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.market}</td><td>${r.side}</td><td class="num">${fmtp(r.price)}</td><td class="num">${fmt(r.fee_eur)}</td><td class="num ${cls(r.pnl_eur)}">${fmt(r.pnl_eur)}</td></tr>`).join('')
       : '<tr><td colspan="6" class="muted">nog geen trades</td></tr>');
   const llm = await q('api/llm?limit=15');
   document.getElementById('llm').innerHTML =
