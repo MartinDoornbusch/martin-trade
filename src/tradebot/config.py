@@ -103,14 +103,21 @@ def _num_env(name: str, cast):
 def get_config() -> AppConfig:
     with open(CONFIG_PATH, encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
-    # HA add-on opties overschrijven de yaml. Alleen operationele knoppen;
-    # strategie-parameters (EMA/score/fee-gate) bewust niet, die gaan via optimizer + commit.
+    # HA add-on opties overschrijven de yaml. Alleen operationele knoppen: een
+    # parameter hoort hier als omzetten een bedrijfsvoeringsbeslissing is die geen
+    # deploy mag vergen én de gemeten strategie niet verandert (universum, sizing,
+    # gate-schakelaars, banlijst). Strategie-parameters (EMA-periodes, RSI-zone,
+    # signaalscore, ATR/RR, fee-gate-drempels, exit-parameters) bewust niet: die
+    # wijzigen de meting zelf en gaan via optimizer/backtest + commit.
     markets = _csv_env("TRADEBOT_MARKETS")
     watchlist = _csv_env("TRADEBOT_WATCHLIST")
+    blocklist = _csv_env("TRADEBOT_BLOCKLIST")
     if markets:
         data["markets"] = markets
     if watchlist is not None:
         data["watchlist"] = watchlist
+    if blocklist is not None:
+        data["blocklist"] = blocklist
     interval_min = _num_env("TRADEBOT_INTERVAL_MINUTES", int)
     if interval_min:
         data["schedule"]["analysis_interval_minutes"] = interval_min
