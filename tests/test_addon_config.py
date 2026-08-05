@@ -124,5 +124,6 @@ def test_strategy_parameters_stay_out_of_the_addon():
                 "rsi_buy_zone_max", "rsi_overbought", "atr_period",
                 "min_signal_score", "min_profit_pct", "atr_stop_multiplier",
                 "reward_risk_ratio", "maker_pct", "taker_pct",
-                "slippage_buffer_pct", "time_stop_candles", "time_stop_min_net_pct"}
+                "slippage_buffer_pct", "time_stop_candles", "time_stop_min_net_pct",
+                "signal_on_closed_candles"}
     assert not (opts & verboden)

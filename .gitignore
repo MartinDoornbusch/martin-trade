@@ -13,3 +13,5 @@ tradebot-addon/config/
 tradebot-addon/requirements.txt
 # patch-bestanden voor de aparte investment-system repo, niet voor deze repo
 investment-system-updates/
+.coverage
+*.disabled

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from .config import AppConfig, Secrets
 from .db import KVRow, SignalRow, session
@@ -25,6 +26,7 @@ from .strategy import (
     breakeven_stop_hit,
     build_snapshot,
     check_exit,
+    drop_unclosed,
     evaluate_buy,
     time_stop_hit,
 )
@@ -32,6 +34,11 @@ from .strategy import (
 log = logging.getLogger(__name__)
 
 LIVE_CONFIRM_PHRASE = "IK BEGRIJP DAT DIT ECHT GELD IS"
+
+# Onder dit aantal candles is een snapshot niet betrouwbaar (Bollinger 20,
+# MACD-slow 26 + signaal 9). Valt de afgeknipte reeks eronder, dan valt de
+# entry-beoordeling terug op de volledige reeks in plaats van op ruis.
+MIN_SNAPSHOT_CANDLES = 40
 
 
 class TradingCycle:
@@ -122,8 +129,10 @@ class TradingCycle:
                         decisions.append(Decision(market, "sell", why))
                         continue
 
-                # 2) Candidate generation (deterministic).
-                candidate = evaluate_buy(snap, self.cfg.strategy)
+                # 2) Candidate generation (deterministic) op afgesloten candles.
+                candidate = evaluate_buy(self._entry_snapshot(market, candles, snap),
+                                         self.cfg.strategy)
+                candidate.snapshot = self._anchor_price(candidate.snapshot, snap)
                 decision = self.decider.evaluate_buy(candidate, positions,
                                                      self.broker.last_trade_at(market),
                                                      portfolio, free, daily_pnl)
@@ -188,6 +197,45 @@ class TradingCycle:
             except Exception:  # noqa: BLE001 - one market must not kill the cycle
                 log.exception("cycle failed for %s", market)
         return decisions
+
+    def _entry_snapshot(self, market: str, candles: list, live_snap):
+        """Snapshot waarop een ENTRY beoordeeld wordt: standaard zonder de lopende candle.
+
+        De zwaarst wegende koopreden (`macd_hist > 0 and macd_hist_prev <= 0`) is een
+        flip-conditie die binnen één bar komt en gaat. Beoordeel je hem op de lopende
+        bar, dan koopt de bot bij de eerste uurrun waarin hij toevallig waar is en
+        selecteert hij systematisch de vluchtigste realisatie van het signaal.
+
+        Bewust hier en niet in `build_snapshot`: die functie wordt ook gebruikt door
+        de scanner, het dashboard, de regime-proxy en de veto-analyse. Afknippen op
+        die plek zou al die paden stil meeveranderen. De exit-route (`check_exit`,
+        `_extra_exits`) en de position guard blijven de live prijs gebruiken, want
+        daar is actualiteit juist gewenst.
+
+        `strategy.signal_on_closed_candles: false` zet het oude gedrag terug, zodat
+        oud en nieuw naast elkaar meetbaar blijven. De schakelaar staat onder
+        `strategy` en niet onder `schedule`, zodat `config_fingerprint` verandert
+        als hij omgaat en de veto-meting de twee signaalregimes vanzelf scheidt.
+        """
+        if not bool(self.cfg.strategy.get("signal_on_closed_candles", True)):
+            return live_snap
+        closed = drop_unclosed(candles)
+        if len(closed) == len(candles) or len(closed) < MIN_SNAPSHOT_CANDLES:
+            return live_snap
+        return build_snapshot(market, closed, self.cfg.strategy)
+
+    @staticmethod
+    def _anchor_price(entry_snap, live_snap):
+        """Score en indicatoren uit de afgesloten bar, prijs uit de live bar.
+
+        De SL/TP-niveaus en de fee-gate rekenen vanaf de prijs die de bot
+        daadwerkelijk betaalt; die op een tot 4 uur oude close ankeren zou de
+        stop-afstand systematisch verkeerd zetten. ATR blijft uit de afgesloten
+        reeks: dat is een indicator, geen fillprijs.
+        """
+        if entry_snap is live_snap:
+            return entry_snap
+        return replace(entry_snap, price=live_snap.price)
 
     def _extra_exits(self, pos, candles: list, snap) -> tuple[bool, str]:
         """Tijd- en trendgebonden exits die candles nodig hebben (dus alleen in de

@@ -26,6 +26,7 @@ strategy:
   rsi_overbought: 70                 # adviestabel op het dashboard: down-trend + RSI hierboven = "vermijden"
   atr_period: 14
   min_signal_score: 3                # aantal bevestigende condities voor kandidaat-BUY
+  signal_on_closed_candles: true     # entries beoordelen op de laatst AFGESLOTEN candle; Bitvavo levert de lopende bar mee en flip-condities (MACD-hist) komen en gaan daarbinnen. Exits blijven op de live prijs. false = oud gedrag (meetbaar naast elkaar)
 
 fees:
   maker_pct: 0.15                    # fallback; live worden fees via GET /account opgehaald

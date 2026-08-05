@@ -5,6 +5,7 @@ from tradebot.strategy import (
     MarketSnapshot,
     breakeven_stop_hit,
     check_exit,
+    drop_unclosed,
     evaluate_buy,
 )
 
@@ -132,3 +133,39 @@ def test_rsi_buy_zone_defaults_match_old_behaviour():
     assert any("buy zone" in r for r in evaluate_buy(snap(rsi=44.0), legacy).reasons)
     assert not any("buy zone" in r for r in evaluate_buy(snap(rsi=46.0), legacy).reasons)
     assert not any("buy zone" in r for r in evaluate_buy(snap(rsi=24.0), legacy).reasons)
+
+
+# --- 1.1: lopende candle afknippen ---------------------------------------------
+
+STEP_MS = 4 * 3600 * 1000
+
+
+def series(n: int, last_ts: int) -> list[Candle]:
+    return [Candle(ts=last_ts - (n - 1 - i) * STEP_MS, open=100.0, high=101.0,
+                   low=99.0, close=100.0, volume=1.0) for i in range(n)]
+
+
+def test_drop_unclosed_removes_the_running_candle():
+    """Regressie op punt 1.1: de nieuwste 4h-candle van Bitvavo opent op het hele
+    uur en sluit pas vier uur later; die bar beweegt dus nog."""
+    last_ts = 1_785_945_600_000                    # candle opent, loopt nog
+    now = last_ts + 2 * 3600 * 1000                # twee uur later
+    candles = series(10, last_ts)
+    out = drop_unclosed(candles, now_ms=now)
+    assert len(out) == 9
+    assert out[-1].ts == last_ts - STEP_MS
+
+
+def test_drop_unclosed_keeps_a_series_that_is_already_closed():
+    """Blind `[:-1]` zou hier een geldige bar weggooien en de bot een candle laten
+    achterlopen; de functie moet de reeks ongemoeid laten."""
+    last_ts = 1_785_945_600_000
+    now = last_ts + STEP_MS + 1                    # bar is net gesloten
+    candles = series(10, last_ts)
+    assert len(drop_unclosed(candles, now_ms=now)) == 10
+
+
+def test_drop_unclosed_handles_degenerate_input():
+    assert drop_unclosed([]) == []
+    one = series(1, 1_785_945_600_000)
+    assert len(drop_unclosed(one, now_ms=1_785_945_600_000)) == 1

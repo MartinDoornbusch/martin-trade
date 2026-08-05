@@ -24,6 +24,10 @@ Test-naar-bug (code review blok 1):
 | (v0.18.0) blocklist blokkeert buys, niet exits | `test_blocklist_blocks_buy_but_not_exit` |
 | (v0.11.0) kill-switch blokkeert buys, niet exits | `test_kill_switch_blocks_buy_but_not_exit` |
 | exits draaien vóór entries | `test_exit_runs_before_entry_in_same_market` |
+| 1.1 entry beoordeeld op de lopende candle | `test_entry_signal_ignores_running_candle` |
+| 1.1 exit-route mocht niet meeveranderen | `test_exit_still_uses_the_running_candle` |
+| 1.1 oud gedrag blijft meetbaar via de schakelaar | `test_switch_false_restores_signal_on_running_candle` |
+| 1.1 SL/TP-anker moet de live prijs blijven | `test_levels_are_anchored_on_the_live_price` |
 """
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -107,14 +111,16 @@ def make_cfg(markets: list[str], **over) -> SimpleNamespace:
             "max_correlation": 0.85, "correlation_lookback": 60,
             "max_correlated_positions": 99}
     risk.update(over.pop("risk", {}))
+    strategy = {"ema_fast": 3, "ema_slow": 5, "rsi_period": 14, "atr_period": 14,
+                "rsi_buy_zone_min": 25, "rsi_buy_zone_max": 45,
+                "rsi_overbought": 70, "min_signal_score": 1}
+    strategy.update(over.pop("strategy_over", {}))
     cfg = SimpleNamespace(
         markets=markets,
         watchlist=[],
         blocklist=over.pop("blocklist", []),
         schedule={"candle_interval": "4h", "candle_limit": N_CANDLES},
-        strategy={"ema_fast": 3, "ema_slow": 5, "rsi_period": 14, "atr_period": 14,
-                  "rsi_buy_zone_min": 25, "rsi_buy_zone_max": 45,
-                  "rsi_overbought": 70, "min_signal_score": 1},
+        strategy=strategy,
         fees={"maker_pct": 0.15, "taker_pct": 0.25, "slippage_buffer_pct": 0.10},
         decision={"min_profit_pct": 0.50, "atr_stop_multiplier": 2.0,
                   "reward_risk_ratio": 1.5, "use_llm_second_opinion": False,
@@ -358,3 +364,73 @@ def test_one_broken_market_does_not_kill_the_cycle():
 
     assert open_markets() == {"B-EUR"}
     assert [d.market for d in decisions] == ["B-EUR"]
+
+
+# --- 1.1 entries op afgesloten candles ------------------------------------------
+
+def spike_at_the_end(level: float = 100.0, spike: float = 130.0,
+                     n: int = N_CANDLES) -> list[float]:
+    """Vlakke reeks met alleen in de LOPENDE (laatste, nog niet gesloten) candle
+    een uitbraak. Op de volledige reeks levert dat uptrend + verse MACD-flip op
+    (score 3); op de afgesloten reeks blijft er score 1 over (alleen de
+    Bollinger-conditie op een vlakke reeks)."""
+    return [level] * (n - 1) + [spike]
+
+
+def test_entry_signal_ignores_running_candle():
+    """Regressie op punt 1.1: `build_snapshot` las `closes[-1]`/`hist[-1]`, dus de
+    lopende bar. De MACD-flip is 2 van de 3 benodigde punten en komt en gaat binnen
+    één bar, waardoor de bot elke uurrun de vluchtigste realisatie van het signaal
+    pakte. Alleen de lopende candle geeft hier een koopsignaal; die mag niet tellen.
+    """
+    feed = FakeFeed({"A-EUR": spike_at_the_end()})
+    cfg = make_cfg(["A-EUR"], strategy_over={"min_signal_score": 3})
+    decisions = make_cycle(cfg, feed).run_once()
+
+    assert open_markets() == set()
+    assert not any(d.action == "buy" for d in decisions)
+
+
+def test_switch_false_restores_signal_on_running_candle():
+    """`strategy.signal_on_closed_candles: false` zet het oude gedrag terug, zodat
+    oud en nieuw naast elkaar meetbaar blijven. Bewijst tegelijk dat de test-serie
+    wel degelijk een koopsignaal bevat: het zit alleen in de lopende candle."""
+    feed = FakeFeed({"A-EUR": spike_at_the_end()})
+    cfg = make_cfg(["A-EUR"], strategy_over={"min_signal_score": 3,
+                                             "signal_on_closed_candles": False})
+    decisions = make_cycle(cfg, feed).run_once()
+
+    assert open_markets() == {"A-EUR"}
+    assert any(d.action == "buy" for d in decisions)
+
+
+def test_exit_still_uses_the_running_candle():
+    """De exit-route mag NIET meeveranderen: die hoort juist op de actuele prijs te
+    kijken. De stop wordt hier alleen door de lopende candle geraakt; op afgesloten
+    candles zou de positie blijven staan."""
+    feed = FakeFeed({"A-EUR": spike_at_the_end(level=100.0, spike=80.0)})
+    cycle = make_cycle(make_cfg(["A-EUR"]), feed)
+    cycle.broker.buy("A-EUR", 250.0, stop_loss=90.0, take_profit=9999.0, reason="setup")
+
+    decisions = cycle.run_once()
+
+    assert open_markets() == set()
+    assert any(d.action == "sell" and "stop loss" in d.reason for d in decisions)
+
+
+def test_levels_are_anchored_on_the_live_price():
+    """Score en ATR komen uit de afgesloten reeks, maar SL/TP en de fee-gate rekenen
+    vanaf de prijs die de bot betaalt. Anders zet een tot 4 uur oude close de
+    stop-afstand systematisch verkeerd."""
+    closes = rising(n=N_CANDLES)
+    feed = FakeFeed({"A-EUR": closes})
+    cycle = make_cycle(make_cfg(["A-EUR"]), feed)
+
+    cycle.run_once()
+
+    with session() as s:
+        row = s.execute(select(PositionRow).where(PositionRow.market == "A-EUR")
+                        ).scalar_one()
+    live_price = closes[-1]
+    assert row.entry_price == pytest.approx(live_price, rel=1e-9)
+    assert row.stop_loss < live_price < row.take_profit

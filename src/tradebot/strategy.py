@@ -12,9 +12,14 @@ Exits zijn 100% mechanisch en bestaan uit precies drie regels:
 Er is bewust géén trend-break-exit meer. De oude regel (EMA-cross-down samen met
 een overbought RSI) eiste twee vrijwel disjuncte condities en heeft in productie
 nooit gevuurd; hij is in v0.19.0 geschrapt in plaats van herschreven.
+
+Asymmetrie sinds v0.20.0: ENTRIES worden beoordeeld op afgesloten candles
+(`drop_unclosed`), EXITS op de live prijs. Zie de docstring van `drop_unclosed`
+voor het waarom.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from .exchange import Candle
@@ -68,6 +73,34 @@ def build_snapshot(market: str, candles: list[Candle], cfg: dict) -> MarketSnaps
         bb_mid=float(bb_mid[-1]),
         change_24c_pct=(closes[-1] / closes[-7] - 1) * 100 if len(closes) >= 7 else 0.0,
     )
+
+
+def drop_unclosed(candles: list[Candle], now_ms: int | None = None) -> list[Candle]:
+    """Knip de lopende, nog niet gesloten candle van een oplopende reeks af.
+
+    Bitvavo levert de bar die op dit moment loopt mee als nieuwste element. Een
+    indicatorwaarde op die bar beweegt dus nog: bij een uurcyclus op 4h-candles
+    wordt dezelfde bar drie tot vier keer beoordeeld en pakt de bot de eerste,
+    vluchtigste realisatie van een flip-conditie. Voor ENTRIES is dat schadelijk
+    (meer trades dan de backtest voorspelt bij hetzelfde signaal); voor EXITS is
+    actualiteit juist gewenst, dus die blijven op de live prijs.
+
+    Pure functie. `now_ms` is injecteerbaar zodat een test niet van de klok
+    afhangt. Het interval wordt uit de afstand tussen de laatste twee candles
+    afgeleid: zo werkt de functie op elk candle-interval zonder config-plumbing,
+    en laat hij een reeks die al alleen afgesloten candles bevat ongemoeid (dan
+    zou blind `[:-1]` een geldige bar weggooien en de bot een candle achterlopen).
+    """
+    if len(candles) < 2:
+        return list(candles)
+    interval_ms = candles[-1].ts - candles[-2].ts
+    if interval_ms <= 0:
+        return list(candles)
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    if candles[-1].ts + interval_ms > now_ms:
+        return list(candles[:-1])
+    return list(candles)
 
 
 def evaluate_buy(snap: MarketSnapshot, cfg: dict) -> Candidate:
