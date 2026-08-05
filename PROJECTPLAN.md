@@ -102,11 +102,16 @@ Beslissingen (2026-08-04, met Martin):
 - Liquiditeit: getrapt, dunne coins toegestaan met een strengere edge-eis en kleinere inzet.
 - Sizing: vaste bucket nu; positiegrootte laten groeien is bewust geparkeerd naar fase 2.
 
-### Fase A (v0.17.0) — universum + gates
+### Fase A1 (v0.17.0) — universum + correlatie
 - [ ] Auto-fill kandidaten: elke cyclus de resterende vrije slots aanvullen met scanner-top-hits die score, fee-gate, liquiditeit, cooldown en niet-reeds-open passeren. Config `universe.auto_fill` (bool) en `universe.max_auto` (int, default = slot-plafond). Deterministisch, geen AI. Gepinde `markets` houden voorrang op auto-fills.
 - [ ] Cluster-cap correlatie: `risk.max_correlated_positions` (K, default 2). Kandidaat geweigerd zodra het aantal open posities met correlatie > `max_correlation` gelijk of groter is dan K. Vervangt het harde blok in de engine.
-- [ ] Getrapte liquiditeit: `liquidity.min_volume_eur` (harde vloer, 250k) plus `liquidity.thin_volume_eur` (bijv. 100k) als tussenzone met `thin_edge_multiplier` (bijv. 1,5x vereiste move) en `thin_size_factor` (bijv. 0,5x bucket). Onder de tussenzone uitgesloten. Scanner en decision markeren een markt als "thin".
-- [ ] Dashboard: tonen welke markten auto-filled en welke "thin" zijn; slot-bezetting is al zichtbaar (v0.16.0).
+- [ ] Dashboard: tonen welke markten auto-filled zijn; slot-bezetting is al zichtbaar (v0.16.0).
+- [ ] Tests, CI-identieke run, versiebump, docs.
+
+### Fase A2 (v0.18.0) — getrapte liquiditeit + segment-meting
+- [ ] Getrapte liquiditeit: `liquidity.min_volume_eur` (harde vloer, 250k) plus `liquidity.thin_volume_eur` (100k) als tussenzone met `thin_edge_multiplier` (1,5x vereiste move) en `thin_size_factor` (0,5x bucket). Onder de tussenzone uitgesloten. Scanner en decision markeren een markt als "thin"; de tier + volume worden bij entry op de trade gelogd (SignalRow.details).
+- [ ] Segment-meting: `analysis` cohort-vergelijking normaal vs dun uit de echte round-trip-P&L (hergebruik `build_roundtrips` + Wilson). Per cohort: n, win-rate, gemiddelde netto %, totaal netto EUR, fee-ratio. Geen counterfactual (dunne trades executen echt). Doel: zien of de tussenzone netto oplevert of kost, en dan houden/aanscherpen/schrappen.
+- [ ] Dashboard: sectie "Liquiditeit-segmenten" op dezelfde pagina (geen aparte pagina), naast veto-analyse en regime-gate. Endpoint `/api/liquidity-segments`.
 - [ ] Tests, CI-identieke run, versiebump, docs.
 
 ### Fase B (in fase 2, na go/no-go) — positiegrootte laten meegroeien
