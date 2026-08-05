@@ -1,7 +1,17 @@
 """Deterministic swing strategy: produces candidate signals from indicators.
 
 The LLM never generates signals; it may only confirm or veto a BUY candidate.
-Exits (stop/target/trend-break) are fully mechanical.
+Exits zijn 100% mechanisch en bestaan uit precies drie regels:
+
+* stop loss / take profit (`check_exit`, ook per minuut door de position guard),
+* time-stop (`time_stop_hit`): een positie die na N candles nog geen TP/SL raakte
+  en per saldo niet boven break-even staat, geeft zijn slot terug,
+* breakeven-stop (`breakeven_stop_hit`): een positie die ver genoeg in de winst
+  heeft gestaan mag niet meer als verlies eindigen.
+
+Er is bewust géén trend-break-exit meer. De oude regel (EMA-cross-down samen met
+een overbought RSI) eiste twee vrijwel disjuncte condities en heeft in productie
+nooit gevuurd; hij is in v0.19.0 geschrapt in plaats van herschreven.
 """
 from __future__ import annotations
 
@@ -68,7 +78,13 @@ def evaluate_buy(snap: MarketSnapshot, cfg: dict) -> Candidate:
     if snap.ema_fast > snap.ema_slow:
         score += 1
         reasons.append("uptrend: EMA fast > slow")
-    if snap.rsi < float(cfg["rsi_oversold"]) + 10 and snap.rsi > 25:
+    # Koopzone expliciet in config: eerder stond hier `rsi_oversold + 10` met een
+    # hardcoded ondergrens 25, waardoor config 35 zei en de werkelijke bovengrens 45
+    # was. De grenzen staan nu waar ze horen; de defaults zijn de oude effectieve
+    # waarden, zodat oudere config-dicts hetzelfde blijven doen.
+    zone_min = float(cfg.get("rsi_buy_zone_min", 25))
+    zone_max = float(cfg.get("rsi_buy_zone_max", 45))
+    if zone_min < snap.rsi < zone_max:
         score += 1
         reasons.append(f"RSI {snap.rsi:.0f} in buy zone (recovering, not free-falling)")
     if snap.macd_hist > 0 and snap.macd_hist_prev <= 0:
@@ -87,14 +103,55 @@ def evaluate_buy(snap: MarketSnapshot, cfg: dict) -> Candidate:
 
 def check_exit(entry_price: float, stop_loss: float, take_profit: float,
                snap: MarketSnapshot) -> tuple[bool, str]:
-    """Mechanical exit rules. Deliberately no LLM involvement."""
+    """Harde prijs-exits: stop loss en take profit. Bewust geen LLM.
+
+    Alleen prijs vs. niveau, zodat de position guard (per minuut, zonder candles)
+    exact dezelfde regels hanteert als de analysecyclus. Tijd- en trendgebonden
+    exits zitten in `time_stop_hit` en `breakeven_stop_hit`.
+    """
     if snap.price <= stop_loss:
         return True, f"stop loss hit ({snap.price:.2f} <= {stop_loss:.2f})"
     if snap.price >= take_profit:
         return True, f"take profit hit ({snap.price:.2f} >= {take_profit:.2f})"
-    if snap.ema_fast < snap.ema_slow and snap.rsi > float(70):
-        return True, "trend break: EMA cross down with overbought RSI"
     return False, ""
+
+
+def breakeven_stop_hit(candles: list, opened_at, entry_price: float, current_price: float,
+                       atr_value: float, trigger_atr: float,
+                       offset_pct: float) -> tuple[bool, str]:
+    """Breakeven-stop: wat ver genoeg in de winst stond, mag geen verlies worden.
+
+    Puur en testbaar, geen AI, geen nieuws. Twee stappen:
+
+    1. Bewapenen. De hoogste high sinds entry moet minstens `trigger_atr` x ATR
+       boven de entryprijs hebben gelegen. Zo telt alleen winst die groter was dan
+       de normale ruis van de markt; een positie die nooit echt in de plus stond
+       wordt niet vervroegd geknipt en houdt zijn volle ATR-stop.
+    2. Vuren. De koers is daarna teruggezakt tot op of onder
+       `entry * (1 + offset_pct/100)`. Die offset dekt de round-trip fees (0,50%
+       taker), zodat de exit netto rond break-even uitkomt in plaats van op een
+       verlies na kosten.
+
+    Vervangt de geschrapte trend-break-exit: dezelfde bedoeling (een omkering na
+    entry afvangen) maar op prijs en gerealiseerde winst in plaats van op twee
+    indicatorcondities die elkaar in de praktijk uitsluiten.
+    """
+    if entry_price <= 0 or atr_value <= 0 or trigger_atr <= 0:
+        return False, ""
+    opened_ms = int(opened_at.timestamp() * 1000)
+    highs = [c.high for c in candles if c.ts > opened_ms]
+    if not highs:
+        return False, ""
+    peak = max(highs)
+    if peak < entry_price + trigger_atr * atr_value:
+        return False, ""
+    level = entry_price * (1 + offset_pct / 100)
+    if current_price > level:
+        return False, ""
+    return True, (f"breakeven-stop: piek stond {(peak / entry_price - 1) * 100:.2f}% "
+                  f"in de winst (>= {trigger_atr:.2f}x ATR), koers terug op "
+                  f"{(current_price / entry_price - 1) * 100:.2f}% "
+                  f"(drempel {offset_pct:.2f}%)")
 
 
 def time_stop_hit(candles: list, opened_at, entry_price: float, current_price: float,

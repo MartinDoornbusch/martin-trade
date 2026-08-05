@@ -21,7 +21,13 @@ from .llm import LLMRouter, build_router
 from .notify import Notifier
 from .paper import PaperBroker
 from .scanner import scan, select_auto_fill
-from .strategy import build_snapshot, check_exit, evaluate_buy, time_stop_hit
+from .strategy import (
+    breakeven_stop_hit,
+    build_snapshot,
+    check_exit,
+    evaluate_buy,
+    time_stop_hit,
+)
 
 log = logging.getLogger(__name__)
 
@@ -107,13 +113,7 @@ class TradingCycle:
                     should_exit, why = check_exit(pos.entry_price, pos.stop_loss,
                                                   pos.take_profit, snap)
                     if not should_exit:
-                        exits_cfg = getattr(self.cfg, "exits", {}) or {}
-                        n_ts = int(exits_cfg.get("time_stop_candles", 0) or 0)
-                        if n_ts > 0:
-                            should_exit, why = time_stop_hit(
-                                candles, pos.opened_at, pos.entry_price, snap.price,
-                                self.fee_model.round_trip_pct(), n_ts,
-                                float(exits_cfg.get("time_stop_min_net_pct", 0.0)))
+                        should_exit, why = self._extra_exits(pos, candles, snap)
                     if should_exit:
                         self.broker.sell(market, why)
                         positions, free, daily_pnl = self._refresh_after_trade()
@@ -188,6 +188,41 @@ class TradingCycle:
             except Exception:  # noqa: BLE001 - one market must not kill the cycle
                 log.exception("cycle failed for %s", market)
         return decisions
+
+    def _extra_exits(self, pos, candles: list, snap) -> tuple[bool, str]:
+        """Tijd- en trendgebonden exits die candles nodig hebben (dus alleen in de
+        analysecyclus, niet in de position guard): time-stop en breakeven-stop.
+
+        De breakeven-stop volgt de shadow-semantiek van de andere gates
+        (`regime.binding`, `decision.llm_veto_binding`): met `binding: false` wordt
+        een treffer wel gelogd (SignalRow met decision "shadow" en
+        `details["shadow_breakeven"]`) maar niet uitgevoerd, zodat de waarde van de
+        gate gemeten kan worden zonder trades te kosten. Bindend maken pas bij een
+        positieve netto gate over >= 20 afgewikkelde trades.
+        """
+        exits_cfg = getattr(self.cfg, "exits", {}) or {}
+        n_ts = int(exits_cfg.get("time_stop_candles", 0) or 0)
+        if n_ts > 0:
+            hit, why = time_stop_hit(
+                candles, pos.opened_at, pos.entry_price, snap.price,
+                self.fee_model.round_trip_pct(), n_ts,
+                float(exits_cfg.get("time_stop_min_net_pct", 0.0)))
+            if hit:
+                return True, why
+
+        be_cfg = exits_cfg.get("breakeven_stop", {}) or {}
+        if not bool(be_cfg.get("enabled", False)):
+            return False, ""
+        hit, why = breakeven_stop_hit(
+            candles, pos.opened_at, pos.entry_price, snap.price, snap.atr,
+            float(be_cfg.get("trigger_atr", 1.0)), float(be_cfg.get("offset_pct", 0.0)))
+        if not hit:
+            return False, ""
+        if bool(be_cfg.get("binding", False)):
+            return True, why
+        self._log_signal(pos.market, "sell", "shadow", 0,
+                         f"SHADOW-BREAKEVEN genegeerd: {why}", {"shadow_breakeven": why})
+        return False, ""
 
     def _refresh_after_trade(self) -> tuple[list, float, float]:
         """Lees de in-cycle state opnieuw na een uitgevoerde order.
