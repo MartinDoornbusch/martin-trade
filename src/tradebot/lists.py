@@ -38,7 +38,9 @@ def get_lists(cfg) -> dict:
     w_raw = _get_kv(WATCHLIST_KEY)
     markets = [m for m in m_raw.split(",") if m] if m_raw is not None else list(cfg.markets)
     watchlist = [m for m in w_raw.split(",") if m] if w_raw is not None else list(cfg.watchlist)
-    return {"markets": markets, "watchlist": watchlist,
+    af_raw = _get_kv("last_auto_fill")
+    auto_fill = [m for m in af_raw.split(",") if m] if af_raw else []
+    return {"markets": markets, "watchlist": watchlist, "auto_fill": auto_fill,
             "source": "gui" if (m_raw is not None or w_raw is not None) else "config",
             "max_markets": MAX_MARKETS, "max_watchlist": MAX_WATCHLIST}
 

@@ -13,9 +13,28 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from .correlation import correlation_from_closes
 from .strategy import Candidate
 
 log = logging.getLogger(__name__)
+
+
+def correlated_positions(own_closes: list[float],
+                         others: dict[str, list[float]],
+                         max_corr: float, lookback: int) -> list[tuple[str, float]]:
+    """Welke open posities bewegen sterk mee met een kandidaat.
+
+    Puur en testbaar: returnt (markt, correlatie) voor elke reeks met
+    return-correlatie > `max_corr`. De engine gebruikt de lengte hiervan voor de
+    cluster-cap: bij >= K gecorreleerde posities wordt de kandidaat geweigerd, in
+    plaats van al bij de eerste (dat blokkeerde een gecorreleerd universum dood).
+    """
+    out: list[tuple[str, float]] = []
+    for market, closes in others.items():
+        corr = correlation_from_closes(own_closes, closes, lookback)
+        if corr is not None and corr > max_corr:
+            out.append((market, round(corr, 2)))
+    return out
 
 
 @dataclass

@@ -45,8 +45,14 @@ risk:
   max_open_positions: 10             # hard plafond op het aantal open posities (in bucket-modus de bovengrens)
   cooldown_hours_after_trade: 12     # per markt; voorkomt fee-vretende flip-flops
   daily_loss_cap_pct: 3.0            # stop met kopen als dagverlies dit overschrijdt
-  max_correlation: 0.85              # blokkeer 2e positie als return-correlatie hoger is
+  max_correlation: 0.85              # correlatiedrempel: hierboven telt een positie als "gecorreleerd"
   correlation_lookback: 60           # aantal candles voor de correlatieschatting
+  max_correlated_positions: 2        # cluster-cap: max posities binnen één correlatie-cluster (2 = geen 3e sterk gecorreleerde)
+
+universe:                            # kandidaten-universum: gepinde markets + auto-fill uit de scanner
+  auto_fill: true                    # vrije slots aanvullen met scanner-hits die alle gates halen
+  max_auto: 10                       # max aantal auto-fill kandidaten dat de bot per cyclus overweegt
+  auto_fill_buffer: 2                # extra kandidaten boven de vrije slots (opvang voor uitval door gates)
 
 regime:                              # markt-brede regime-gate (gecodeerd, geen AI)
   enabled: true

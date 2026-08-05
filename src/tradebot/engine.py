@@ -4,8 +4,7 @@ from __future__ import annotations
 import logging
 
 from .config import AppConfig, Secrets
-from .correlation import correlation_from_closes
-from .db import SignalRow, session
+from .db import KVRow, SignalRow, session
 from .decision import (
     Decision,
     DecisionEngine,
@@ -13,6 +12,7 @@ from .decision import (
     RiskManager,
     apply_regime_filter,
     apply_second_opinion,
+    correlated_positions,
 )
 from .exchange import BitvavoClient
 from .lists import get_lists, is_paused
@@ -20,6 +20,7 @@ from .live import LiveBroker
 from .llm import LLMRouter, build_router
 from .notify import Notifier
 from .paper import PaperBroker
+from .scanner import scan, select_auto_fill
 from .strategy import build_snapshot, check_exit, evaluate_buy
 
 log = logging.getLogger(__name__)
@@ -62,9 +63,15 @@ class TradingCycle:
         free = self.broker.cash_eur()
         daily_pnl = self.broker.daily_pnl_eur()
 
-        active_markets = get_lists(self.cfg)["markets"]
+        pinned_markets = get_lists(self.cfg)["markets"]
+        open_markets = [p.market for p in positions]
+        auto_markets = self._auto_fill_markets(pinned_markets, open_markets, positions, portfolio)
+        self._store_auto_fill(auto_markets)
+        # Analyse-set: gepind + open posities (zodat exits altijd draaien) + auto-fill,
+        # ontdubbeld met behoud van volgorde (gepind eerst).
+        analysis_markets = list(dict.fromkeys(pinned_markets + open_markets + auto_markets))
         candles_map = {}
-        for market in active_markets:
+        for market in analysis_markets:
             try:
                 candles_map[market] = self.feed.get_candles(market, interval, limit)
             except Exception:  # noqa: BLE001
@@ -105,22 +112,24 @@ class TradingCycle:
                     decision = Decision(market, "skip",
                                         "kill-switch: kopen gepauzeerd door gebruiker")
 
-                # 3) Correlatie-gate: geen 2e positie in een sterk gecorreleerde markt.
+                # 3) Correlatie-gate met cluster-cap: max K posities in één
+                # correlatie-cluster (K-1 gecorreleerde open posities toegestaan,
+                # de K-de wordt geweigerd). Voorkomt zowel schijndiversificatie als
+                # het doodblokkeren van een gecorreleerd universum.
                 if decision.action == "buy" and positions:
                     max_corr = float(self.cfg.risk.get("max_correlation", 0.85))
                     lookback = int(self.cfg.risk.get("correlation_lookback", 60))
-                    closes = [c.close for c in candles]
-                    for pos in positions:
-                        other = candles_map.get(pos.market)
-                        if other is None:
-                            continue
-                        corr = correlation_from_closes(closes, [c.close for c in other], lookback)
-                        if corr is not None and corr > max_corr:
-                            decision = Decision(
-                                market, "skip",
-                                f"correlatie-gate: {corr:.2f} met open positie {pos.market} "
-                                f"> {max_corr}")
-                            break
+                    max_cluster = int(self.cfg.risk.get("max_correlated_positions", 2))
+                    others = {p.market: [c.close for c in candles_map[p.market]]
+                              for p in positions if p.market in candles_map}
+                    correlated = correlated_positions([c.close for c in candles], others,
+                                                      max_corr, lookback)
+                    if len(correlated) >= max_cluster:
+                        names = ", ".join(f"{m} {c:.2f}" for m, c in correlated)
+                        decision = Decision(
+                            market, "skip",
+                            f"correlatie-gate: clustermax {max_cluster} bereikt, "
+                            f"{len(correlated)} gecorreleerde posities (>{max_corr}): {names}")
 
                 # 3c) Regime-gate (gecodeerd, markt-breed): geen nieuwe entries
                 # als de proxy-markt (BTC) risk-off staat. Shadow tenzij binding.
@@ -153,6 +162,48 @@ class TradingCycle:
             except Exception:  # noqa: BLE001 - one market must not kill the cycle
                 log.exception("cycle failed for %s", market)
         return decisions
+
+    def _auto_fill_markets(self, pinned: list[str], open_markets: list[str],
+                           positions: list, portfolio_eur: float) -> list[str]:
+        """Vul de vrije slots met de beste scanner-kandidaten die alle gates halen.
+
+        Gepinde markten en open posities houden voorrang; auto-fill voegt alleen
+        kandidaten toe zolang er slots vrij zijn. Nooit dwingend: de kandidaten
+        moeten zelfstandig door score, fee-gate en liquiditeit komen (dat doet de
+        scanner), en daarna alsnog door alle engine-gates.
+        """
+        uni = getattr(self.cfg, "universe", {}) or {}
+        if not bool(uni.get("auto_fill", False)):
+            return []
+        eff_max = self.decider.risk.effective_max_positions(portfolio_eur)
+        free_slots = max(0, eff_max - len(positions))
+        if free_slots == 0:
+            return []
+        max_auto = int(uni.get("max_auto", eff_max))
+        buffer = int(uni.get("auto_fill_buffer", 2))
+        want = min(max_auto, free_slots + buffer)
+        try:
+            results, _ = scan(self.feed, self.cfg, top_n=40)
+        except Exception:  # noqa: BLE001 - scanfout mag de cyclus niet breken
+            log.warning("auto-fill: scan mislukt, geen extra kandidaten deze cyclus")
+            return []
+        exclude = set(pinned) | set(open_markets)
+        return select_auto_fill(results, exclude, want)
+
+    @staticmethod
+    def _store_auto_fill(markets: list[str]) -> None:
+        """Bewaar de auto-fill-set van deze cyclus zodat het dashboard hem kan tonen."""
+        try:
+            with session() as s:
+                row = s.get(KVRow, "last_auto_fill")
+                value = ",".join(markets)
+                if row is None:
+                    s.add(KVRow(key="last_auto_fill", value=value))
+                else:
+                    row.value = value
+                s.commit()
+        except Exception:  # noqa: BLE001 - puur informatief, mag nooit de cyclus breken
+            log.debug("auto-fill-set opslaan mislukt")
 
     def _proxy_regime_ok(self, proxy_market: str, candles_map: dict,
                          interval: str, limit: int) -> bool:

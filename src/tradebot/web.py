@@ -577,7 +577,8 @@ function renderLists(l){
     ((listName==='markets' && l.markets.length<=1) ? '' : ` <button title="verwijder" onclick="act('${listName}','${m}','remove')">✕</button>`) + '</span>';
   document.getElementById('listbox').innerHTML =
     `<div><b>Trading</b> (${l.markets.length}/${l.max_markets}): ` + l.markets.map(m=>chip(m,'markets')).join('') + '</div>' +
-    `<div style="margin-top:6px"><b>Watchlist</b> (${l.watchlist.length}/${l.max_watchlist}): ` + (l.watchlist.length? l.watchlist.map(m=>chip(m,'watchlist')).join('') : '<span class="muted">leeg</span>') + '</div>';
+    `<div style="margin-top:6px"><b>Watchlist</b> (${l.watchlist.length}/${l.max_watchlist}): ` + (l.watchlist.length? l.watchlist.map(m=>chip(m,'watchlist')).join('') : '<span class="muted">leeg</span>') + '</div>' +
+    ((l.auto_fill && l.auto_fill.length) ? `<div style="margin-top:6px"><b>Auto-fill</b> <span class="muted">(scanner, deze cyclus)</span>: ` + l.auto_fill.map(m=>`<span class="chip">${m}</span>`).join('') + '</div>' : '');
 }
 async function act(listName, market, action){
   if(!market){ return; }

@@ -44,6 +44,22 @@ def liquidity_filter(tickers: list[dict], min_volume: float = MIN_VOLUME_EUR,
     return out
 
 
+def select_auto_fill(results: list[dict], exclude: set[str], want: int) -> list[str]:
+    """Kies de beste tradeable scanner-kandidaten om vrije slots mee te vullen.
+
+    Puur en testbaar. Alleen kandidaten die de fee-gate halen en de scoredrempel
+    bereiken, en niet al gepind of open staan. Rangschikt op score (hoog eerst),
+    dan op netto edge (verwacht minus vereist). `want` begrenst het aantal.
+    """
+    picks = [r for r in results
+             if r.get("fee_ok")
+             and r.get("score", 0) >= r.get("score_needed", 99)
+             and r.get("market") not in exclude]
+    picks.sort(key=lambda r: (-r.get("score", 0),
+                              -(r.get("expected_move_pct", 0) - r.get("required_pct", 0))))
+    return [r["market"] for r in picks[:max(0, want)]]
+
+
 def scan(feed, cfg, top_n: int = 20) -> tuple[list[dict], dict]:
     """Volledige scan. Returns (resultaten, statistieken over de trechter)."""
     fee_model = FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],

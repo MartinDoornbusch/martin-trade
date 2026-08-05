@@ -51,6 +51,7 @@ class AppConfig(BaseModel):
     decision: dict[str, Any]
     risk: dict[str, Any]
     regime: dict[str, Any] = {}
+    universe: dict[str, Any] = {}
     llm: dict[str, Any]
 
     @property
@@ -133,4 +134,7 @@ def get_config() -> AppConfig:
     sizing = os.environ.get("TRADEBOT_SIZING", "").strip().lower()
     if sizing in ("bucket", "percent"):
         data["risk"]["sizing"] = sizing
+    auto_fill = os.environ.get("TRADEBOT_AUTO_FILL", "").strip().lower()
+    if auto_fill in ("true", "false", "1", "0", "yes", "no"):
+        data.setdefault("universe", {})["auto_fill"] = auto_fill in ("true", "1", "yes")
     return AppConfig(**data)
