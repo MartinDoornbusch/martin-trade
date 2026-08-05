@@ -4,6 +4,7 @@ from tradebot.exchange import Candle
 from tradebot.strategy import (
     MarketSnapshot,
     breakeven_stop_hit,
+    chase_too_far,
     check_exit,
     drop_unclosed,
     evaluate_buy,
@@ -228,3 +229,32 @@ def test_breakeven_stop_still_counts_the_running_candle():
     hit, _ = breakeven_stop_hit(candles, OPENED, entry_price=100.0, current_price=100.4,
                                 atr_value=1.0, trigger_atr=1.0, offset_pct=0.55)
     assert hit
+
+
+# --- 1.3: chase-guard op entry-drift -------------------------------------------
+
+def test_chase_guard_allows_a_normal_gap():
+    """Kleine drift tussen signaalclose en fill is normaal en mag niet blokkeren."""
+    hit, _ = chase_too_far(signal_price=100.0, live_price=100.8, atr_value=4.0,
+                           max_chase_atr=0.5)
+    assert not hit
+
+
+def test_chase_guard_blocks_a_runaway_price():
+    """Bijwerking van 1.1: signaal van de afgesloten candle, fill op de live prijs.
+    Is de koers al 2,5x ATR doorgelopen, dan klopt het risico nog (stop en target
+    hangen aan de fill) maar is een deel van de verwachte beweging al gemaakt."""
+    hit, why = chase_too_far(100.0, 110.0, atr_value=4.0, max_chase_atr=0.5)
+    assert hit and "chase-guard" in why
+
+
+def test_chase_guard_is_symmetric():
+    """Ook een weggezakte koers telt als drift: de signaalclose beschrijft dan niet
+    meer de situatie waarop de score is gebaseerd."""
+    hit, _ = chase_too_far(100.0, 90.0, atr_value=4.0, max_chase_atr=0.5)
+    assert hit
+
+
+def test_chase_guard_disabled_by_zero():
+    hit, _ = chase_too_far(100.0, 200.0, atr_value=4.0, max_chase_atr=0.0)
+    assert not hit

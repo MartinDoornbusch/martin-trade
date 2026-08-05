@@ -207,6 +207,33 @@ def apply_regime_filter(decision: Decision, regime_ok: bool, proxy_market: str,
         details={**decision.details, "shadow_regime": reason})
 
 
+def apply_chase_guard(decision: Decision, hit: bool, reason: str,
+                      binding: bool = False) -> Decision:
+    """Pas de chase-guard toe op een buy-besluit.
+
+    Spiegelt de shadow-semantiek van `apply_regime_filter` en
+    `apply_second_opinion`:
+
+    binding=True  : te ver doorgelopen koers blokkeert de koop (skip).
+    binding=False : de koop blijft staan, geannoteerd met de reden en
+                    `details["shadow_chase"]`, zodat de gate-waarde gemeten wordt
+                    zonder trades te kosten.
+
+    Default niet-bindend, conform de vaste projectregel: elke nieuwe gate eerst
+    meten, bindend pas bij een positieve netto gate over >= 20 afgewikkelde trades.
+    """
+    if decision.action != "buy" or not hit:
+        return decision
+    if binding:
+        return Decision(decision.market, "skip", reason)
+    return Decision(
+        decision.market, "buy",
+        f"{decision.reason} | SHADOW-CHASE genegeerd: {reason}",
+        amount_quote_eur=decision.amount_quote_eur,
+        stop_loss=decision.stop_loss, take_profit=decision.take_profit,
+        details={**decision.details, "shadow_chase": reason})
+
+
 def apply_second_opinion(decision: Decision, verdict, min_conf: float,
                          binding: bool = True) -> Decision:
     """Pas het LLM-tweede-oordeel toe op een buy-besluit.

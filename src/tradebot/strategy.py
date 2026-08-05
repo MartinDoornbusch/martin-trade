@@ -119,6 +119,31 @@ def build_snapshots(market: str, candles: list[Candle],
     return out
 
 
+def chase_too_far(signal_price: float, live_price: float, atr_value: float,
+                  max_chase_atr: float) -> tuple[bool, str]:
+    """Staat de live prijs te ver van de signaalclose af om nog in te stappen?
+
+    Bijwerking van `signal_on_closed_candles` (v0.20.0): het signaal komt van de
+    afgesloten candle, de fill van de live prijs. Is de koers sinds die close al
+    doorgelopen, dan stap je later in met dezelfde targetafstand. Het RISICO klopt
+    nog (stop en target hangen aan de fill, dus 2x ATR blijft 2x ATR), maar de EDGE
+    niet: een deel van de verwachte beweging is al gemaakt voordat je binnen bent.
+    Vóór v0.20.0 viel dat samen, want signaal en prijs kwamen uit dezelfde bar.
+
+    Puur en symmetrisch: een koers die is weggezakt telt evengoed als drift, want
+    dan is de signaalclose niet meer de situatie waarop de score is gebaseerd.
+    `max_chase_atr <= 0` schakelt de guard uit.
+    """
+    if max_chase_atr <= 0 or atr_value <= 0 or signal_price <= 0:
+        return False, ""
+    drift = abs(live_price - signal_price)
+    if drift <= max_chase_atr * atr_value:
+        return False, ""
+    return True, (f"chase-guard: live {live_price:.6g} staat "
+                  f"{drift / atr_value:.2f}x ATR van de signaalclose "
+                  f"{signal_price:.6g} (max {max_chase_atr:.2f}x)")
+
+
 def intrabar_exit(candle: Candle, stop: float, target: float,
                   stop_first: bool = True) -> str | None:
     """Raakte deze candle de stop of het target BINNEN de bar? -> "stop"|"target"|None.

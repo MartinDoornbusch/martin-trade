@@ -28,6 +28,8 @@ Test-naar-bug (code review blok 1):
 | 1.1 exit-route mocht niet meeveranderen | `test_exit_still_uses_the_running_candle` |
 | 1.1 oud gedrag blijft meetbaar via de schakelaar | `test_switch_false_restores_signal_on_running_candle` |
 | 1.1 SL/TP-anker moet de live prijs blijven | `test_levels_are_anchored_on_the_live_price` |
+| 1.3 entry-drift tussen signaalclose en fill | `test_chase_guard_logs_but_keeps_buy_in_shadow` |
+| 1.3 chase-guard bindend blokkeert de koop | `test_chase_guard_binding_blocks_the_buy` |
 """
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -434,3 +436,48 @@ def test_levels_are_anchored_on_the_live_price():
     live_price = closes[-1]
     assert row.entry_price == pytest.approx(live_price, rel=1e-9)
     assert row.stop_loss < live_price < row.take_profit
+
+
+# --- 1.3 chase-guard -----------------------------------------------------------
+
+def runaway_last_candle() -> list[float]:
+    """Koopsignaal op de afgesloten reeks, maar de lopende candle is ver
+    doorgelopen: precies de entry-drift die 1.1 introduceert."""
+    closes = rising()
+    closes[-1] = closes[-2] * 1.10
+    return closes
+
+
+def test_chase_guard_logs_but_keeps_buy_in_shadow():
+    """Shadow: de koop gaat door maar wordt geannoteerd, zodat de gate-waarde
+    gemeten kan worden zonder trades te kosten."""
+    feed = FakeFeed({"A-EUR": runaway_last_candle()})
+    cfg = make_cfg(["A-EUR"], strategy_over={"max_chase_atr": 0.5,
+                                             "chase_guard_binding": False})
+    decisions = make_cycle(cfg, feed).run_once()
+
+    assert open_markets() == {"A-EUR"}
+    buys = [d for d in decisions if d.action == "buy"]
+    assert len(buys) == 1
+    assert "SHADOW-CHASE genegeerd" in buys[0].reason
+    assert "shadow_chase" in buys[0].details
+
+
+def test_chase_guard_binding_blocks_the_buy():
+    feed = FakeFeed({"A-EUR": runaway_last_candle()})
+    cfg = make_cfg(["A-EUR"], strategy_over={"max_chase_atr": 0.5,
+                                             "chase_guard_binding": True})
+    decisions = make_cycle(cfg, feed).run_once()
+
+    assert open_markets() == set()
+    assert any(d.action == "skip" and "chase-guard" in d.reason for d in decisions)
+
+
+def test_chase_guard_off_by_default_config_value_zero():
+    """Met `max_chase_atr: 0` gedraagt de bot zich als vóór de guard."""
+    feed = FakeFeed({"A-EUR": runaway_last_candle()})
+    cfg = make_cfg(["A-EUR"], strategy_over={"max_chase_atr": 0.0})
+    decisions = make_cycle(cfg, feed).run_once()
+
+    assert open_markets() == {"A-EUR"}
+    assert not any("CHASE" in d.reason for d in decisions)

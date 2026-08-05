@@ -3,7 +3,7 @@ shadow-uitkomstmeting. Deterministisch, zonder DB of netwerk (injectie)."""
 from types import SimpleNamespace
 
 from tradebot.analysis import regime
-from tradebot.decision import Decision, apply_regime_filter
+from tradebot.decision import Decision, apply_chase_guard, apply_regime_filter
 
 STEP_MS = 4 * 3600 * 1000
 START = 1_700_000_000_000
@@ -60,6 +60,30 @@ def test_non_buy_is_untouched():
     out = apply_regime_filter(d, regime_ok=False, proxy_market="BTC-EUR", binding=True)
     assert out.action == "skip"
     assert out.reason == "no signal (score 0)"
+
+
+# --- chase-guard (zelfde shadow-vorm) --------------------------------------
+
+def test_chase_guard_shadow_keeps_buy_annotated():
+    out = apply_chase_guard(buy_decision(), hit=True, reason="chase-guard: 2.5x ATR",
+                            binding=False)
+    assert out.action == "buy"
+    assert out.amount_quote_eur == 250.0
+    assert "SHADOW-CHASE genegeerd" in out.reason
+    assert out.details["shadow_chase"].startswith("chase-guard")
+    assert out.details["score"] == 3
+
+
+def test_chase_guard_binding_blocks():
+    out = apply_chase_guard(buy_decision(), hit=True, reason="chase-guard: 2.5x ATR",
+                            binding=True)
+    assert out.action == "skip"
+
+
+def test_chase_guard_no_hit_is_untouched():
+    out = apply_chase_guard(buy_decision(), hit=False, reason="", binding=True)
+    assert out.action == "buy"
+    assert "SHADOW-CHASE" not in out.reason
 
 
 # --- meting ----------------------------------------------------------------

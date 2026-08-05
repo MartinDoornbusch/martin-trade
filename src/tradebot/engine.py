@@ -11,6 +11,7 @@ from .decision import (
     DecisionEngine,
     FeeModel,
     RiskManager,
+    apply_chase_guard,
     apply_regime_filter,
     apply_second_opinion,
     correlated_positions,
@@ -25,6 +26,7 @@ from .scanner import scan, select_auto_fill
 from .strategy import (
     breakeven_stop_hit,
     build_snapshot,
+    chase_too_far,
     check_exit,
     drop_unclosed,
     evaluate_buy,
@@ -130,9 +132,9 @@ class TradingCycle:
                         continue
 
                 # 2) Candidate generation (deterministic) op afgesloten candles.
-                candidate = evaluate_buy(self._entry_snapshot(market, candles, snap),
-                                         self.cfg.strategy)
-                candidate.snapshot = self._anchor_price(candidate.snapshot, snap)
+                entry_snap = self._entry_snapshot(market, candles, snap)
+                candidate = evaluate_buy(entry_snap, self.cfg.strategy)
+                candidate.snapshot = self._anchor_price(entry_snap, snap)
                 decision = self.decider.evaluate_buy(candidate, positions,
                                                      self.broker.last_trade_at(market),
                                                      portfolio, free, daily_pnl)
@@ -171,6 +173,19 @@ class TradingCycle:
                 if decision.action == "buy" and regime_enabled:
                     decision = apply_regime_filter(decision, regime_ok, proxy_market,
                                                    regime_binding)
+
+                # 3d) Chase-guard (gecodeerd): het signaal komt van de afgesloten
+                # candle, de fill van de live prijs. Is de koers daartussen te ver
+                # doorgelopen, dan klopt het risico nog wel (stop en target hangen
+                # aan de fill) maar de edge niet: een deel van de verwachte
+                # beweging is al gemaakt. Shadow tenzij binding.
+                if decision.action == "buy" and entry_snap is not snap:
+                    hit, why = chase_too_far(
+                        entry_snap.price, snap.price, entry_snap.atr,
+                        float(self.cfg.strategy.get("max_chase_atr", 0.0) or 0.0))
+                    decision = apply_chase_guard(
+                        decision, hit, why,
+                        bool(self.cfg.strategy.get("chase_guard_binding", False)))
 
                 # 4) LLM second opinion only for BUYs that passed every gate.
                 # De LLM-laag logt het oordeel altijd (llm_calls), ook in shadow-mode.
@@ -247,6 +262,18 @@ class TradingCycle:
         `details["shadow_breakeven"]`) maar niet uitgevoerd, zodat de waarde van de
         gate gemeten kan worden zonder trades te kosten. Bindend maken pas bij een
         positieve netto gate over >= 20 afgewikkelde trades.
+
+        Bewuste keuze over ATR: `snap` is hier de LIVE snapshot, dus de
+        breakeven-stop bewapent op de live ATR, terwijl sizing en fee-gate de ATR
+        uit de afgesloten reeks gebruiken (`_entry_snapshot`). Dat is geen
+        bijproduct maar de asymmetrie van v0.20.0 doorgetrokken: de piek waartegen
+        de trigger wordt afgezet, wordt óók inclusief de lopende bar gemeten (zie
+        `strategy.breakeven_stop_hit`), dus piek en drempel komen uit dezelfde
+        data. Entries hebben juist een stabiele ATR nodig, want die bepaalt de
+        stop-afstand van een positie die er nog jaren uit kan zien.
+
+        Ook live blijft `current_price` in beide exits: alleen het TELLEN van
+        candles in de time-stop loopt via `drop_unclosed`, niet de prijs.
         """
         exits_cfg = getattr(self.cfg, "exits", {}) or {}
         n_ts = int(exits_cfg.get("time_stop_candles", 0) or 0)

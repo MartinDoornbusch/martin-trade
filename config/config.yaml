@@ -28,6 +28,9 @@ strategy:
   min_signal_score: 3                # aantal bevestigende condities voor kandidaat-BUY
   signal_on_closed_candles: true     # entries beoordelen op de laatst AFGESLOTEN candle; Bitvavo levert de lopende bar mee en flip-condities (MACD-hist) komen en gaan daarbinnen. Exits blijven op de live prijs. false = oud gedrag (meetbaar naast elkaar)
 
+  max_chase_atr: 0.5                 # chase-guard: sla een entry over als de live prijs meer dan dit x ATR van de signaalclose af staat (bijwerking van signal_on_closed_candles: risico klopt nog, edge niet). 0 = uit
+  chase_guard_binding: false         # false = shadow: treffer wordt gelogd (details.shadow_chase) maar blokkeert de koop niet. true pas bij positieve netto gate op >= 20 afgewikkelde trades
+
 fees:
   maker_pct: 0.15                    # fallback; live worden fees via GET /account opgehaald
   taker_pct: 0.25
