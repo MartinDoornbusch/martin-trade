@@ -1,6 +1,6 @@
 # Projectplan: AI Trade Platform
 
-Laatste update: 2026-07-20
+Laatste update: 2026-08-05 (v0.19.0, code-review-opvolging)
 
 ## Doel
 
