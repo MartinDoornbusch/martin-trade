@@ -75,6 +75,17 @@ def leg_slippage_pct(fee_model: FeeModel) -> float:
     economisch: je koopt op de laat en verkoopt op de bied, wat over heen én terug
     samen precies één spread kost. De volle buffer op elk been zou de backtester
     stelselmatig strenger maken dan de fee-gate die de entry toelaat.
+
+    Let op bij het lezen van de uitkomst: op een stop- of target-exit lijkt de
+    slippage grotendeels te verdwijnen, want die niveaus liggen op
+    `fill +/- k x ATR` en schuiven dus mee met een duurdere entry. Dat is geen
+    gratis lunch maar een VERSCHUIVING: een stop die op de geslipte fill ankert,
+    ligt verder van de prijs waarop het besluit is genomen dan de bedoelde
+    2x ATR. De kost gaat van de rendementskolom naar de risicokolom. Alleen op
+    een exit die niet aan de entry hangt (time-stop op de slotkoers) zie je de
+    volle round-trip-drag terug in het rendement. `tests/test_backtest.py` pint
+    beide paden vast, zodat een latere wijziging die de stop van de fill losmaakt
+    niet stil van gedrag verandert.
     """
     return fee_model.slippage_buffer_pct / 2.0
 

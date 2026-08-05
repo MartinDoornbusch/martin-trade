@@ -67,19 +67,64 @@ def get_secrets() -> Secrets:
     return Secrets()
 
 
-def config_fingerprint(cfg) -> str:
-    """Korte, stabiele hash over de veto-relevante config (strategy, decision,
-    fees). Scheidt metingen per configuratie zodat vetoes van een oude config
-    de precisie van een nieuwe niet vervuilen. Duck-typed: werkt met AppConfig
-    of elk object met dezelfde attributen (SimpleNamespace in tests).
+# --- meet-scoping ----------------------------------------------------------
+#
+# Elke shadow-gate (LLM-veto, regime, breakeven, chase) wordt apart gemeten en
+# gaat pas bindend bij een positieve netto gate over >= 20 afgewikkelde trades.
+# Om te voorkomen dat uitkomsten van twee configuraties in één precisiecijfer
+# belanden, krijgt elke gemeten gebeurtenis een config-hash mee.
+#
+# Bewust GEEN enkele globale hash over alles. Die zou bij vier gates de meetklok
+# van alle vier resetten zodra je aan één gate draait: tunen van
+# `exits.breakeven_stop.trigger_atr` in week drie zou ook de regime- en
+# veto-telling terugzetten naar nul, waardoor de drempel van 20 in een fase
+# waarin je juist afstelt praktisch onbereikbaar wordt.
+#
+# Daarom een gedeelde KERN plus per gate zijn eigen secties.
+#
+# Kern: bepaalt of en tegen welke prijs een entry ontstaat, en tegen welke kosten
+# de uitkomst wordt afgezet. Wijzigt die, dan verandert de populatie voor elke
+# gate en is resetten juist correct.
+#   strategy  - signaalregels, RSI-zone, `signal_on_closed_candles`, chase-guard
+#   decision  - ATR/RR, fee-gate-drempel, LLM-veto-schakelaars
+#   fees      - de kosten waartegen elke uitkomst wordt afgezet
+#   universe  - auto_fill bepaalt WELKE markten kandidaat zijn
+# Bewust NIET in de kern: `risk` (bucket_eur, max_position_pct). Die schalen
+# alleen de euro-bedragen in het rapport, niet de procentuele uitkomst per trade,
+# en zouden de hash laten klapperen bij elke operationele sizing-tweak.
+#
+# Bekende, geaccepteerde onnauwkeurigheid: de uitkomst van een ENTRY-gate (veto,
+# regime, chase) is een volledige round-trip, dus exit-parameters beïnvloeden hem
+# wel degelijk. `exits` zit toch niet in hun scope, want anders is de gedeelde
+# kern feitelijk weer globaal en keert het probleem hierboven terug. De ruil is
+# bewust: iets meer meetruis in ruil voor haalbare drempels per gate.
+CORE_SECTIONS = ("strategy", "decision", "fees", "universe")
+
+GATE_SECTIONS = {
+    "veto": CORE_SECTIONS,
+    "chase": CORE_SECTIONS,                      # parameters staan onder `strategy`
+    "regime": (*CORE_SECTIONS, "regime"),
+    "breakeven": (*CORE_SECTIONS, "exits"),      # hele `exits`: de time-stop kan een
+                                                 # breakeven-treffer vóór zijn
+}
+
+
+def config_fingerprint(cfg, sections: tuple[str, ...] = CORE_SECTIONS) -> str:
+    """Korte, stabiele hash over de meet-relevante config.
+
+    Duck-typed: werkt met AppConfig of elk object met dezelfde attributen
+    (SimpleNamespace in tests); ontbrekende secties tellen als leeg. Terugzetten
+    van een waarde geeft dezelfde hash en dus de oude meetcohorte terug, want de
+    hash gaat over waarden en niet over tijd.
     """
-    payload = {
-        "strategy": dict(getattr(cfg, "strategy", {}) or {}),
-        "decision": dict(getattr(cfg, "decision", {}) or {}),
-        "fees": dict(getattr(cfg, "fees", {}) or {}),
-    }
+    payload = {section: dict(getattr(cfg, section, {}) or {}) for section in sections}
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
+
+
+def gate_fingerprint(cfg, gate: str) -> str:
+    """Config-hash voor één specifieke shadow-gate; zie `GATE_SECTIONS`."""
+    return config_fingerprint(cfg, GATE_SECTIONS[gate])
 
 
 def _csv_env(name: str) -> list[str] | None:

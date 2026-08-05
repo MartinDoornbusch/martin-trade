@@ -11,11 +11,13 @@ Test-naar-punt (code review ronde 2, blok 2):
 | 2.2 exit op slotkoers i.p.v. intrabar | `test_exit_uses_the_intrabar_low_not_the_close` |
 | 2.2 stop wint bij een candle die beide raakt | `test_intrabar_stop_wins_when_one_candle_hits_both` |
 | 2.3 slippage werd nooit op de fill toegepast | `test_slippage_costs_one_full_buffer_per_round_trip` |
+| 2.3 op het SL-pad verschuift de kost, hij verdwijnt niet | `test_slippage_on_the_stop_path_costs_only_one_leg` |
 | 2.4 all-in sizing i.p.v. buckets | `test_portfolio_mode_spends_one_bucket_per_position` |
 | 2.4 slotlimiet werd niet gerespecteerd | `test_portfolio_mode_respects_max_open_positions` |
 | 2.4 correlatiecap ontbrak | `test_portfolio_mode_applies_the_correlation_cluster_cap` |
 | 2.4 modus moet in de output staan | `test_output_labels_which_mode_ran` |
 | optimalisatie mag niet van de engine afdrijven | `test_build_snapshots_matches_build_snapshot` |
+| ... ook op een slice, want EMA seedt op arr[0] | `test_build_snapshots_matches_build_snapshot_on_a_slice` |
 """
 from types import SimpleNamespace
 
@@ -80,6 +82,23 @@ def test_build_snapshots_matches_build_snapshot():
     for i in (20, 45, 61, 89):
         one = build_snapshot("BT", data[: i + 1], cfg.strategy)
         assert serie[i] == one, f"afwijking op index {i}"
+
+
+def test_build_snapshots_matches_build_snapshot_on_a_slice():
+    """Ook op een slice, want dat is wat de optimizer doet: hij draait op
+    `candles[split:]`. EMA seedt op `arr[0]`, dus een slice heeft een ander
+    startpunt en dat is precies waar een one-pass-implementatie stil van de
+    referentie kan afwijken."""
+    cfg = make_cfg()
+    data = candles([100 + (i % 7) - (i % 3) * 1.5 for i in range(120)])[37:]
+    serie = build_snapshots("BT", data, cfg.strategy)
+    # Vanaf index 20 zijn alle indicatoren warm (Bollinger 20 is de traagste);
+    # daaronder staat aan beide kanten NaN en vergelijkt een dataclass nooit gelijk.
+    for i in (25, 50, 82):
+        snap = serie[i]
+        assert snap.bb_lower == snap.bb_lower, f"indicator nog niet warm op {i}"
+        assert snap == build_snapshot("BT", data[: i + 1], cfg.strategy), \
+            f"afwijking op slice-index {i}"
 
 
 # --- 2.2 intrabar-exits ---------------------------------------------------------
@@ -169,6 +188,29 @@ def test_slippage_costs_one_full_buffer_per_round_trip():
     assert zonder["open_at_end"] == met["open_at_end"] == 0
     verschil = zonder["net_return_pct"] - met["net_return_pct"]
     assert 0.15 < verschil < 0.25, f"verwacht ~0,20%-punt drag, gemeten {verschil}"
+
+
+def test_slippage_on_the_stop_path_costs_only_one_leg():
+    """Tegenhanger van de time-stop-test. Stop en target liggen op `fill +/- k x ATR`
+    en schuiven dus mee met een duurdere entry, waardoor het instapbeen zichzelf
+    grotendeels compenseert in het RENDEMENT. Dat is geen gratis lunch: die stop
+    ligt daardoor verder van de prijs waarop het besluit is genomen dan de bedoelde
+    2x ATR, dus de kost verschuift naar de risicokolom. Deze test pint de kleine
+    drag vast, zodat een latere wijziging die de stop losmaakt van de fill niet stil
+    van gedrag verandert."""
+    closes = [100.0] * (WARMUP + 1) + [99.0]
+    lows = [c * 0.98 for c in closes]
+    lows[-1] = 91.0
+    data = candles(closes, lows=lows)
+    cfg = make_cfg()
+
+    zonder = run_backtest(data, cfg, fees(slippage=0.0), warmup=WARMUP)
+    met = run_backtest(data, cfg, fees(slippage=0.20), warmup=WARMUP)
+
+    assert zonder["exit_reasons"] == met["exit_reasons"] == {"stop loss": 1}
+    verschil = zonder["net_return_pct"] - met["net_return_pct"]
+    assert 0.05 < verschil < 0.15, (
+        f"verwacht ~één been (0,10%-punt) op het SL-pad, gemeten {verschil}")
 
 
 # --- 2.4 portfolio-modus --------------------------------------------------------

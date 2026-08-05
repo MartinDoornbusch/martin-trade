@@ -210,6 +210,57 @@ def test_config_fingerprint_stable_and_sensitive():
     assert len(config_fingerprint(a)) == 12
 
 
+def _cfg(**over):
+    from types import SimpleNamespace
+    base = dict(strategy={"ema_fast": 12}, decision={"reward_risk_ratio": 1.5},
+                fees={"taker_pct": 0.25}, universe={"auto_fill": True},
+                exits={"breakeven_stop": {"trigger_atr": 1.0}},
+                regime={"binding": False}, risk={"bucket_eur": 250})
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+def test_core_sections_reset_every_gate():
+    """De kern bepaalt of en tegen welke prijs een entry ontstaat; wijzigt die,
+    dan verandert de populatie voor elke gate en is resetten juist correct."""
+    from tradebot.config import GATE_SECTIONS, gate_fingerprint
+    base = _cfg()
+    gewijzigd = _cfg(strategy={"ema_fast": 20})
+    for gate in GATE_SECTIONS:
+        assert gate_fingerprint(base, gate) != gate_fingerprint(gewijzigd, gate), gate
+
+
+def test_tuning_one_gate_does_not_reset_the_others():
+    """Regressie op review ronde 2: met één globale hash zou tunen van
+    `trigger_atr` ook de regime- en veto-telling terugzetten naar nul, waardoor de
+    drempel van 20 afgewikkelde trades per gate onbereikbaar wordt."""
+    from tradebot.config import gate_fingerprint
+    base = _cfg()
+    be_getuned = _cfg(exits={"breakeven_stop": {"trigger_atr": 1.5}})
+    regime_getuned = _cfg(regime={"binding": True})
+
+    assert gate_fingerprint(base, "breakeven") != gate_fingerprint(be_getuned, "breakeven")
+    assert gate_fingerprint(base, "veto") == gate_fingerprint(be_getuned, "veto")
+    assert gate_fingerprint(base, "regime") == gate_fingerprint(be_getuned, "regime")
+
+    assert gate_fingerprint(base, "regime") != gate_fingerprint(regime_getuned, "regime")
+    assert gate_fingerprint(base, "breakeven") == gate_fingerprint(regime_getuned, "breakeven")
+
+
+def test_restoring_a_value_restores_the_cohort():
+    """De hash gaat over waarden, niet over tijd: terugzetten geeft de oude
+    meetcohorte terug in plaats van een derde."""
+    from tradebot.config import gate_fingerprint
+    assert gate_fingerprint(_cfg(), "regime") == gate_fingerprint(_cfg(), "regime")
+
+
+def test_config_fingerprint_ignores_operational_sizing():
+    """`risk` blijft erbuiten: bucket_eur schaalt alleen de euro-bedragen in het
+    rapport, niet de procentuele uitkomst per trade."""
+    assert config_fingerprint(_cfg(risk={"bucket_eur": 250})) == \
+        config_fingerprint(_cfg(risk={"bucket_eur": 500}))
+
+
 def test_config_scope_filter_db(memory_db):
     from tradebot.db import LLMCallRow, session
     with session() as s:
