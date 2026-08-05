@@ -53,6 +53,9 @@ def modify(cfg, list_name: str, market: str, action: str) -> tuple[bool, str]:
         return False, f"onbekende lijst: {list_name}"
     if not _MARKET_RE.match(market):
         return False, f"ongeldige marktnotatie: {market} (verwacht bijv. SOL-EUR)"
+    blocklist = {m.upper() for m in (getattr(cfg, "blocklist", []) or [])}
+    if action == "add" and market in blocklist:
+        return False, f"{market} staat op de banlijst en wordt niet verhandeld"
     state = get_lists(cfg)
     markets, watchlist = state["markets"], state["watchlist"]
 

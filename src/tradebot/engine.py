@@ -21,7 +21,7 @@ from .llm import LLMRouter, build_router
 from .notify import Notifier
 from .paper import PaperBroker
 from .scanner import scan, select_auto_fill
-from .strategy import build_snapshot, check_exit, evaluate_buy
+from .strategy import build_snapshot, check_exit, evaluate_buy, time_stop_hit
 
 log = logging.getLogger(__name__)
 
@@ -63,9 +63,11 @@ class TradingCycle:
         free = self.broker.cash_eur()
         daily_pnl = self.broker.daily_pnl_eur()
 
+        blocklist = {m.upper() for m in (getattr(self.cfg, "blocklist", []) or [])}
         pinned_markets = get_lists(self.cfg)["markets"]
         open_markets = [p.market for p in positions]
-        auto_markets = self._auto_fill_markets(pinned_markets, open_markets, positions, portfolio)
+        auto_markets = self._auto_fill_markets(pinned_markets, open_markets, positions,
+                                               portfolio, blocklist)
         self._store_auto_fill(auto_markets)
         # Analyse-set: gepind + open posities (zodat exits altijd draaien) + auto-fill,
         # ontdubbeld met behoud van volgorde (gepind eerst).
@@ -94,6 +96,14 @@ class TradingCycle:
                 if pos:
                     should_exit, why = check_exit(pos.entry_price, pos.stop_loss,
                                                   pos.take_profit, snap)
+                    if not should_exit:
+                        exits_cfg = getattr(self.cfg, "exits", {}) or {}
+                        n_ts = int(exits_cfg.get("time_stop_candles", 0) or 0)
+                        if n_ts > 0:
+                            should_exit, why = time_stop_hit(
+                                candles, pos.opened_at, pos.entry_price, snap.price,
+                                self.fee_model.round_trip_pct(), n_ts,
+                                float(exits_cfg.get("time_stop_min_net_pct", 0.0)))
                     if should_exit:
                         self.broker.sell(market, why)
                         self._log_signal(market, "sell", "executed", 0, why, {})
@@ -106,6 +116,11 @@ class TradingCycle:
                 decision = self.decider.evaluate_buy(candidate, positions,
                                                      self.broker.last_trade_at(market),
                                                      portfolio, free, daily_pnl)
+
+                # 2b) Banlijst: nooit kopen in een geweerde markt (exits hierboven
+                # lopen wel door, zodat een reeds open positie netjes gesloten wordt).
+                if decision.action == "buy" and market in blocklist:
+                    decision = Decision(market, "skip", "blocklist: markt geweerd")
 
                 # 3a) Kill-switch: gebruiker heeft kopen gepauzeerd (exits lopen door).
                 if decision.action == "buy" and is_paused():
@@ -164,7 +179,8 @@ class TradingCycle:
         return decisions
 
     def _auto_fill_markets(self, pinned: list[str], open_markets: list[str],
-                           positions: list, portfolio_eur: float) -> list[str]:
+                           positions: list, portfolio_eur: float,
+                           blocklist: set[str] | None = None) -> list[str]:
         """Vul de vrije slots met de beste scanner-kandidaten die alle gates halen.
 
         Gepinde markten en open posities houden voorrang; auto-fill voegt alleen
@@ -187,7 +203,7 @@ class TradingCycle:
         except Exception:  # noqa: BLE001 - scanfout mag de cyclus niet breken
             log.warning("auto-fill: scan mislukt, geen extra kandidaten deze cyclus")
             return []
-        exclude = set(pinned) | set(open_markets)
+        exclude = set(pinned) | set(open_markets) | (blocklist or set())
         return select_auto_fill(results, exclude, want)
 
     @staticmethod

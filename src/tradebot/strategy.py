@@ -95,3 +95,27 @@ def check_exit(entry_price: float, stop_loss: float, take_profit: float,
     if snap.ema_fast < snap.ema_slow and snap.rsi > float(70):
         return True, "trend break: EMA cross down with overbought RSI"
     return False, ""
+
+
+def time_stop_hit(candles: list, opened_at, entry_price: float, current_price: float,
+                  round_trip_pct: float, n_candles: int,
+                  min_net_pct: float = 0.0) -> tuple[bool, str]:
+    """Time-stop: sluit een positie die te lang stilstaat zonder TP/SL te raken.
+
+    Puur en testbaar, geen AI, geen nieuws. De positie wordt geëxit als er sinds
+    entry minstens `n_candles` candles verstreken zijn EN de nettowinst bij nu
+    verkopen (koersverschil minus round-trip fees) op of onder `min_net_pct` ligt.
+    Zo maak je een slot plus kapitaal vrij dat anders eindeloos zijwaarts hangt,
+    zonder winnaars vroeg te knippen (die staan boven de drempel).
+    """
+    if n_candles <= 0 or entry_price <= 0:
+        return False, ""
+    opened_ms = int(opened_at.timestamp() * 1000)
+    elapsed = sum(1 for c in candles if c.ts > opened_ms)
+    if elapsed < n_candles:
+        return False, ""
+    net_pct = (current_price / entry_price - 1) * 100 - round_trip_pct
+    if net_pct <= min_net_pct:
+        return True, (f"time-stop: {elapsed} candles zonder TP/SL, "
+                      f"netto {net_pct:.2f}% <= {min_net_pct:.2f}%")
+    return False, ""

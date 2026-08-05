@@ -9,6 +9,8 @@ watchlist:          # alleen analyse/advies op het dashboard, bot handelt hier N
   - XRP-EUR
   - LINK-EUR
 
+blocklist: []       # markten die de bot NOOIT verhandelt (geweerd uit scanner, auto-fill en handmatig toevoegen)
+
 schedule:
   analysis_interval_minutes: 60      # swing: 1x per uur is voldoende
   candle_interval: "4h"              # candles voor analyse
@@ -53,6 +55,13 @@ universe:                            # kandidaten-universum: gepinde markets + a
   auto_fill: true                    # vrije slots aanvullen met scanner-hits die alle gates halen
   max_auto: 10                       # max aantal auto-fill kandidaten dat de bot per cyclus overweegt
   auto_fill_buffer: 2                # extra kandidaten boven de vrije slots (opvang voor uitval door gates)
+
+exits:                               # mechanische exits bovenop SL/TP/trend-break (geen AI)
+  time_stop_candles: 12              # sluit een positie die na zoveel candles geen TP/SL raakte
+  time_stop_min_net_pct: 0.0         # ... en per saldo op of onder deze netto % staat (incl. round-trip fees). 0 = break-even
+
+curation:                            # advies-only lijstbeheer (de bot verplaatst zelf niets)
+  quiet_days: 30                     # gepinde coin met 0 koopsignalen in deze periode: dashboard-vlag "overweeg naar watchlist"
 
 regime:                              # markt-brede regime-gate (gecodeerd, geen AI)
   enabled: true

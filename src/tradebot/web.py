@@ -177,9 +177,37 @@ class ListEdit(BaseModel):
     action: str  # add | remove
 
 
+def _quiet_markets(markets: list[str], quiet_days: int) -> list[dict]:
+    """Gepinde markten met 0 koopsignalen in de laatste `quiet_days` dagen.
+    Puur advies voor het dashboard; de bot verplaatst zelf niets."""
+    from datetime import datetime, timedelta, timezone
+    if not markets or quiet_days <= 0:
+        return []
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=quiet_days)
+    out: list[dict] = []
+    with session() as s:
+        for m in markets:
+            last = s.execute(
+                select(SignalRow.ts).where(SignalRow.market == m, SignalRow.action == "buy")
+                .order_by(SignalRow.ts.desc()).limit(1)).scalars().first()
+            if last is None:
+                out.append({"market": m, "days": None})
+                continue
+            if last.tzinfo is None:  # SQLite geeft tz-naïef terug; behandel als UTC
+                last = last.replace(tzinfo=timezone.utc)
+            if last < cutoff:
+                out.append({"market": m, "days": (now - last).days})
+    return out
+
+
 @app.get("/api/lists", dependencies=[Depends(check_token)])
 def lists_get():
-    return get_lists(get_config())
+    cfg = get_config()
+    data = get_lists(cfg)
+    data["quiet"] = _quiet_markets(data["markets"],
+                                   int((getattr(cfg, "curation", {}) or {}).get("quiet_days", 30)))
+    return data
 
 
 @app.post("/api/lists", dependencies=[Depends(check_token)])
@@ -578,7 +606,8 @@ function renderLists(l){
   document.getElementById('listbox').innerHTML =
     `<div><b>Trading</b> (${l.markets.length}/${l.max_markets}): ` + l.markets.map(m=>chip(m,'markets')).join('') + '</div>' +
     `<div style="margin-top:6px"><b>Watchlist</b> (${l.watchlist.length}/${l.max_watchlist}): ` + (l.watchlist.length? l.watchlist.map(m=>chip(m,'watchlist')).join('') : '<span class="muted">leeg</span>') + '</div>' +
-    ((l.auto_fill && l.auto_fill.length) ? `<div style="margin-top:6px"><b>Auto-fill</b> <span class="muted">(scanner, deze cyclus)</span>: ` + l.auto_fill.map(m=>`<span class="chip">${m}</span>`).join('') + '</div>' : '');
+    ((l.auto_fill && l.auto_fill.length) ? `<div style="margin-top:6px"><b>Auto-fill</b> <span class="muted">(scanner, deze cyclus)</span>: ` + l.auto_fill.map(m=>`<span class="chip">${m}</span>`).join('') + '</div>' : '') +
+    ((l.quiet && l.quiet.length) ? `<div style="margin-top:6px" class="neg"><b>Quiet</b> <span class="muted">(0 koopsignalen, overweeg naar watchlist)</span>: ` + l.quiet.map(q=>`<span class="chip">${q.market} <span class="muted">${q.days==null?'nooit':q.days+'d'}</span></span>`).join('') + '</div>' : '');
 }
 async function act(listName, market, action){
   if(!market){ return; }

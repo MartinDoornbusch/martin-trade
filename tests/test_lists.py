@@ -14,6 +14,14 @@ def cfg(memory_db):
     return make_cfg()
 
 
+def test_blocklist_rejects_add(memory_db):
+    cfg = AppConfig(markets=["BTC-EUR", "ETH-EUR"], watchlist=["SOL-EUR"],
+                    blocklist=["DOGE-EUR"], schedule={}, strategy={}, fees={},
+                    decision={}, risk={}, llm={})
+    ok, msg = modify(cfg, "watchlist", "doge-eur", "add")
+    assert not ok and "banlijst" in msg
+
+
 def test_fallback_to_config_without_override(cfg):
     state = get_lists(cfg)
     assert state["markets"] == ["BTC-EUR", "ETH-EUR"]

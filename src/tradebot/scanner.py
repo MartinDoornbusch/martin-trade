@@ -72,9 +72,10 @@ def scan(feed, cfg, top_n: int = 20) -> tuple[list[dict], dict]:
         in_markets, in_watchlist = set(active["markets"]), set(active["watchlist"])
     except Exception:  # noqa: BLE001 - buiten app-context (tests/CLI) terugvallen op config
         in_markets, in_watchlist = set(cfg.markets), set(cfg.watchlist)
+    blocklist = {m.upper() for m in (getattr(cfg, "blocklist", []) or [])}
     tickers = feed.get_ticker_24h()
     eur_total = sum(1 for t in tickers if t.get("market", "").endswith("-EUR"))
-    candidates = liquidity_filter(tickers)
+    candidates = [c for c in liquidity_filter(tickers) if c["market"] not in blocklist]
     results = []
     for c in candidates[:CANDLE_TOP]:
         market = c["market"]

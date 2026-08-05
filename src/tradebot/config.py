@@ -45,6 +45,7 @@ class LLMProviderCfg(BaseModel):
 class AppConfig(BaseModel):
     markets: list[str]
     watchlist: list[str] = []
+    blocklist: list[str] = []
     schedule: dict[str, Any]
     strategy: dict[str, Any]
     fees: dict[str, float]
@@ -52,6 +53,8 @@ class AppConfig(BaseModel):
     risk: dict[str, Any]
     regime: dict[str, Any] = {}
     universe: dict[str, Any] = {}
+    exits: dict[str, Any] = {}
+    curation: dict[str, Any] = {}
     llm: dict[str, Any]
 
     @property
