@@ -14,4 +14,10 @@ tradebot-addon/requirements.txt
 # patch-bestanden voor de aparte investment-system repo, niet voor deze repo
 investment-system-updates/
 .coverage
-*.disabled
+# Fase A3-code staat onder de echte bestandsnamen op branch feature/a3-liquiditeit;
+# op main liggen ze nog als .disabled in de working tree. Bewust drie expliciete
+# paden en geen *.disabled-glob: die zou elk toekomstig bestand met die extensie
+# stilzwijgend slikken.
+src/tradebot/liquidity.py.disabled
+src/tradebot/analysis/liquidity.py.disabled
+tests/test_liquidity.py.disabled

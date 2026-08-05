@@ -120,7 +120,8 @@ Bewust vóór de getrapte liquiditeit gezet (die is A3 geworden): de time-stop i
 Code al af (was eerst v0.18.0, doorgeschoven na de swap). Ligt buiten de repo-tree bewaard (`outputs/liq_v019_backup/`, naam nog van de oude nummering); komt terug als **v0.20.0** zodra de time-stop op paper draait, met de tussenzone dan meteen actief (het vangnet staat er). Nummer opgeschoven omdat v0.19.0 is opgegaan aan de code-review-opvolging hieronder.
 - [x] Getrapte liquiditeit: `LiquidityPolicy` (vloer 250k, tussenzone tot 100k met 1,5x edge-eis en 0,5x inzet, daaronder uitgesloten); scanner + `DecisionEngine.evaluate_buy` passen de tier toe; tier + volume in SignalRow.details.
 - [x] Segment-meting: `analysis.liquidity.analyze_liquidity_segments` cohort normaal vs dun uit echte round-trip-P&L, dashboard-sectie + `/api/liquidity-segments`, "dun"-tag in de scanner.
-- [ ] Terugzetten als v0.19.0 en committen (na paper-validatie van v0.18.0).
+- [x] Code staat sinds v0.20.0 op branch `feature/a3-liquiditeit` onder de echte bestandsnamen, dus in git, diffbaar en met CI erop. Op main liggen de drie `.disabled`-bestanden nog in de working tree; ze zijn daar met drie expliciete paden genegeerd (geen `*.disabled`-glob, die zou toekomstige bestanden stilzwijgend slikken). Aanleiding: ongetrackt bewaren maakte van "nog niet gecommit" feitelijk "kan niet gecommit worden" — één `git clean -fdx`, een verse clone of een workspace-reset en het werk was zonder waarschuwing weg
+- [ ] Mergen naar main als v0.21.0 (na paper-validatie van v0.18.0/v0.19.0).
 
 ### Code-review-opvolging (v0.19.0)
 
