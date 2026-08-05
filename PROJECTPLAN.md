@@ -92,6 +92,31 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] `ExchangeAdapter` implementatie voor gekozen broker
 - [ ] Markturen-logica (crypto is 24/7, aandelen niet)
 
+## Deployment-verbetering: kapitaal aan het werk (gepland, nog niet geimplementeerd)
+
+Doel: voorkomen dat slots leeg blijven terwijl er budget is, zonder de fee-discipline te breken. Uitgangspunt: een leeg slot door gebrek aan een kwaliteitssignaal blijft leeg (dat is correct gedrag, geen bug). We verruimen alleen het kandidaten-universum en de gate-logica; we forceren nooit deployment. De handmatige watchlist blijft advies-only en is dus niet de groeimotor, de scanner is dat.
+
+Beslissingen (2026-08-04, met Martin):
+- Universum: gepinde kern (`markets`) plus auto-fill uit de scanner tot de slots vol zijn, uitsluitend kandidaten die alle gates halen.
+- Correlatie: cluster-cap (max N posities per correlatie-cluster) in plaats van een hard blok na de eerste.
+- Liquiditeit: getrapt, dunne coins toegestaan met een strengere edge-eis en kleinere inzet.
+- Sizing: vaste bucket nu; positiegrootte laten groeien is bewust geparkeerd naar fase 2.
+
+### Fase A (v0.17.0) — universum + gates
+- [ ] Auto-fill kandidaten: elke cyclus de resterende vrije slots aanvullen met scanner-top-hits die score, fee-gate, liquiditeit, cooldown en niet-reeds-open passeren. Config `universe.auto_fill` (bool) en `universe.max_auto` (int, default = slot-plafond). Deterministisch, geen AI. Gepinde `markets` houden voorrang op auto-fills.
+- [ ] Cluster-cap correlatie: `risk.max_correlated_positions` (K, default 2). Kandidaat geweigerd zodra het aantal open posities met correlatie > `max_correlation` gelijk of groter is dan K. Vervangt het harde blok in de engine.
+- [ ] Getrapte liquiditeit: `liquidity.min_volume_eur` (harde vloer, 250k) plus `liquidity.thin_volume_eur` (bijv. 100k) als tussenzone met `thin_edge_multiplier` (bijv. 1,5x vereiste move) en `thin_size_factor` (bijv. 0,5x bucket). Onder de tussenzone uitgesloten. Scanner en decision markeren een markt als "thin".
+- [ ] Dashboard: tonen welke markten auto-filled en welke "thin" zijn; slot-bezetting is al zichtbaar (v0.16.0).
+- [ ] Tests, CI-identieke run, versiebump, docs.
+
+### Fase B (in fase 2, na go/no-go) — positiegrootte laten meegroeien
+- [ ] Optionele sizing-modus `bucket_pct` (bucket als vast % van portfolio) of mijlpaal-gebaseerd, zodat de inzet meeschaalt met kapitaal. Pas activeren als de edge in fase 2 bewezen is; nu zou het compounding op een nog onbewezen strategie zetten. De config-hook (`sizing`-veld) ligt er al (v0.16.0), dus dit is een uitbreiding, geen herbouw.
+
+### Fase C (in fase 4) — echte diversificatie
+- [ ] Crypto-alts zijn onderling 0,7-0,9 gecorreleerd, dus spreiding over veel crypto-slots is deels illusie. Echte diversificatie komt met aandelen (fase 4). De cluster-cap is tot die tijd een pragmatisch compromis, geen echte risicospreiding.
+
+Guardrail (alle fases): geen enkele stap vult slots door de fee-gate of de correlatie-gate los te laten bij onderbezetting. Auto-fill voegt uitsluitend kandidaten toe die zelfstandig door alle gates komen.
+
 ## Bekende beperking: update-knop bij rode CI
 
 HA leest de add-on versie uit git (main), maar het image bestaat pas na een groene CI-run. Bij een rode run biedt HA dus tijdelijk een update aan die faalt met "unknown error" — dit is de quality gate die uitrol van kapotte code blokkeert, niet een defect. Herstel: fix pushen, groene run afwachten, opnieuw updaten. Structurele oplossing (CI promoot pas na image-push naar een `stable`-branch waar HA naar wijst) is bewust uitgesteld tot na fase 2: wisselen van repository-URL betekent herinstallatie van de add-on en verlies van de paper-historie in /data.
