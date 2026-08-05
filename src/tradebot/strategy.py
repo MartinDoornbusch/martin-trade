@@ -168,6 +168,13 @@ def breakeven_stop_hit(candles: list, opened_at, entry_price: float, current_pri
     Vervangt de geschrapte trend-break-exit: dezelfde bedoeling (een omkering na
     entry afvangen) maar op prijs en gerealiseerde winst in plaats van op twee
     indicatorcondities die elkaar in de praktijk uitsluiten.
+
+    Bewust verschil met `time_stop_hit`: die knipt de lopende candle eraf, deze
+    telt hem juist mee. De time-stop TELT candles, dus een bar die nog loopt is
+    nog geen verstreken bar en zou de stop een candle te vroeg laten vuren. De
+    breakeven-stop MEET een piek, en een high die zojuist in de lopende bar is
+    gezet is een even echte piek als een high van gisteren; hem negeren zou de
+    stop juist te laat bewapenen.
     """
     if entry_price <= 0 or atr_value <= 0 or trigger_atr <= 0:
         return False, ""
@@ -189,19 +196,24 @@ def breakeven_stop_hit(candles: list, opened_at, entry_price: float, current_pri
 
 def time_stop_hit(candles: list, opened_at, entry_price: float, current_price: float,
                   round_trip_pct: float, n_candles: int,
-                  min_net_pct: float = 0.0) -> tuple[bool, str]:
+                  min_net_pct: float = 0.0, now_ms: int | None = None) -> tuple[bool, str]:
     """Time-stop: sluit een positie die te lang stilstaat zonder TP/SL te raken.
 
     Puur en testbaar, geen AI, geen nieuws. De positie wordt geëxit als er sinds
-    entry minstens `n_candles` candles verstreken zijn EN de nettowinst bij nu
+    entry minstens `n_candles` candles VERSTREKEN zijn EN de nettowinst bij nu
     verkopen (koersverschil minus round-trip fees) op of onder `min_net_pct` ligt.
     Zo maak je een slot plus kapitaal vrij dat anders eindeloos zijwaarts hangt,
     zonder winnaars vroeg te knippen (die staan boven de drempel).
+
+    "Verstreken" betekent afgesloten: de lopende bar wordt via `drop_unclosed`
+    weggelaten. Hem meetellen liet de stop ongeveer een candle te vroeg vuren, en
+    binnen dezelfde bar zelfs meerdere uurcycli lang. Dit staat los van de
+    breakeven-stop, die de lopende bar juist wél meeneemt (zie daar).
     """
     if n_candles <= 0 or entry_price <= 0:
         return False, ""
     opened_ms = int(opened_at.timestamp() * 1000)
-    elapsed = sum(1 for c in candles if c.ts > opened_ms)
+    elapsed = sum(1 for c in drop_unclosed(candles, now_ms) if c.ts > opened_ms)
     if elapsed < n_candles:
         return False, ""
     net_pct = (current_price / entry_price - 1) * 100 - round_trip_pct

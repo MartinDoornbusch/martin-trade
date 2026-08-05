@@ -7,6 +7,7 @@ from tradebot.strategy import (
     check_exit,
     drop_unclosed,
     evaluate_buy,
+    time_stop_hit,
 )
 
 CFG = {"ema_fast": 12, "ema_slow": 26, "rsi_period": 14, "rsi_buy_zone_min": 25,
@@ -169,3 +170,61 @@ def test_drop_unclosed_handles_degenerate_input():
     assert drop_unclosed([]) == []
     one = series(1, 1_785_945_600_000)
     assert len(drop_unclosed(one, now_ms=1_785_945_600_000)) == 1
+
+
+
+# --- 1.2: time-stop telt alleen afgesloten candles ------------------------------
+
+def candles_from_entry(n: int) -> list[Candle]:
+    """`n` candles ná OPENED; de laatste is de nog lopende bar."""
+    base = int(OPENED.timestamp() * 1000)
+    return [Candle(ts=base + (i + 1) * STEP_MS, open=100.0, high=100.0,
+                   low=100.0, close=100.0, volume=1.0) for i in range(n)]
+
+
+def _now_with_running_bar(candles: list[Candle]) -> int:
+    """Klok halverwege de laatste candle: die bar loopt dus nog."""
+    return candles[-1].ts + STEP_MS // 2
+
+
+def test_time_stop_does_not_count_the_running_candle():
+    """Regressie op punt 1.2: `elapsed` telde elke candle met `ts > opened_ms`,
+    inclusief de bar die nog liep. Daardoor vuurde de time-stop ongeveer een candle
+    te vroeg. Hier zijn er 12 candles ná entry, waarvan er één nog loopt: 11
+    verstreken bars, dus onder de drempel van 12."""
+    candles = candles_from_entry(12)
+    hit, _ = time_stop_hit(candles, OPENED, entry_price=100.0, current_price=100.0,
+                           round_trip_pct=0.5, n_candles=12,
+                           now_ms=_now_with_running_bar(candles))
+    assert not hit
+
+
+def test_time_stop_fires_once_enough_candles_actually_closed():
+    """Eén candle later zijn er wél 12 afgesloten bars: dan mag hij vuren."""
+    candles = candles_from_entry(13)
+    hit, why = time_stop_hit(candles, OPENED, entry_price=100.0, current_price=100.0,
+                             round_trip_pct=0.5, n_candles=12,
+                             now_ms=_now_with_running_bar(candles))
+    assert hit and "12 candles" in why
+
+
+def test_time_stop_leaves_a_winner_above_the_threshold_alone():
+    candles = candles_from_entry(13)
+    hit, _ = time_stop_hit(candles, OPENED, entry_price=100.0, current_price=105.0,
+                           round_trip_pct=0.5, n_candles=12,
+                           now_ms=_now_with_running_bar(candles))
+    assert not hit
+
+
+def test_breakeven_stop_still_counts_the_running_candle():
+    """Tegenhanger van 1.2: de breakeven-stop MEET een piek in plaats van candles te
+    tellen, dus een high die zojuist in de lopende bar is gezet telt terecht mee.
+    Alleen die bar staat hier boven de trigger."""
+    base = int(OPENED.timestamp() * 1000)
+    candles = [Candle(ts=base + (i + 1) * STEP_MS, open=100.0, high=100.2,
+                      low=99.0, close=100.0, volume=1.0) for i in range(3)]
+    candles.append(Candle(ts=base + 4 * STEP_MS, open=100.0, high=102.0,
+                          low=99.0, close=100.4, volume=1.0))
+    hit, _ = breakeven_stop_hit(candles, OPENED, entry_price=100.0, current_price=100.4,
+                                atr_value=1.0, trigger_atr=1.0, offset_pct=0.55)
+    assert hit
