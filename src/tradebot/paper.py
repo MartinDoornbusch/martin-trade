@@ -19,10 +19,13 @@ log = logging.getLogger(__name__)
 
 CASH_KEY = "paper_cash_eur"
 FEES_KEY = "paper_fees_cumulative_eur"
+MODE = "paper"
 
 
 class PaperBroker:
     """Implements order execution against live prices from a real data feed."""
+
+    mode = MODE
 
     def __init__(self, data_feed: ExchangeAdapter, fee_model: FeeModel, start_eur: float):
         self.feed = data_feed
@@ -62,8 +65,10 @@ class PaperBroker:
         return total
 
     def last_trade_at(self, market: str) -> datetime | None:
+        # Mode-filter: een live-trade mag nooit de paper-cooldown zetten (en andersom).
         with session() as s:
-            row = s.execute(select(TradeRow).where(TradeRow.market == market)
+            row = s.execute(select(TradeRow).where(TradeRow.market == market,
+                                                   TradeRow.mode == MODE)
                             .order_by(TradeRow.ts.desc()).limit(1)).scalar_one_or_none()
         if row is None:
             return None
@@ -73,7 +78,8 @@ class PaperBroker:
     def daily_pnl_eur(self) -> float:
         today = datetime.now(timezone.utc).date()
         with session() as s:
-            rows = s.execute(select(TradeRow).where(TradeRow.side == "sell")).scalars().all()
+            rows = s.execute(select(TradeRow).where(TradeRow.side == "sell",
+                                                    TradeRow.mode == MODE)).scalars().all()
         return sum(r.pnl_eur for r in rows
                    if (r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc)).date() == today)
 

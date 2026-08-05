@@ -25,8 +25,13 @@ def publish_mqtt(cycle: TradingCycle, publisher: MqttPublisher) -> None:
     from sqlalchemy import select
 
     from .db import SignalRow, TradeRow
+    # Mode-filter: de HA-sensoren tonen de historie van de mode die nu draait.
+    # SignalRow heeft geen mode-kolom, maar er draait per proces maar één mode,
+    # dus het laatste besluit kan niet van de andere mode zijn.
+    mode = getattr(cycle.broker, "mode", "paper")
     with session() as s:
-        sells = s.execute(select(TradeRow).where(TradeRow.side == "sell")).scalars().all()
+        sells = s.execute(select(TradeRow).where(TradeRow.side == "sell",
+                                                 TradeRow.mode == mode)).scalars().all()
         last_sig = s.execute(select(SignalRow).order_by(SignalRow.ts.desc()).limit(1)
                              ).scalar_one_or_none()
     wins = [t for t in sells if t.pnl_eur > 0]

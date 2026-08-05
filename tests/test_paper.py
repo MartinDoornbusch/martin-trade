@@ -63,6 +63,38 @@ def test_buy_insufficient_cash_raises(broker):
         broker.buy("BTC-EUR", 2000.0, 90, 120, "too big")
 
 
+def _add_live_trade(**kw):
+    """Schrijf een live-trade rechtstreeks in de DB (LiveBroker zelf blijft vergrendeld)."""
+    from tradebot.db import TradeRow, session
+    with session() as s:
+        s.add(TradeRow(mode="live", **kw))
+        s.commit()
+
+
+def test_daily_pnl_ignores_live_trades(broker):
+    """Regressie op bug 1.4: een live-verlies mag de paper-dagwinst niet vervuilen."""
+    _add_live_trade(market="BTC-EUR", side="sell", amount=1.0, price=100.0,
+                    fee_eur=0.25, pnl_eur=-500.0)
+    assert broker.daily_pnl_eur() == 0.0
+
+
+def test_last_trade_at_ignores_live_trades(broker):
+    """Regressie op bug 1.4: een live-trade mag geen paper-cooldown zetten."""
+    _add_live_trade(market="BTC-EUR", side="buy", amount=1.0, price=100.0, fee_eur=0.25)
+    assert broker.last_trade_at("BTC-EUR") is None
+    broker.buy("BTC-EUR", 200.0, 90, 120, "paper")
+    assert broker.last_trade_at("BTC-EUR") is not None
+
+
+def test_open_positions_ignores_live_positions(broker):
+    from tradebot.db import PositionRow, session
+    with session() as s:
+        s.add(PositionRow(market="ETH-EUR", mode="live", amount=1.0, entry_price=100.0,
+                          stop_loss=90.0, take_profit=120.0))
+        s.commit()
+    assert broker.open_positions() == []
+
+
 def test_flat_price_round_trip_loses_exactly_fees(broker):
     """Core fee-awareness check: flat market round trip must cost ~2x taker fee."""
     broker.buy("BTC-EUR", 400.0, 90, 120, "test")

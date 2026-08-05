@@ -86,7 +86,9 @@ def advice():
                          cfg.fees["slippage_buffer_pct"])
     min_edge = fee_model.min_edge_pct(float(cfg.decision["min_profit_pct"]))
     with session() as s:
-        open_markets = [r.market for r in s.execute(select(PositionRow)).scalars().all()]
+        open_markets = [r.market for r in s.execute(
+            select(PositionRow).where(PositionRow.mode == get_secrets().trading_mode)
+        ).scalars().all()]
     lookback = int(cfg.risk.get("correlation_lookback", 60))
     max_corr = float(cfg.risk.get("max_correlation", 0.85))
     interval = cfg.schedule["candle_interval"]
@@ -249,8 +251,9 @@ def chart(market: str):
         raise HTTPException(status_code=400, detail="markt niet in markets/watchlist")
     candles = get_feed().get_candles(market, cfg.schedule["candle_interval"], 140)
     with session() as s:
-        pos = s.execute(select(PositionRow).where(PositionRow.market == market)
-                        ).scalar_one_or_none()
+        pos = s.execute(select(PositionRow).where(
+            PositionRow.market == market,
+            PositionRow.mode == get_secrets().trading_mode)).scalar_one_or_none()
     return build_chart_payload(market, candles, cfg, pos)
 
 
@@ -273,12 +276,19 @@ def pause(edit: PauseEdit):
 
 @app.get("/api/portfolio", dependencies=[Depends(check_token)])
 def portfolio():
-    """Paper-portfolio: cash + open posities tegen actuele prijzen."""
+    """Portfolio: cash + open posities van de draaiende mode tegen actuele prijzen.
+
+    Posities zijn mode-gefilterd. De cash- en fee-tellers komen uit de KV-store en
+    zijn paper-specifiek; in live mode is de echte EUR-balans leidend (zie
+    `LiveBroker.cash_eur`) en is het cash-getal hier dus niet gezaghebbend.
+    """
     feed = get_feed()
     with session() as s:
         cash_row = s.get(KVRow, "paper_cash_eur")
         fees_row = s.get(KVRow, "paper_fees_cumulative_eur")
-        positions = s.execute(select(PositionRow)).scalars().all()
+        positions = s.execute(
+            select(PositionRow).where(PositionRow.mode == get_secrets().trading_mode)
+        ).scalars().all()
     cash = float(cash_row.value) if cash_row else 0.0
     fees_cum = float(fees_row.value) if fees_row else 0.0
     out, total = [], cash
