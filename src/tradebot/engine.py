@@ -58,6 +58,16 @@ class TradingCycle:
         decisions: list[Decision] = []
         interval = self.cfg.schedule["candle_interval"]
         limit = int(self.cfg.schedule["candle_limit"])
+        # In-cycle state. `positions`, `free` en `daily_pnl` worden na elke uitgevoerde
+        # order ververst (zie _refresh_after_trade): binnen één cyclus moeten de
+        # slotlimiet en de correlatie-cluster-cap de posities meetellen die in
+        # diezelfde cyclus zijn geopend. `portfolio` blijft bewust cyclus-vast:
+        # het herberekenen kost een prijs-API-call per open positie (rate limit), en
+        # binnen één cyclus verschuift de portefeuillewaarde alleen met de betaalde
+        # fees en de zojuist gerealiseerde P&L. Dat is te klein om het aantal
+        # bucket-slots te veranderen, behalve pal op een bucketgrens; daar wint
+        # stabiliteit (alle markten in één cyclus worden aan dezelfde limiet getoetst)
+        # van precisie. De volgende cyclus (max 1 uur later) leest de waarde vers.
         positions = self.broker.open_positions()
         portfolio = self.broker.portfolio_value_eur()
         free = self.broker.cash_eur()
@@ -106,6 +116,7 @@ class TradingCycle:
                                 float(exits_cfg.get("time_stop_min_net_pct", 0.0)))
                     if should_exit:
                         self.broker.sell(market, why)
+                        positions, free, daily_pnl = self._refresh_after_trade()
                         self._log_signal(market, "sell", "executed", 0, why, {})
                         self.notify.send(f"🔴 SELL {market} @ {snap.price:.2f}: {why}")
                         decisions.append(Decision(market, "sell", why))
@@ -165,7 +176,7 @@ class TradingCycle:
                 if decision.action == "buy":
                     self.broker.buy(market, decision.amount_quote_eur,
                                     decision.stop_loss, decision.take_profit, decision.reason)
-                    free -= decision.amount_quote_eur
+                    positions, free, daily_pnl = self._refresh_after_trade()
                     self.notify.send(
                         f"🟢 BUY {market} voor {decision.amount_quote_eur:.2f} EUR @ "
                         f"{snap.price:.2f}\nSL {decision.stop_loss:.2f} / "
@@ -177,6 +188,19 @@ class TradingCycle:
             except Exception:  # noqa: BLE001 - one market must not kill the cycle
                 log.exception("cycle failed for %s", market)
         return decisions
+
+    def _refresh_after_trade(self) -> tuple[list, float, float]:
+        """Lees de in-cycle state opnieuw na een uitgevoerde order.
+
+        Alleen de goedkope, betrouwbare grootheden: open posities en dagwinst komen
+        uit de eigen database, vrije cash uit de broker. Zonder deze verversing
+        beoordeelt de rest van de cyclus elke volgende markt op de toestand van vóór
+        de order: dan gaan er meer posities open dan `effective_max_positions`
+        toestaat en telt de correlatie-cluster-cap de zojuist geopende posities niet
+        mee. `portfolio` wordt bewust niet herberekend (zie run_once).
+        """
+        return (self.broker.open_positions(), self.broker.cash_eur(),
+                self.broker.daily_pnl_eur())
 
     def _auto_fill_markets(self, pinned: list[str], open_markets: list[str],
                            positions: list, portfolio_eur: float,
@@ -239,7 +263,8 @@ class TradingCycle:
     def check_exits_fast(self) -> int:
         """Position guard: alleen prijs vs SL/TP van open posities (elke minuut).
         Geen indicatoren, geen AI — puur risicobeheersing tussen analysecycli in.
-        Trend-break exits blijven bij de uurcyclus (die hebben candles nodig)."""
+        Time-stop en breakeven-stop blijven bij de uurcyclus (die hebben candles
+        nodig); de guard dekt precies dezelfde niveaus als `strategy.check_exit`."""
         closed = 0
         for pos in self.broker.open_positions():
             try:
