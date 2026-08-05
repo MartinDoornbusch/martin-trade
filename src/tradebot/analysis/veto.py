@@ -101,7 +101,18 @@ class VetoParams:
 
 def params_from_config(cfg, horizon_candles: int = 6,
                        tpsl_max_candles: int = 48) -> VetoParams:
-    """Bouw analyse-parameters uit de app-config (fees, decision, risk)."""
+    """Bouw analyse-parameters uit de app-config (fees, decision, risk).
+
+    Let op bij het lezen van de euro-bedragen: `position_size_eur` wordt op
+    ANALYSEMOMENT uit de huidige config gelezen, niet uit de config die gold toen
+    het event ontstond. Verander je `bucket_eur`, dan schuiven de euro-bedragen van
+    oude metingen mee terwijl de netto percentages kloppen. Dat is bewust: `risk`
+    zit niet in `config_fingerprint`, omdat sizing de procentuele uitkomst per
+    trade niet verandert en de meetcohortes anders bij elke operationele
+    sizing-tweak zouden opknippen. Het wordt alleen zichtbaarder nu vier gates in
+    euro's tegen elkaar worden afgezet; vergelijk ze daarom op percentage of op
+    hetzelfde moment.
+    """
     taker = float(cfg.fees["taker_pct"])
     slippage = float(cfg.fees.get("slippage_buffer_pct", 0.0))
     risk = cfg.risk

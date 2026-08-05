@@ -100,31 +100,135 @@ def get_secrets() -> Secrets:
 # bewust: iets meer meetruis in ruil voor haalbare drempels per gate.
 CORE_SECTIONS = ("strategy", "decision", "fees", "universe")
 
-GATE_SECTIONS = {
-    "veto": CORE_SECTIONS,
-    "chase": CORE_SECTIONS,                      # parameters staan onder `strategy`
-    "regime": (*CORE_SECTIONS, "regime"),
-    "breakeven": (*CORE_SECTIONS, "exits"),      # hele `exits`: de time-stop kan een
-                                                 # breakeven-treffer vóór zijn
+# Restval die de kern anders via de achterdeur weer globaal maakt: de parameters
+# van de chase-guard staan onder `strategy` en die van de LLM-veto onder
+# `decision`, dus allebei IN de kern. Aan `max_chase_atr` draaien zou daarmee
+# alsnog alle vier de meetklokken resetten.
+#
+# De uitweg volgt uit de semantiek van shadow zelf: een gate die niet bindend is,
+# blokkeert per definitie niets en verandert de populatie buys dus niet. Zijn
+# parameters horen daarom in niemands kern zolang `binding: false`. De
+# BINDING-VLAG blijft wel altijd meetellen: die omzetten laat de gate de populatie
+# wél bepalen, en dan is een reset van alle metingen inhoudelijk verdedigbaar.
+#
+# Een gate ziet zijn eigen parameters altijd, ongeacht binding; anders zou tunen
+# van bijvoorbeeld `trigger_atr` in shadow niet meer van de eigen oude meting
+# gescheiden worden, wat juist het doel van de scoping is.
+SHADOW_GATES = {
+    "veto": {
+        "section": None,                      # parameters staan in de kern (`decision`)
+        "binding": ("decision", "llm_veto_binding"),
+        "params": [("decision", "llm_min_confidence"),
+                   ("decision", "use_llm_second_opinion")],
+    },
+    "chase": {
+        "section": None,                      # parameters staan in de kern (`strategy`)
+        "binding": ("strategy", "chase_guard_binding"),
+        "params": [("strategy", "max_chase_atr")],
+    },
+    "regime": {
+        "section": "regime",
+        "binding": ("regime", "binding"),
+        "params": [("regime", "enabled"), ("regime", "proxy_market")],
+    },
+    "breakeven": {
+        "section": "exits",                   # hele `exits`: de time-stop kan een
+        "binding": ("exits", "breakeven_stop", "binding"),   # treffer vóór zijn
+        "params": [("exits", "breakeven_stop", "enabled"),
+                   ("exits", "breakeven_stop", "trigger_atr"),
+                   ("exits", "breakeven_stop", "offset_pct"),
+                   ("exits", "breakeven_stop", "offset_margin_pct")],
+    },
 }
 
+def gate_sections(cfg, gate: str) -> tuple[str, ...]:
+    """Config-secties die in de hash van één gate horen.
 
-def config_fingerprint(cfg, sections: tuple[str, ...] = CORE_SECTIONS) -> str:
+    Kern, plus de eigen sectie van deze gate, plus de sectie van elke andere gate
+    die BINDEND staat. Die laatste regel is de spiegel van de shadow-semantiek:
+    zolang een gate niets blokkeert gaat hij niemand anders aan, maar zodra hij
+    bindend is vormt hij de populatie buys en hoort hij in ieders scope.
+    """
+    out = list(CORE_SECTIONS)
+    for name, spec in SHADOW_GATES.items():
+        section = spec["section"]
+        if section is None or section in out:
+            continue
+        if name == gate or _is_binding_cfg(cfg, spec["binding"]):
+            out.append(section)
+    return tuple(out)
+
+
+def _lookup(payload: dict, path: tuple[str, ...]):
+    node = payload
+    for key in path[:-1]:
+        node = node.get(key) if isinstance(node, dict) else None
+        if not isinstance(node, dict):
+            return None, None
+    return node, path[-1]
+
+
+def _drop(payload: dict, path: tuple[str, ...]) -> None:
+    node, key = _lookup(payload, path)
+    if node is not None:
+        node.pop(key, None)
+
+
+def _is_binding(payload: dict, path: tuple[str, ...]) -> bool:
+    node, key = _lookup(payload, path)
+    return bool(node.get(key)) if node is not None else False
+
+
+def _is_binding_cfg(cfg, path: tuple[str, ...]) -> bool:
+    """Zelfde vraag, maar rechtstreeks op het config-object in plaats van op een
+    al opgebouwde payload (nodig vóór we weten welke secties meedoen)."""
+    node = getattr(cfg, path[0], {}) or {}
+    for key in path[1:-1]:
+        node = node.get(key) if isinstance(node, dict) else {}
+    return bool(node.get(path[-1])) if isinstance(node, dict) else False
+
+
+def config_fingerprint(cfg, sections: tuple[str, ...] = CORE_SECTIONS,
+                       own_gate: str | None = None) -> str:
     """Korte, stabiele hash over de meet-relevante config.
 
     Duck-typed: werkt met AppConfig of elk object met dezelfde attributen
     (SimpleNamespace in tests); ontbrekende secties tellen als leeg. Terugzetten
     van een waarde geeft dezelfde hash en dus de oude meetcohorte terug, want de
     hash gaat over waarden en niet over tijd.
+
+    Parameters van een NIET-bindende shadow-gate vallen buiten de hash (behalve
+    voor die gate zelf, `own_gate`): zo'n gate blokkeert niets en verandert de
+    populatie buys dus niet. Zie de toelichting bij `SHADOW_GATES`.
     """
-    payload = {section: dict(getattr(cfg, section, {}) or {}) for section in sections}
+    payload = json.loads(json.dumps(
+        {section: dict(getattr(cfg, section, {}) or {}) for section in sections},
+        default=str))
+    for gate, spec in SHADOW_GATES.items():
+        if gate == own_gate or _is_binding(payload, spec["binding"]):
+            continue
+        for path in spec["params"]:
+            _drop(payload, path)
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
 def gate_fingerprint(cfg, gate: str) -> str:
-    """Config-hash voor één specifieke shadow-gate; zie `GATE_SECTIONS`."""
-    return config_fingerprint(cfg, GATE_SECTIONS[gate])
+    """Config-hash voor één specifieke shadow-gate; zie `gate_sections`.
+
+    Eenrichtingsverkeer, bewust: zodra een gate bindend wordt blokkeert hij, en
+    levert hij zelf geen shadow-events met een gerealiseerde uitkomst meer op. De
+    go/no-go wordt dus genomen op de data die er tot dat moment ligt en daarna
+    meet je die gate niet meer. Ga daarom ruim boven de 20 afgewikkelde trades
+    zitten voordat je omzet, niet er net overheen. Terugzetten naar shadow geeft
+    exact dezelfde hash als vóór de flip (de hash gaat over waarden), dus de oude
+    cohorte wordt weer opgepakt; alleen de periode waarin de gate bindend stond
+    vormt een eigen cohorte, en dat is juist correct want daar was de populatie
+    buys anders. Leg elke flip als gedateerde gebeurtenis vast in PROJECTPLAN.md,
+    zodat een sprong in de meetdata later herleidbaar is tot een beslissing in
+    plaats van weggeklaard te moeten worden als ruis.
+    """
+    return config_fingerprint(cfg, gate_sections(cfg, gate), own_gate=gate)
 
 
 def _csv_env(name: str) -> list[str] | None:

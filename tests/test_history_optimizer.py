@@ -1,7 +1,19 @@
+from types import SimpleNamespace
+
+from tradebot import optimizer
 from tradebot.backtest import max_drawdown_pct
 from tradebot.config import AppConfig
 from tradebot.exchange import BitvavoClient
-from tradebot.optimizer import GRID, variants
+from tradebot.optimizer import (
+    EXIT_GRID,
+    GRID,
+    default_warmup,
+    evaluate,
+    exit_variants,
+    grid_warmup,
+    return_over_dd,
+    variants,
+)
 
 
 class FakeHistoryClient(BitvavoClient):
@@ -48,9 +60,12 @@ def test_max_drawdown():
 
 def make_cfg() -> AppConfig:
     return AppConfig(markets=["BTC-EUR"], schedule={}, fees={},
-                     strategy={"ema_fast": 12, "ema_slow": 26, "min_signal_score": 3},
-                     decision={"atr_stop_multiplier": 2.0, "reward_risk_ratio": 2.0},
-                     risk={}, llm={})
+                     strategy={"ema_fast": 12, "ema_slow": 26, "min_signal_score": 3,
+                               "atr_period": 14, "rsi_buy_zone_min": 25,
+                               "rsi_buy_zone_max": 45},
+                     decision={"atr_stop_multiplier": 2.0, "reward_risk_ratio": 2.0,
+                               "min_profit_pct": 0.5},
+                     risk={}, llm={}, exits={"time_stop_candles": 12})
 
 
 def test_variants_cover_full_grid_and_apply_overrides():
@@ -62,3 +77,128 @@ def test_variants_cover_full_grid_and_apply_overrides():
     desc, c = combos[0]
     assert (c.strategy["ema_fast"], c.strategy["ema_slow"]) == GRID["ema"][0]
     assert cfg.strategy["ema_fast"] == 12  # origineel onaangetast (deep copy)
+
+
+# --- 3.1: elke variant op beide perioden, rangschikken op test ------------------
+
+def _fake_period(results: dict[int, tuple[float, float]], seen: list):
+    """Vervangt de backtest-run: leest het antwoord uit `results` op basis van een
+    marker op de config, en noteert welke (marker, periode, warmup) langskwamen."""
+    def fake(data, cfg, fee_model, warmup, portfolio):
+        periode = next(iter(data))
+        seen.append((cfg.marker, periode, warmup))
+        train_pct, test_pct = results[cfg.marker]
+        pct = train_pct if periode == "TRAIN" else test_pct
+        return {"net_return_pct": pct, "closed_trades": 10, "win_rate_pct": 50.0,
+                "max_drawdown_pct": 10.0, "mode": "single"}
+    return fake
+
+
+def test_every_variant_runs_on_both_periods_and_ranks_on_test(monkeypatch):
+    """Regressie op punt 3.1: `main()` sorteerde alle 81 varianten op TRAIN-rendement
+    en draaide alleen voor de top vijf een testrun. Stond de echte testwinnaar zesde
+    op train, dan zag je hem nooit — terwijl de slotregel zegt "kies op test".
+    Hier is variant 5 de zesde op train en veruit de beste op test."""
+    resultaten = {0: (10.0, 1.0), 1: (9.0, 1.0), 2: (8.0, 1.0),
+                  3: (7.0, 1.0), 4: (6.0, 1.0), 5: (5.0, 50.0)}
+    seen: list = []
+    monkeypatch.setattr(optimizer, "_run_period", _fake_period(resultaten, seen))
+    varianten = [(f"v{i}", SimpleNamespace(marker=i)) for i in range(6)]
+
+    rows = evaluate(varianten, {"TRAIN": []}, {"TEST": []}, None, 150, False)
+
+    assert {m for m, _, _ in seen} == set(range(6))                  # allemaal gedraaid
+    assert {p for _, p, _ in seen} == {"TRAIN", "TEST"}               # op beide perioden
+    assert rows[0]["desc"] == "v5"                                    # gekozen op test
+    assert rows[0]["train_pct"] == 5.0                                # train blijft zichtbaar
+    assert rows[0]["gap_pct"] == -45.0                                # als overfit-indicator
+
+
+def test_low_trade_variants_sink_to_the_bottom(monkeypatch):
+    """Een variant met bijna geen trades is ruis, geen meting; hij zakt naar onderen
+    in plaats van uit de tabel te verdwijnen."""
+    def fake(data, cfg, fee_model, warmup, portfolio):
+        return {"net_return_pct": 99.0 if cfg.marker == 0 else 5.0,
+                "closed_trades": 1 if cfg.marker == 0 else 20,
+                "win_rate_pct": 100.0, "max_drawdown_pct": 1.0, "mode": "single"}
+    monkeypatch.setattr(optimizer, "_run_period", fake)
+    rows = evaluate([("weinig", SimpleNamespace(marker=0)),
+                     ("genoeg", SimpleNamespace(marker=1))],
+                    {"TRAIN": []}, {"TEST": []}, None, 150, False)
+    assert rows[0]["desc"] == "genoeg"
+
+
+# --- 3.2: warmup geschaald met de periodes -------------------------------------
+
+def test_warmup_scales_with_the_slowest_ema():
+    """Regressie op punt 3.2: `warmup = 60` was te kort voor ema_slow 50, want
+    `indicators.ema` seedt op arr[0] en convergeert pas na 2 tot 3 keer de periode.
+    Daardoor benadeelde de grid zijn traagste variant."""
+    snel = default_warmup({"ema_slow": 21, "atr_period": 14})
+    traag = default_warmup({"ema_slow": 50, "atr_period": 14})
+    assert traag >= 150
+    assert traag > snel
+    assert snel >= 60          # nooit korter dan de oude vaste waarde
+
+
+def test_grid_uses_one_warmup_for_every_variant(monkeypatch):
+    """Alle varianten moeten over dezelfde bars handelen; kreeg elk zijn eigen
+    warmup, dan vergelijk je rendementen over verschillende perioden."""
+    cfgs = [c for _, c in variants(make_cfg())]
+    warmup = grid_warmup(cfgs)
+    assert warmup == max(default_warmup(c.strategy) for c in cfgs)
+    assert warmup >= 150       # bepaald door ema_slow 50 uit de grid
+
+    seen: list = []
+    monkeypatch.setattr(optimizer, "_run_period",
+                        _fake_period({i: (1.0, 1.0) for i in range(3)}, seen))
+    evaluate([(f"v{i}", SimpleNamespace(marker=i)) for i in range(3)],
+             {"TRAIN": []}, {"TEST": []}, None, warmup, False)
+    assert {w for _, _, w in seen} == {warmup}
+
+
+# --- 3.3: exit-parameters in de grid -------------------------------------------
+
+def test_exit_grid_covers_the_missing_parameters():
+    """Punt 3.3: de grid dekte ema, score, ATR-stop en R/R, maar niet de
+    RSI-zonegrenzen, `min_profit_pct`, `time_stop_candles` of de breakeven-stop."""
+    cfg = make_cfg()
+    combos = list(exit_variants(cfg))
+    verwacht = (len(EXIT_GRID["rsi_zone"]) * len(EXIT_GRID["min_profit_pct"])
+                * len(EXIT_GRID["time_stop_candles"]) * len(EXIT_GRID["breakeven"]))
+    assert len(combos) == verwacht
+
+    zones = {(c.strategy["rsi_buy_zone_min"], c.strategy["rsi_buy_zone_max"])
+             for _, c in combos}
+    assert zones == set(EXIT_GRID["rsi_zone"])
+    assert {c.decision["min_profit_pct"] for _, c in combos} == set(EXIT_GRID["min_profit_pct"])
+    assert {c.exits["time_stop_candles"] for _, c in combos} == set(EXIT_GRID["time_stop_candles"])
+    assert cfg.strategy["rsi_buy_zone_min"] == 25          # origineel onaangetast
+
+
+def test_exit_grid_makes_the_breakeven_stop_binding():
+    """In shadow doet de breakeven-stop per definitie niets; om hem te kunnen
+    beoordelen moet hij in de optimizer bindend staan."""
+    aan = [c for _, c in exit_variants(make_cfg())
+           if c.exits["breakeven_stop"].get("enabled")]
+    assert aan, "grid moet varianten met breakeven-stop bevatten"
+    assert all(c.exits["breakeven_stop"]["binding"] for c in aan)
+    uit = [c for _, c in exit_variants(make_cfg())
+           if not c.exits["breakeven_stop"].get("enabled")]
+    assert uit, "grid moet ook een variant zonder breakeven-stop bevatten"
+
+
+# --- 3.4: risicogecorrigeerde kolom --------------------------------------------
+
+def test_return_over_dd_prefers_the_calmer_path():
+    """Punt 3.4: er werd gerangschikt op rendement terwijl drawdown alleen geprint
+    werd. Bij gelijk rendement wint nu het rustigere pad."""
+    assert return_over_dd(20.0, 10.0) < return_over_dd(20.0, 5.0)
+
+
+def test_return_over_dd_is_floored_against_tiny_drawdowns():
+    """Zonder vloer schiet de ratio door het dak bij een variant die toevallig
+    nauwelijks drawdown had; lees hem daarom samen met het aantal trades."""
+    assert return_over_dd(10.0, 0.0) == 10.0
+    assert return_over_dd(10.0, 0.2) == 10.0
+    assert return_over_dd(None, 5.0) == 0.0
