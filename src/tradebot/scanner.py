@@ -1,9 +1,14 @@
 """Marktscanner: screent alle Bitvavo EUR-markten op liquiditeit, spread en
 signaalkwaliteit, fee-bewust (vereiste move = round-trip fees + spread + winstdrempel).
 
-Bewuste grens (zie post-mortem in PROJECTPLAN): de scanner adviseert alleen.
-Toevoegen aan markets/watchlist doet de gebruiker via de add-on-configuratie;
-de bot handelt nooit zelf in een gescande markt.
+Bewuste grens (zie post-mortem in PROJECTPLAN): de scanner is geen koop-trigger.
+Sinds v0.17.0 klopt "de bot handelt nooit zelf in een gescande markt" niet meer:
+auto-fill (`select_auto_fill` + `engine._auto_fill_markets`) vult vrije slots met
+scanner-hits. De grens ligt nu anders en strenger geformuleerd: een gescande markt
+komt alleen in de analyse-set als hij zelfstandig door score, fee-gate en
+liquiditeit komt, en daarna nog door alle engine-gates (risk, correlatie-cluster,
+blocklist, kill-switch, regime). De scanner verlaagt dus nooit een drempel, hij
+verbreedt alleen het kandidatenveld. Gepinde markten blijven handmatig beheerd.
 """
 from __future__ import annotations
 

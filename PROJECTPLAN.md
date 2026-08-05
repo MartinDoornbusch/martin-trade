@@ -22,7 +22,7 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 | 2 | SQLite via SQLAlchemy | Geen aparte DB-server nodig op de Pi; SQLAlchemy maakt Postgres-migratie later triviaal. |
 | 3 | Hosting: Raspberry Pi + Docker Compose | Swing-bot is een long-running proces; serverless (Vercel/Cloudflare) past niet (timeouts, cold starts). Zelfde image draait later op elke VPS. |
 | 4 | Exchange-abstractie (`ExchangeAdapter`) | Bitvavo nu; Alpaca (US-aandelen, $0 commissie, beste API) of IBKR later inplugbaar. |
-| 5 | Exits volledig mechanisch | Stop loss / take profit / trend-break zonder LLM. Voorkomt bag-holding door AI-twijfel en bespaart LLM-budget. |
+| 5 | Exits volledig mechanisch | Stop loss / take profit (ook per minuut door de guard), time-stop en breakeven-stop, zonder LLM. Voorkomt bag-holding door AI-twijfel en bespaart LLM-budget. De trend-break-exit is in v0.19.0 geschrapt (zie hieronder). |
 | 6 | Market orders in paper-modus, taker fee gerekend | Conservatief: als het met taker fees rendeert, rendeert het live met maker (limit) orders beter. |
 
 ## Fee-model (Bitvavo, basis-tier)
@@ -58,7 +58,7 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] `live_trader` order/fill-afhandeling → referentie voor fase 3
 - [x] `optimizer` parameter-tuning → herbouwd in v0.6.0 mét train/test-split tegen overfitting
 - [x] `correlation` → herbouwd in v0.5.0 als risk-gate + onderdeel instap-advies
-- [x] `market_scanner` → herbouwd in v0.7.0, maar advies-only: liquiditeits/spread-filter + score over alle EUR-markten; toevoegen doet de mens, de bot handelt nooit zelf in gescande markten
+- [x] `market_scanner` → herbouwd in v0.7.0: liquiditeits/spread-filter + score over alle EUR-markten. **Herzien in v0.19.0:** de regel "advies-only, de bot handelt nooit zelf in gescande markten" gold tot v0.16.0 en is achterhaald door auto-fill (v0.17.0). Sindsdien handelt de bot wél in gescande markten, maar uitsluitend in kandidaten die zelfstandig door score, fee-gate en liquiditeit komen en daarna nog door alle engine-gates (risk, correlatie-cluster, blocklist, kill-switch, regime). De scanner verlaagt geen enkele drempel; gepinde `markets` blijven handmatig beheerd en de watchlist blijft advies-only
 - [x] Afgewezen: news_feed, sentiment, whale_tracker, DCA, house-money (zie post-mortem)
 
 ### Fase 2 — Validatie (loopt)
@@ -84,7 +84,8 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [x] Hard exposure-plafond (`live_max_capital_eur`, default €100) los van de rekeningbalans
 - [x] Dubbel slot: `trading_mode=live` én letterlijke bevestigingszin "IK BEGRIJP DAT DIT ECHT GELD IS" in `live_confirm`, anders weigert de bot te starten
 - [x] Kill-switch: pauzeknop in dashboard stopt alle aankopen (paper én live); exits en guard lopen altijd door
-- [x] Mode-scheiding: posities/trades/stats gelabeld paper|live, historie vermengt nooit
+- [x] Mode-scheiding: posities/trades/stats gelabeld paper|live. De claim "historie vermengt nooit" klopte tot v0.19.0 **niet volledig**: `paper.daily_pnl_eur`, `paper.last_trade_at`, `main.publish_mqtt` en drie web-queries (advies, grafiek, portfolio) lazen zonder mode-filter. In v0.19.0 gerepareerd; de claim geldt nu wel. `PositionRow.market` blijft bewust `unique=True` (laatste vangnet tegen een dubbele insert; twee modi draaien nooit tegelijk in één proces, dus een samengestelde uniciteit op (market, mode) levert operationeel niets op en zou een sqlite-tabelrebuild op de meet-DB vergen)
+- [ ] Aandachtspunt bij fase 3-activering: door die unique-constraint blokkeert een achtergebleven open **paper**-positie een live-positie in dezelfde markt op dezelfde DB. Oplossen door open paper-posities te sluiten of te archiveren vóór de omschakeling, niet door de constraint te verslappen
 - [ ] ACTIVERING (handmatig, pas na fase 2 go): Bitvavo API-key met trade-rechten (géén withdrawal, IP-whitelist), `trading_mode=live` + bevestigingszin invullen, klein kapitaal
 
 ### Fase 4 — Aandelen
@@ -115,11 +116,34 @@ Bewust vóór de getrapte liquiditeit gezet (die is A3 geworden): de time-stop i
 - [x] Quiet-vlag (adviserend): `/api/lists` verrijkt met gepinde coins die in `curation.quiet_days` (30) 0 koopsignalen hadden; dashboard toont "overweeg naar watchlist". Puur advies, de bot verplaatst niets zelf.
 - [x] Tests (test_curation.py + banlijst-test in test_lists.py), CI-identieke run, versiebump, docs.
 
-### Fase A3 (v0.19.0) — getrapte liquiditeit + segment-meting [GEBOUWD, apart bewaard, nog niet gecommit]
-Code al af (was eerst v0.18.0, doorgeschoven na de swap). Ligt buiten de repo-tree bewaard (`outputs/liq_v019_backup/`); komt terug als v0.19.0 zodra de time-stop op paper draait, met de tussenzone dan meteen actief (het vangnet staat er).
+### Fase A3 (v0.20.0) — getrapte liquiditeit + segment-meting [GEBOUWD, apart bewaard, nog niet gecommit]
+Code al af (was eerst v0.18.0, doorgeschoven na de swap). Ligt buiten de repo-tree bewaard (`outputs/liq_v019_backup/`, naam nog van de oude nummering); komt terug als **v0.20.0** zodra de time-stop op paper draait, met de tussenzone dan meteen actief (het vangnet staat er). Nummer opgeschoven omdat v0.19.0 is opgegaan aan de code-review-opvolging hieronder.
 - [x] Getrapte liquiditeit: `LiquidityPolicy` (vloer 250k, tussenzone tot 100k met 1,5x edge-eis en 0,5x inzet, daaronder uitgesloten); scanner + `DecisionEngine.evaluate_buy` passen de tier toe; tier + volume in SignalRow.details.
 - [x] Segment-meting: `analysis.liquidity.analyze_liquidity_segments` cohort normaal vs dun uit echte round-trip-P&L, dashboard-sectie + `/api/liquidity-segments`, "dun"-tag in de scanner.
 - [ ] Terugzetten als v0.19.0 en committen (na paper-validatie van v0.18.0).
+
+### Code-review-opvolging (v0.19.0)
+
+Externe review op v0.18.0. Vier bevindingen raakten de draaiende paper-run, twee de testdekking, drie de configuratie naar de Pi, twee waren analysevragen.
+
+**Blok 1 — bugfixes**
+- [x] 1.1 Stale positielijst in `engine.run_once`: `positions` werd één keer vóór de marktloop gelezen en na een buy alleen `free` bijgewerkt. Daardoor kon de slotlimiet overschreden worden (bij eff_max 3 een vierde positie, in bucket-modus met een restbedrag) en telde de correlatie-cluster-cap posities uit dezelfde cyclus niet mee. Nu wordt de in-cycle state na elke uitgevoerde order ververst (`_refresh_after_trade`: posities, cash, dagwinst). `portfolio` blijft bewust cyclus-vast (herberekenen kost een prijs-API-call per positie; binnen één cyclus schuift de waarde alleen met fees en zojuist gerealiseerde P&L)
+- [x] 1.2 Trend-break-exit **geschrapt**, niet herschreven. De regel eiste `ema_fast < ema_slow` én `rsi > 70`, twee vrijwel disjuncte condities; coverage bevestigde dat hij nooit gevuurd heeft. Vervangen door een **breakeven-stop** (`strategy.breakeven_stop_hit`): bewapent zodra de piek sinds entry ≥ `trigger_atr` × ATR boven de entry lag, vuurt als de koers terugzakt tot ≤ entry + `offset_pct` (0,55%, dekt de round-trip taker van 0,50%). Zelfde bedoeling, maar op prijs en gerealiseerde winst in plaats van op indicatorcondities. Default `binding: false` (shadow), conform de vaste regel: elke nieuwe gate eerst meten, bindend pas bij een positieve netto gate over ≥ 20 afgewikkelde trades
+- [x] 1.3 RSI-parameters. `rsi_overbought` blijft: die is niet dood, het dashboard-advies (`web.advice`) leest hem. Wat dood was, is de hardcoded 70 in `check_exit`, en die verdween met 1.2. Aanpalend opgelost: `evaluate_buy` rekende met `rsi_oversold + 10` en een hardcoded ondergrens 25, dus config zei 35 terwijl de effectieve bovengrens 45 was. Nu expliciet `rsi_buy_zone_min: 25` / `rsi_buy_zone_max: 45`; gedrag ongewijzigd
+- [x] 1.4 Mode-filters toegevoegd in `paper.daily_pnl_eur`, `paper.last_trade_at`, `main.publish_mqtt` en web-queries voor advies, grafiek en portfolio. `PositionRow.market unique=True` bewust ongewijzigd (zie fase 3 hierboven)
+
+**Blok 2 — testdekking op de bedrading**
+- [x] 2.1 Integratietests tegen de echte `TradingCycle.run_once` met fake feed en echte `PaperBroker` op een in-memory DB
+- [x] 2.2 `GuardHarness` uit `test_guard.py` vervangen door tests tegen de echte `check_exits_fast`
+- [x] 2.3 Test-naar-bug-mapping vastgelegd in `tests/test_engine_cycle.py`
+
+**Blok 3 — config-drift naar de Pi**
+- [x] 3.1/3.2 Add-on-schema gelijkgetrokken met `config/config.yaml`, ontbrekende operationele knoppen toegevoegd, strategie-parameters bewust in de yaml gehouden
+- [x] 3.3 Versienummers gekoppeld (`pyproject.toml` liep 4 minors achter) met een test die drift afdwingt
+
+**Blok 4 — analyse (geen code)**
+- [ ] 4.1 `docs/ontwerp-ev-gate.md`: EV-gate op gerealiseerde trefkans. Ter beoordeling, nog niet gebouwd
+- [ ] 4.2 `docs/ontwerp-spread-bron-van-waarheid.md`: één bron van waarheid voor spread/slippage tussen scanner en decision engine. Ter beoordeling, nog niet gebouwd
 
 ### Fase B (in fase 2, na go/no-go) — positiegrootte laten meegroeien
 - [ ] Optionele sizing-modus `bucket_pct` (bucket als vast % van portfolio) of mijlpaal-gebaseerd, zodat de inzet meeschaalt met kapitaal. Pas activeren als de edge in fase 2 bewezen is; nu zou het compounding op een nog onbewezen strategie zetten. De config-hook (`sizing`-veld) ligt er al (v0.16.0), dus dit is een uitbreiding, geen herbouw.
