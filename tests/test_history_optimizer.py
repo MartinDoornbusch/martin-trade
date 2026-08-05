@@ -115,17 +115,31 @@ def test_every_variant_runs_on_both_periods_and_ranks_on_test(monkeypatch):
 
 
 def test_low_trade_variants_sink_to_the_bottom(monkeypatch):
-    """Een variant met bijna geen trades is ruis, geen meting; hij zakt naar onderen
-    in plaats van uit de tabel te verdwijnen."""
+    """Max drawdown is één extreme orderstatistiek: bij weinig trades wordt hij
+    bepaald door één ongelukkige reeks, dus een variant kan bovenaan komen omdat hij
+    zijn slechte reeks nog niet heeft gehad. Zonder drempel beloont de
+    risicogecorrigeerde ranking systematisch laagfrequente varianten, en dat is bij
+    een fee-probleem precies de verkeerde kant op. Ze vallen niet weg maar zakken
+    naar onderen, gemarkeerd."""
     def fake(data, cfg, fee_model, warmup, portfolio):
         return {"net_return_pct": 99.0 if cfg.marker == 0 else 5.0,
-                "closed_trades": 1 if cfg.marker == 0 else 20,
+                "closed_trades": 15 if cfg.marker == 0 else 40,
                 "win_rate_pct": 100.0, "max_drawdown_pct": 1.0, "mode": "single"}
     monkeypatch.setattr(optimizer, "_run_period", fake)
     rows = evaluate([("weinig", SimpleNamespace(marker=0)),
                      ("genoeg", SimpleNamespace(marker=1))],
-                    {"TRAIN": []}, {"TEST": []}, None, 150, False)
+                    {"TRAIN": []}, {"TEST": []}, None, 150, False, min_trades=20)
+
     assert rows[0]["desc"] == "genoeg"
+    assert rows[0]["reliable"] is True
+    assert rows[1]["desc"] == "weinig"          # blijft zichtbaar
+    assert rows[1]["reliable"] is False         # maar expliciet gemarkeerd
+
+
+def test_min_trades_threshold_defaults_to_twenty():
+    """Sluit aan bij de drempel die elders in dit project geldt voor "een uitspraak
+    doen" (go/no-go per shadow-gate)."""
+    assert optimizer.MIN_TRADES_RELIABLE == 20
 
 
 # --- 3.2: warmup geschaald met de periodes -------------------------------------

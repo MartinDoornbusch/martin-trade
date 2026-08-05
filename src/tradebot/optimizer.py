@@ -49,10 +49,16 @@ EXIT_GRID = {
     "breakeven": [None, (1.0, 0.55), (1.5, 0.55)],
 }
 
-# Onder dit aantal afgewikkelde trades is een rendement geen meting maar ruis;
-# zulke varianten zakken naar de onderkant van de tabel in plaats van eruit te
-# vallen, zodat zichtbaar blijft dat ze bestonden.
-MIN_TRADES_RELIABLE = 5
+# Drempel voor de KOP van de tabel. Max drawdown is één extreme orderstatistiek:
+# bij 15 trades wordt hij bepaald door één ongelukkige reeks, dus een variant kan
+# bovenaan komen simpelweg omdat hij zijn slechte reeks nog niet heeft gehad.
+# Zonder drempel beloont de risicogecorrigeerde ranking dan systematisch
+# laagfrequente varianten, en dat is bij een fee-probleem precies de verkeerde
+# kant op: weinig trades ziet er goed uit tot je de tweede helft van de cyclus
+# meemaakt. 20 sluit aan bij de drempel die elders in dit project geldt voor "een
+# uitspraak doen". Varianten eronder vallen niet weg maar zakken naar de
+# onderkant, gemarkeerd, zodat zichtbaar blijft dat ze bestonden.
+MIN_TRADES_RELIABLE = 20
 
 # Vloer op de drawdown in de risicogecorrigeerde maat: zonder vloer schiet de
 # ratio door het dak bij een variant die toevallig nauwelijks drawdown had.
@@ -150,12 +156,13 @@ def _run_period(data: dict[str, list[Candle]], cfg, fee_model: FeeModel,
 
 
 def evaluate(variant_list: list, train: dict, test: dict, fee_model: FeeModel,
-             warmup: int, portfolio: bool) -> list[dict]:
+             warmup: int, portfolio: bool,
+             min_trades: int = MIN_TRADES_RELIABLE) -> list[dict]:
     """Draai ELKE variant op beide perioden en rangschik op de testhelft.
 
-    Rangschikking: eerst betrouwbaarheid (>= MIN_TRADES_RELIABLE afgewikkelde
-    trades), dan risicogecorrigeerd testrendement. De trainkolom blijft in de
-    uitvoer staan als overfit-indicator, niet als selectiecriterium.
+    Rangschikking: eerst betrouwbaarheid (>= `min_trades` afgewikkelde trades),
+    dan risicogecorrigeerd testrendement. De trainkolom blijft in de uitvoer staan
+    als overfit-indicator, niet als selectiecriterium.
     """
     rows = []
     for desc, c in variant_list:
@@ -174,20 +181,29 @@ def evaluate(variant_list: list, train: dict, test: dict, fee_model: FeeModel,
             "test_rar": return_over_dd(r_test["net_return_pct"], r_test["max_drawdown_pct"]),
             "mode": r_test["mode"],
         })
-    rows.sort(key=lambda r: (r["trades"] >= MIN_TRADES_RELIABLE, r["test_rar"]),
-              reverse=True)
+    for r in rows:
+        r["reliable"] = r["trades"] >= min_trades
+    rows.sort(key=lambda r: (r["reliable"], r["test_rar"]), reverse=True)
     return rows
 
 
-def print_table(title: str, rows: list[dict], top: int) -> None:
+def print_table(title: str, rows: list[dict], top: int,
+                min_trades: int = MIN_TRADES_RELIABLE) -> None:
+    """Trades staat bewust direct naast `r/dd`: die ratio is alleen te lezen als je
+    ziet op hoeveel trades de drawdown in de noemer geschat is."""
     print(f"\n{title}")
-    print(f"{'variant':44s} {'test%':>8s} {'r/dd':>6s} {'train%':>8s} {'gap':>7s} "
-          f"{'trades':>7s} {'win%':>6s} {'dd%':>6s}")
+    print(f"{'variant':44s} {'test%':>8s} {'r/dd':>6s} {'trades':>7s} {'dd%':>6s} "
+          f"{'train%':>8s} {'gap':>7s} {'win%':>6s}")
     for r in rows[:top]:
-        vlag = "" if r["trades"] >= MIN_TRADES_RELIABLE else "  <- te weinig trades"
+        vlag = "" if r["reliable"] else f"  <- n<{min_trades}, dd onbetrouwbaar"
         print(f"{r['desc']:44s} {(r['test_pct'] or 0):>8.2f} {r['test_rar']:>6.2f} "
-              f"{(r['train_pct'] or 0):>8.2f} {r['gap_pct']:>7.2f} {r['trades']:>7d} "
-              f"{r['win_pct']:>6.1f} {r['dd_pct']:>6.1f}{vlag}")
+              f"{r['trades']:>7d} {r['dd_pct']:>6.1f} {(r['train_pct'] or 0):>8.2f} "
+              f"{r['gap_pct']:>7.2f} {r['win_pct']:>6.1f}{vlag}")
+    beste_op_rendement = max(rows, key=lambda r: (r["reliable"], r["test_pct"] or -999))
+    if beste_op_rendement["desc"] != rows[0]["desc"]:
+        print(f"  (op kaal testrendement zou '{beste_op_rendement['desc']}' winnen met "
+              f"{beste_op_rendement['test_pct']:.2f}% bij dd {beste_op_rendement['dd_pct']:.1f}%; "
+              f"de risicocorrectie kiest anders)")
 
 
 def split_data(data: dict[str, list[Candle]], ratio: float = 0.7):
@@ -204,6 +220,9 @@ def main() -> None:
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--limit", type=int, default=3000)
     parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--min-trades", type=int, default=MIN_TRADES_RELIABLE,
+                        help="drempel voor de kop van de tabel; daaronder is max "
+                             "drawdown één ongelukkige reeks in plaats van een meting")
     parser.add_argument("--portfolio", action="store_true",
                         help="portfolio-modus: gedeelde cash, buckets, slots, gates")
     parser.add_argument("--skip-exit-pass", action="store_true",
@@ -226,9 +245,9 @@ def main() -> None:
     print(f"warmup {warmup} candles (geschaald met de traagste EMA in de grid, "
           f"gelijk voor alle varianten), {len(core)} varianten x 2 perioden")
 
-    rows = evaluate(core, train, test, fee_model, warmup, args.portfolio)
+    rows = evaluate(core, train, test, fee_model, warmup, args.portfolio, args.min_trades)
     print_table("PASS 1 - kernparameters (gesorteerd op risicogecorrigeerd TEST-rendement)",
-                rows, args.top)
+                rows, args.top, args.min_trades)
 
     if not args.skip_exit_pass and rows:
         winner = rows[0]["cfg"]
@@ -237,12 +256,14 @@ def main() -> None:
         print(f"\nPASS 2 op de winnaar van pass 1: {rows[0]['desc']} "
               f"({len(exits)} varianten x 2 perioden)")
         rows2 = evaluate(exits, train, test, fee_model, max(warmup, warmup2),
-                         args.portfolio)
-        print_table("PASS 2 - exit- en drempelparameters", rows2, args.top)
+                         args.portfolio, args.min_trades)
+        print_table("PASS 2 - exit- en drempelparameters", rows2, args.top, args.min_trades)
 
     print("\nLet op: kies op de test-kolom, niet op train. Een grote gap = overfit.")
-    print("r/dd = netto testrendement per procentpunt max drawdown; lees hem samen "
-          "met het aantal trades.")
+    print(f"r/dd = netto testrendement per procentpunt max drawdown. Max drawdown is "
+          f"één extreme orderstatistiek: onder {args.min_trades} trades wordt hij bepaald "
+          f"door één ongelukkige reeks, dus zulke varianten staan onderaan en zijn "
+          f"gemarkeerd.")
     print(f"Modus: {rows[0]['mode'] if rows else 'n.v.t.'} — alleen portfolio-modus is "
           "met de live-run te vergelijken.")
 

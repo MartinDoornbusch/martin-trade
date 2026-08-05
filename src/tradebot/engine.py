@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
-from .config import AppConfig, Secrets
+from .config import SHADOW_GATES, AppConfig, Secrets, gate_fingerprint
 from .db import KVRow, SignalRow, session
 from .decision import (
     Decision,
@@ -295,8 +295,13 @@ class TradingCycle:
             return False, ""
         if bool(be_cfg.get("binding", False)):
             return True, why
+        # Prijzen mee in het event: de netto gate is (hypothetische exit) min
+        # (werkelijke exit), en de hypothetische exitprijs is precies de koers op
+        # dit moment. Zonder deze twee velden is die som achteraf niet te maken.
         self._log_signal(pos.market, "sell", "shadow", 0,
-                         f"SHADOW-BREAKEVEN genegeerd: {why}", {"shadow_breakeven": why})
+                         f"SHADOW-BREAKEVEN genegeerd: {why}",
+                         {"shadow_breakeven": why, "price": snap.price,
+                          "entry_price": pos.entry_price})
         return False, ""
 
     def _refresh_after_trade(self) -> tuple[list, float, float]:
@@ -394,10 +399,26 @@ class TradingCycle:
             closed += 1
         return closed
 
-    @staticmethod
-    def _log_signal(market: str, action: str, decision: str, score: int,
+    def _log_signal(self, market: str, action: str, decision: str, score: int,
                     reason: str, details: dict) -> None:
+        """Schrijf een SignalRow, gelabeld met de mode en met de config-hash van
+        elke shadow-gate die in dit besluit heeft gevuurd.
+
+        Instance-method sinds v0.20.0: een staticmethod kent de mode en de config
+        niet, en zonder die twee is de meting achteraf niet te scheiden. De mode
+        staat als kolom (één waarde per rij), de config-hashes staan in
+        `details["gate_hash"]` en bewust NIET als kolom: één besluit kan meerdere
+        shadow-gates tegelijk dragen (regime én chase annoteren dezelfde buy), en
+        één kolom kan die niet los van elkaar scopen.
+        """
+        details = dict(details or {})
+        hashes = {gate: gate_fingerprint(self.cfg, gate)
+                  for gate, spec in SHADOW_GATES.items()
+                  if f"shadow_{gate}" in details}
+        if hashes:
+            details["gate_hash"] = hashes
         with session() as s:
             s.add(SignalRow(market=market, action=action, decision=decision,
-                            score=score, reason=reason[:1000], details=details))
+                            score=score, reason=reason[:1000], details=details,
+                            mode=self.broker.mode))
             s.commit()

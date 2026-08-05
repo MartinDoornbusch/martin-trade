@@ -176,7 +176,7 @@ def test_injected_vetos_never_touch_db_for_trades(monkeypatch):
     raadplegen (anders faalt de live-test zonder init_db). Trades default = []."""
     def boom():
         raise AssertionError("DB mag niet geraadpleegd worden bij geinjecteerde vetos")
-    monkeypatch.setattr(veto, "_load_roundtrips_from_db", boom)
+    monkeypatch.setattr(veto, "load_roundtrips_from_db", boom)
     cfg = make_cfg()
     closes = [100.0] * 70 + [98, 96, 94, 92, 90, 88, 86]
     cs = candles(closes)

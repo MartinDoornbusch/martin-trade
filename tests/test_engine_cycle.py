@@ -481,3 +481,52 @@ def test_chase_guard_off_by_default_config_value_zero():
 
     assert open_markets() == {"A-EUR"}
     assert not any("CHASE" in d.reason for d in decisions)
+
+
+def test_chase_guard_logs_once_per_buy_not_once_per_cycle():
+    """Bepaalt of de chase-guard in de meting gededupliceerd moet worden.
+
+    In shadow gaat de koop gewoon door, dus na cyclus 1 staat er een positie open
+    en strandt de kandidaat in cyclus 2 al op de risk-gate ("position already
+    open") vóórdat de chase-guard aan bod komt. De guard produceert dus hooguit
+    één event per werkelijke buy, in tegenstelling tot de breakeven-stop, die
+    elke cyclus opnieuw vuurt zolang de positie openstaat. Deze test legt dat
+    verschil vast; verandert het gedrag, dan moet de meting mee.
+    """
+    feed = FakeFeed({"A-EUR": runaway_last_candle()})
+    cfg = make_cfg(["A-EUR"], strategy_over={"max_chase_atr": 0.5,
+                                             "chase_guard_binding": False})
+    cycle = make_cycle(cfg, feed)
+
+    cycle.run_once()
+    cycle.run_once()
+
+    with session() as s:
+        rows = s.execute(select(SignalRow)).scalars().all()
+    chase_events = [r for r in rows if "shadow_chase" in (r.details or {})]
+    assert len(chase_events) == 1
+    assert open_markets() == {"A-EUR"}
+
+
+def test_shadow_breakeven_event_carries_the_prices_for_the_measurement():
+    """Punt 4.3: de netto gate van de breakeven-stop is (hypothetische exit) min
+    (werkelijke exit). De hypothetische exitprijs is de koers op treffermoment, dus
+    zonder `price` en `entry_price` in het event is die som achteraf niet te maken.
+    Punt 5.3: elke SignalRow draagt nu ook zijn mode en de config-hash van de gates
+    die gevuurd hebben, zodat metingen per mode en per configuratie te scheiden
+    zijn."""
+    closes = [100.0] * 40 + [110.0] * 20 + [100.2] * 20
+    feed = FakeFeed({"A-EUR": closes}, prices={"A-EUR": 100.2})
+    cfg = make_cfg(["A-EUR"], exits={"breakeven_stop": {
+        "enabled": True, "binding": False, "trigger_atr": 1.0, "offset_pct": 0.55}})
+    cycle = make_cycle(cfg, feed)
+    cycle.broker.buy("A-EUR", 250.0, stop_loss=50.0, take_profit=500.0, reason="setup")
+    backdate_position("A-EUR", hours=4 * 30)
+
+    cycle.run_once()
+
+    row = shadow_signals()[0]
+    assert row.details["price"] == pytest.approx(100.2)
+    assert row.details["entry_price"] > 0
+    assert row.mode == "paper"
+    assert "breakeven" in row.details["gate_hash"]

@@ -6,9 +6,14 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from .analysis import analyze_regime, analyze_vetos
+from .analysis import (
+    analyze_breakeven,
+    analyze_chase,
+    analyze_regime,
+    analyze_vetos,
+)
 from .backtest import max_drawdown_pct
-from .config import config_fingerprint, get_config, get_secrets
+from .config import gate_fingerprint, get_config, get_secrets
 from .correlation import correlation_from_closes
 from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, session
 from .decision import FeeModel, RiskManager
@@ -424,8 +429,9 @@ def veto_analysis(refresh: bool = False, scope: str = "current"):
         return cached["data"]
     cfg = get_config()
     try:
-        config_hash = None if scope == "all" else config_fingerprint(cfg)
-        data = analyze_vetos(get_feed(), cfg, config_hash=config_hash)
+        config_hash = None if scope == "all" else gate_fingerprint(cfg, "veto")
+        data = analyze_vetos(get_feed(), cfg, config_hash=config_hash,
+                             mode=get_secrets().trading_mode)
         data["error"] = None
     except Exception as exc:  # noqa: BLE001 - analyse mag het dashboard niet breken
         return {"error": str(exc)[:200], "n_vetos": 0}
@@ -435,16 +441,37 @@ def veto_analysis(refresh: bool = False, scope: str = "current"):
     return data
 
 
-@app.get("/api/regime-analysis", dependencies=[Depends(check_token)])
-def regime_analysis():
-    """Regime-gate-analyse: netto gate-waarde van de markt-brede regime-filter,
-    gemeten uit de echte round-trip-P&L van regime-down shadow-buys. DB-only en
-    licht, dus niet gecachet."""
+def _gate_analysis(gate: str, fn, scope: str):
+    """Gedeelde afhandeling voor de drie gecodeerde shadow-gates: scope op de
+    per-gate config-hash en op de huidige mode, en laat een analysefout nooit het
+    dashboard breken. DB-only en licht, dus niet gecachet."""
     cfg = get_config()
     try:
-        return analyze_regime(cfg)
+        gate_hash = None if scope == "all" else gate_fingerprint(cfg, gate)
+        return fn(cfg, gate_hash=gate_hash, mode=get_secrets().trading_mode)
     except Exception as exc:  # noqa: BLE001 - analyse mag het dashboard niet breken
-        return {"error": str(exc)[:200], "n_events": 0}
+        return {"error": str(exc)[:200], "n_events": 0, "gate": gate}
+
+
+@app.get("/api/regime-analysis", dependencies=[Depends(check_token)])
+def regime_analysis(scope: str = "current"):
+    """Regime-gate: netto gate-waarde van de markt-brede filter, gemeten uit de
+    echte round-trip-P&L van regime-down shadow-buys."""
+    return _gate_analysis("regime", analyze_regime, scope)
+
+
+@app.get("/api/breakeven-analysis", dependencies=[Depends(check_token)])
+def breakeven_analysis(scope: str = "current"):
+    """Breakeven-stop: netto gate-waarde als (hypothetische exit) min (werkelijke
+    exit), gededupliceerd op de eerste treffer per positie."""
+    return _gate_analysis("breakeven", analyze_breakeven, scope)
+
+
+@app.get("/api/chase-analysis", dependencies=[Depends(check_token)])
+def chase_analysis(scope: str = "current"):
+    """Chase-guard: netto gate-waarde van het overslaan van entries waarbij de live
+    prijs te ver van de signaalclose af stond."""
+    return _gate_analysis("chase", analyze_chase, scope)
 
 
 DASHBOARD_HTML = """<!doctype html><html lang="nl"><head><meta charset="utf-8">
@@ -503,6 +530,10 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 <div id="vetoanalysis"></div></section>
 <section><h2>Regime-gate <span class="muted">(gecodeerd, markt-breed; echte shadow-uitkomst)</span></h2>
 <div id="regimeanalysis"></div></section>
+<section><h2>Breakeven-stop <span class="muted">(exit-gate; hypothetische exit vs. werkelijke exit)</span></h2>
+<div id="breakevenanalysis"></div></section>
+<section><h2>Chase-guard <span class="muted">(entry-drift tussen signaalclose en fill)</span></h2>
+<div id="chaseanalysis"></div></section>
 <section><details><summary style="cursor:pointer;font-size:14px"><b>Uitleg van de begrippen</b></summary>
 <dl style="font-size:13px;line-height:1.5">
 <dt><b>Candle (4h)</b></dt><dd>Eén blokje koershistorie: open-, hoogste, laagste en slotkoers over 4 uur. Alle analyse draait op deze candles.</dd>
@@ -665,12 +696,12 @@ function renderVeto(d){
     '<h2 style="margin-top:14px">Per markt (vaste horizon)</h2><table>' + bd(d.by_market||[]) + '</table>' +
     '<h2 style="margin-top:14px">Per confidence (vaste horizon)</h2><table>' + bd(d.by_confidence||[]) + '</table>';
 }
-function renderRegime(d){
-  const el = document.getElementById('regimeanalysis');
+function renderGate(elId, d, opts){
+  const el = document.getElementById(elId);
+  if(!el) return;
   if(!d || d.error){ el.innerHTML = `<span class="muted">${d && d.error ? 'fout: '+d.error : 'geen data'}</span>`; return; }
   const mode = d.binding ? 'bindend' : 'shadow';
-  const proxy = d.proxy_market || 'BTC-EUR';
-  if(!d.n_events){ el.innerHTML = `<span class="muted">nog geen regime-down entries om te meten — zodra de bot koopt terwijl ${proxy} in down-trend staat, verschijnt hier de echte uitkomst (${mode})</span>`; return; }
+  if(!d.n_events){ el.innerHTML = `<span class="muted">${opts.leeg} (${mode})</span>`; return; }
   const s = d.summary;
   let card;
   if(s){
@@ -683,15 +714,32 @@ function renderRegime(d){
         netto gate: <b class="${cls(g)}">€ ${fmt(g)}</b> ${g>=0?'(voegt waarde toe)':'(kost geld)'}
       </div></div>`;
   } else {
-    card = '<div class="card" style="min-width:260px"><span>Netto gate (echte uitkomst)</span><div style="margin-top:6px;font-size:13px" class="muted">regime-down entries gevonden, nog geen gekoppeld aan een afgewikkelde trade</div></div>';
+    card = '<div class="card" style="min-width:260px"><span>Netto gate (echte uitkomst)</span><div style="margin-top:6px;font-size:13px" class="muted">events gevonden, nog geen gekoppeld aan een afgewikkelde trade</div></div>';
   }
-  const progress = `<p class="muted" style="font-size:12px">proxy: <b>${proxy}</b> · modus: <b>${mode}</b> · positie € ${fmt(d.position_size_eur)} · voortgang: <b>${d.n_resolved}/${d.target_resolved}</b> afgewikkelde regime-down trades ${d.n_resolved<d.target_resolved?'(nog te weinig voor een harde uitspraak)':'(genoeg voor een eerste uitspraak)'}</p>`;
-  const note = `<p class="muted" style="font-size:12px">${d.n_events} regime-down entries · ${d.n_unresolved} nog niet afgewikkeld · netto positief = de gate voorkwam per saldo verlies, negatief = hij sneed winst weg · marge = 95% Wilson</p>`;
+  const dedup = d.n_deduped ? ` · ${d.n_deduped} herhaalde treffers samengevoegd tot de eerste per positie` : '';
+  const progress = `<p class="muted" style="font-size:12px">${opts.params} · modus: <b>${mode}</b> · positie € ${fmt(d.position_size_eur)} · voortgang: <b>${d.n_resolved}/${d.target_resolved}</b> afgewikkelde trades ${d.n_resolved<d.target_resolved?'(nog te weinig voor een harde uitspraak)':'(genoeg voor een eerste uitspraak)'}</p>`;
+  const note = `<p class="muted" style="font-size:12px">${d.n_events} events · ${d.n_unresolved} nog niet afgewikkeld${dedup} · netto positief = de gate voorkwam per saldo verlies, negatief = hij sneed winst weg · marge = 95% Wilson · alleen de huidige config (eigen hash per gate)</p>`;
   const bd = (d.per_market && d.per_market.length)
     ? '<h2 style="margin-top:14px">Per markt</h2><table><tr><th>groep</th><th class="num">n</th><th class="num">precisie</th><th class="num">vermeden</th><th class="num">gemist</th><th class="num">netto gate</th></tr>' +
       d.per_market.map(r=>`<tr><td>${r.group}</td><td class="num">${r.n}</td><td class="num">${fmt(r.veto_precision_pct,1)}% ±${fmt(r.precision_margin_pp,1)}</td><td class="num pos">€ ${fmt(r.avoided_eur)}</td><td class="num neg">€ ${fmt(r.missed_eur)}</td><td class="num ${cls(r.net_gate_eur)}">€ ${fmt(r.net_gate_eur)}</td></tr>`).join('') + '</table>'
     : '';
   el.innerHTML = `<div class="cards" style="margin-bottom:12px">${card}</div>` + progress + note + bd;
+}
+function renderRegimeGate(d){
+  const proxy = d && d.proxy_market || 'BTC-EUR';
+  renderGate('regimeanalysis', d, {
+    params: `proxy: <b>${proxy}</b>`,
+    leeg: `nog geen regime-down entries om te meten — zodra de bot koopt terwijl ${proxy} in down-trend staat, verschijnt hier de echte uitkomst`});
+}
+function renderBreakevenGate(d){
+  renderGate('breakevenanalysis', d, {
+    params: `trigger <b>${fmt(d.trigger_atr,2)}x ATR</b> · offset <b>${fmt(d.offset_pct,2)}%</b>`,
+    leeg: 'nog geen breakeven-treffers om te meten — zodra een positie ver genoeg in de winst stond en terugzakt tot de drempel, verschijnt hier wat uitstappen zou hebben opgeleverd tegenover doorhouden'});
+}
+function renderChaseGate(d){
+  renderGate('chaseanalysis', d, {
+    params: `drempel <b>${fmt(d.max_chase_atr,2)}x ATR</b>`,
+    leeg: 'nog geen chase-treffers om te meten — zodra de live prijs te ver van de signaalclose af staat bij een koopsignaal, verschijnt hier de echte uitkomst van die entry'});
 }
 async function load(){
   const [s, pf, bal, mkts, adv, lst, md] = await Promise.all([
@@ -748,7 +796,9 @@ async function load(){
     (llm.length ? llm.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.provider}</td><td>${r.market}</td><td>${r.verdict}</td><td class="num">${fmt(r.confidence)}</td><td>${r.reasoning}</td></tr>`).join('')
       : '<tr><td colspan="6" class="muted">nog geen LLM-calls — die volgen zodra een koopsignaal alle mechanische gates passeert</td></tr>');
   q('api/veto-analysis').then(renderVeto);
-  q('api/regime-analysis').then(renderRegime);
+  q('api/regime-analysis').then(renderRegimeGate);
+  q('api/breakeven-analysis').then(renderBreakevenGate);
+  q('api/chase-analysis').then(renderChaseGate);
   const sc = await q('api/scanner');
   const scStats = sc.stats ? `<tr><td colspan="9" class="muted">trechter: ${sc.stats.eur_markets} EUR-markten gescand → ${sc.stats.liquid} door liquiditeitsfilter (volume ≥ € ${Number(sc.stats.min_volume_eur).toLocaleString('nl-NL')}, spread ≤ ${sc.stats.max_spread_pct}%) → ${sc.stats.analyzed} geanalyseerd → top ${sc.stats.shown} getoond</td></tr>` : '';
   document.getElementById('scanner').innerHTML = sc.error

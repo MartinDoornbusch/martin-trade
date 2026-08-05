@@ -437,13 +437,22 @@ def _load_vetos_from_db(config_hash: str | None = None) -> list[dict]:
             for r in rows if r.verdict == "veto" and r.market]
 
 
-def _load_roundtrips_from_db() -> list[dict]:
+def load_roundtrips_from_db(mode: str | None = None) -> list[dict]:
+    """Afgewikkelde trades uit de DB, gefilterd op mode.
+
+    Stond hardcoded op `"paper"` (gemist in de mode-pass van v0.19.0), waardoor de
+    veto- en regime-analyse in live mode stil op paper-historie rapporteerde.
+    `mode=None` leest alles, wat alleen bedoeld is voor een expliciete
+    totaalmeting.
+    """
     from sqlalchemy import select
 
     from ..db import TradeRow, session
     with session() as s:
-        rows = s.execute(select(TradeRow).where(TradeRow.mode == "paper")
-                         .order_by(TradeRow.ts.asc())).scalars().all()
+        stmt = select(TradeRow).order_by(TradeRow.ts.asc())
+        if mode is not None:
+            stmt = stmt.where(TradeRow.mode == mode)
+        rows = s.execute(stmt).scalars().all()
     return [{"ts": r.ts, "market": r.market, "side": r.side, "amount": r.amount,
              "price": r.price, "pnl_eur": r.pnl_eur, "reason": r.reason} for r in rows]
 
@@ -467,7 +476,8 @@ def _fetch_candles(adapter: ExchangeAdapter, markets: list[str], min_ms: int,
 def analyze_vetos(adapter: ExchangeAdapter, cfg, *, vetos: list[dict] | None = None,
                   candles_by_market: dict[str, list[Candle]] | None = None,
                   trades: list[dict] | None = None, config_hash: str | None = None,
-                  horizon_candles: int = 6, tpsl_max_candles: int = 48) -> dict:
+                  horizon_candles: int = 6, tpsl_max_candles: int = 48,
+                  mode: str | None = None) -> dict:
     """Toplevel: laad vetos (DB), haal candles (Bitvavo), reken door, vat samen.
 
     `config_hash` beperkt de meting tot vetoes van één configuratie (schone
@@ -484,7 +494,7 @@ def analyze_vetos(adapter: ExchangeAdapter, cfg, *, vetos: list[dict] | None = N
         # Alleen bij een echte run (vetos uit de DB) ook de trades uit de DB
         # halen. Zijn de vetos geinjecteerd (tests), dan geen DB tenzij de
         # aanroeper zelf trades meegeeft.
-        trades = [] if vetos_injected else _load_roundtrips_from_db()
+        trades = [] if vetos_injected else load_roundtrips_from_db(mode)
     roundtrips = build_roundtrips(trades)
     if candles_by_market is None:
         markets = sorted({v["market"] for v in vetos})
@@ -503,7 +513,7 @@ def main() -> None:
     import json
     import sys
 
-    from ..config import config_fingerprint, get_config, get_secrets
+    from ..config import gate_fingerprint, get_config, get_secrets
     from ..db import init_db
     from ..exchange import BitvavoClient
     cfg = get_config()
@@ -512,8 +522,9 @@ def main() -> None:
     feed = BitvavoClient(secrets.bitvavo_api_key, secrets.bitvavo_api_secret,
                          cfg.fees["maker_pct"], cfg.fees["taker_pct"])
     scope_all = "--all" in sys.argv[1:]
-    config_hash = None if scope_all else config_fingerprint(cfg)
-    result = analyze_vetos(feed, cfg, config_hash=config_hash)
+    config_hash = None if scope_all else gate_fingerprint(cfg, "veto")
+    result = analyze_vetos(feed, cfg, config_hash=config_hash,
+                           mode=secrets.trading_mode)
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
 

@@ -48,6 +48,14 @@ class SignalRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     market: Mapped[str] = mapped_column(String(20))
+    # Nu toevoegen en niet later: zolang er alleen paper draait backfilt DEFAULT
+    # 'paper' toevallig correct. Voeg je de kolom pas toe nadat er live gedraaid
+    # heeft, dan staan paper- en live-rijen al door elkaar en is er geen backfill
+    # die dat nog kan repareren. De config-scoping per gate zit bewust NIET in een
+    # kolom maar in `details["gate_hash"]`: één SignalRow kan meerdere
+    # shadow-gates tegelijk dragen (regime én chase annoteren hetzelfde besluit),
+    # en één kolom kan die niet los scopen.
+    mode: Mapped[str] = mapped_column(String(6), default="paper")
     action: Mapped[str] = mapped_column(String(10))
     decision: Mapped[str] = mapped_column(String(10))
     score: Mapped[int] = mapped_column(Integer, default=0)
@@ -103,6 +111,10 @@ def init_db(database_url: str) -> None:
             if "mode" not in pos_cols:
                 conn.exec_driver_sql(
                     "ALTER TABLE positions ADD COLUMN mode VARCHAR(6) DEFAULT 'paper'")
+            sig_cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info(signals)")}
+            if "mode" not in sig_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE signals ADD COLUMN mode VARCHAR(6) DEFAULT 'paper'")
             llm_cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info(llm_calls)")}
             if "config_hash" not in llm_cols:
                 conn.exec_driver_sql(
