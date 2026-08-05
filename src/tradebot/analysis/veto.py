@@ -24,7 +24,7 @@ import math
 from dataclasses import asdict, dataclass
 
 from ..exchange import Candle, ExchangeAdapter
-from ..strategy import build_snapshot
+from ..strategy import build_snapshot, intrabar_exit
 
 # Indicator-warmup: EMA-slow (26) + MACD-signaal (9) + marge. Onder deze index
 # is een snapshot niet betrouwbaar.
@@ -174,16 +174,13 @@ def _tp_sl(candles: list[Candle], idx: int, entry: float, atr: float,
     stop = entry - atr * p.atr_stop_multiplier
     target = entry + atr * p.atr_stop_multiplier * p.reward_risk_ratio
     last = min(idx + p.tpsl_max_candles, len(candles) - 1)
+    # Intrabar-regel staat sinds v0.20.0 in `strategy.intrabar_exit`, zodat de
+    # backtester exact dezelfde logica draait als deze analyse.
     for i in range(idx + 1, last + 1):
-        hit_stop = candles[i].low <= stop
-        hit_target = candles[i].high >= target
-        if hit_stop and hit_target:
-            if p.same_candle_stop_first:
-                return (stop / entry - 1.0) * 100 - p.cost_pct, "stop"
-            return (target / entry - 1.0) * 100 - p.cost_pct, "target"
-        if hit_stop:
+        what = intrabar_exit(candles[i], stop, target, p.same_candle_stop_first)
+        if what == "stop":
             return (stop / entry - 1.0) * 100 - p.cost_pct, "stop"
-        if hit_target:
+        if what == "target":
             return (target / entry - 1.0) * 100 - p.cost_pct, "target"
     if last <= idx:
         return None, "timeout"

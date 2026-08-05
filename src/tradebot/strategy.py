@@ -75,6 +75,75 @@ def build_snapshot(market: str, candles: list[Candle], cfg: dict) -> MarketSnaps
     )
 
 
+def build_snapshots(market: str, candles: list[Candle],
+                    cfg: dict) -> list[MarketSnapshot | None]:
+    """Snapshot per index, in één pass over de reeks.
+
+    Exact equivalent aan `build_snapshot(market, candles[: i + 1], cfg)` voor elke
+    i, maar O(n) in plaats van O(n²). Dat mag omdat elke gebruikte indicator
+    prefix-stabiel is: EMA, RSI (Wilder) en ATR zijn recursief vanaf het begin van
+    de reeks en Bollinger is een rollend venster, dus geen van alle kijkt vooruit.
+    Bedoeld voor de backtester en de optimizer, die anders per bar de hele historie
+    opnieuw doorrekenen. `tests/test_backtest.py` pint de gelijkheid vast, zodat
+    deze functie niet stilletjes van `build_snapshot` af kan drijven.
+
+    Geeft None terug voor indices waar nog geen twee candles beschikbaar zijn.
+    """
+    closes = [c.close for c in candles]
+    highs = [c.high for c in candles]
+    lows = [c.low for c in candles]
+    ef = ema(closes, int(cfg["ema_fast"]))
+    es = ema(closes, int(cfg["ema_slow"]))
+    r = rsi(closes, int(cfg["rsi_period"]))
+    _, _, hist = macd(closes)
+    a = atr(highs, lows, closes, int(cfg["atr_period"]))
+    bb_mid, _, bb_low = bollinger(closes)
+    out: list[MarketSnapshot | None] = []
+    for i in range(len(candles)):
+        if i < 1:
+            out.append(None)
+            continue
+        out.append(MarketSnapshot(
+            market=market,
+            price=closes[i],
+            ema_fast=float(ef[i]),
+            ema_slow=float(es[i]),
+            rsi=float(r[i]),
+            macd_hist=float(hist[i]),
+            macd_hist_prev=float(hist[i - 1]),
+            atr=float(a[i]),
+            bb_lower=float(bb_low[i]),
+            bb_mid=float(bb_mid[i]),
+            change_24c_pct=(closes[i] / closes[i - 6] - 1) * 100 if i >= 6 else 0.0,
+        ))
+    return out
+
+
+def intrabar_exit(candle: Candle, stop: float, target: float,
+                  stop_first: bool = True) -> str | None:
+    """Raakte deze candle de stop of het target BINNEN de bar? -> "stop"|"target"|None.
+
+    Vergelijken met de slotkoers is niet goed genoeg: een candle die met zijn low
+    door de stop ging maar erboven sloot, houdt de positie in zo'n model open,
+    terwijl de position guard live binnen de minuut uitstopt. Dat tilt de win-rate
+    kunstmatig op.
+
+    Raakt één candle stop én target, dan wint standaard de stop. De volgorde binnen
+    de bar is uit OHLC niet af te leiden, dus dit is de conservatieve aanname; ze
+    stond al zo in de veto-analyse en is nu één gedeelde bron voor backtester en
+    analyse.
+    """
+    hit_stop = candle.low <= stop
+    hit_target = candle.high >= target
+    if hit_stop and hit_target:
+        return "stop" if stop_first else "target"
+    if hit_stop:
+        return "stop"
+    if hit_target:
+        return "target"
+    return None
+
+
 def drop_unclosed(candles: list[Candle], now_ms: int | None = None) -> list[Candle]:
     """Knip de lopende, nog niet gesloten candle van een oplopende reeks af.
 
