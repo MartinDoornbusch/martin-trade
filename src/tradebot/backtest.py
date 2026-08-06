@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from .config import get_config
 from .correlation import correlation_from_closes
 from .decision import FeeModel, Position, RiskManager, breakeven_offset_pct
-from .exchange import BitvavoClient, Candle
+from .exchange import BitvavoClient, Candle, candle_window, parse_end_ms
 from .strategy import (
     MarketSnapshot,
     breakeven_stop_hit,
@@ -374,14 +374,17 @@ def main() -> None:
     parser.add_argument("markets", nargs="+")
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--limit", type=int, default=1000)
+    parser.add_argument("--end", default=None,
+                        help="einde van het venster (ISO-8601 of epoch ms)")
     parser.add_argument("--portfolio", action="store_true",
                         help="portfolio-modus: gedeelde cash, buckets, slots, gates")
     parser.add_argument("--warmup", type=int, default=DEFAULT_WARMUP)
     args = parser.parse_args()
     cfg = get_config()
     feed = BitvavoClient()
-    fetch = feed.get_candles_history if args.limit > 1440 else feed.get_candles
-    data = {m: fetch(m, args.interval, args.limit) for m in args.markets}
+    end_ms = parse_end_ms(args.end)
+    fetch = feed.get_candles_history if (args.limit > 1440 or end_ms) else feed.get_candles
+    data = {m: fetch(m, args.interval, args.limit, end_ms) for m in args.markets}
     fee_model = FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
                          cfg.fees["slippage_buffer_pct"])
     if args.portfolio or len(args.markets) > 1:
@@ -390,6 +393,7 @@ def main() -> None:
         result = run_backtest(next(iter(data.values())), cfg, fee_model, warmup=args.warmup)
     n = sum(len(v) for v in data.values())
     print(f"\nBacktest {', '.join(args.markets)} ({args.interval}, {n} candles)")
+    print(f"venster: {candle_window(next(iter(data.values())))}")
     for k, v in result.items():
         print(f"  {k:20s} {v}")
 

@@ -146,6 +146,23 @@ referentierij nu ook per markt, zodat je de vijf naast de vijf ankeruitkomsten k
 wijken ze alle vijf een beetje af, dan zit het in de kostenboekhouding; wijkt er één sterk
 af, dan in een specifieke trade.
 
+### Pin het venster, anders vergelijk je twee dingen tegelijk
+
+`--limit N` haalt de N **nieuwste** candles op. Draai je de ankerrun 's ochtends en de
+attributie 's middags, dan is er een 4h-bar bijgekomen en beslaan de twee runs een ander
+stuk markt. Dat verschil lees je dan als een codeverschil, en dat is precies wat deze check
+moet uitsluiten. Bij de eerste poging op 6 augustus veranderde daardoor het aantal trades
+van 86 naar 88 zonder dat er iets aan de code was gewijzigd dat dat kon verklaren.
+
+Alle drie de CLI's (`backtest`, `calibrate`, `optimizer`) accepteren daarom `--end`
+(ISO-8601 of epoch in ms) en printen het gebruikte venster. Zonder `--end` staat er een
+waarschuwing bij. Kies één eindtijdstip en gebruik dat voor de ankerrun én de attributie:
+
+```powershell
+$eind = "2026-08-06T08:00:00Z"
+python -m tradebot.calibrate BTC-EUR ETH-EUR SOL-EUR XRP-EUR LINK-EUR --interval 4h --limit 1100 --end $eind
+```
+
 **Wijkt rij 1 af, stop dan.** Dan is er onderweg nog iets anders veranderd en is elke delta
 eronder betekenisloos.
 

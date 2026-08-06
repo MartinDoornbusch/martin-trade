@@ -31,6 +31,37 @@ class Candle:
     volume: float
 
 
+def parse_end_ms(waarde: str | None) -> int | None:
+    """CLI-waarde naar unix-milliseconden: ISO-8601 of een epoch in ms.
+
+    Nodig omdat `--limit N` de N NIEUWSTE candles ophaalt. Twee runs op
+    verschillende momenten beslaan dus een ander venster, en dan vergelijk je
+    stilzwijgend appels met peren. Voor de anker-check is dat fataal: precies het
+    stille verschil dat die check moet uitsluiten.
+    """
+    if waarde is None or not str(waarde).strip():
+        return None
+    tekst = str(waarde).strip()
+    if tekst.isdigit():
+        return int(tekst)
+    from datetime import datetime, timezone
+    dt = datetime.fromisoformat(tekst.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def candle_window(candles: list[Candle]) -> str:
+    """Leesbaar venster van een reeks, om in elke run-uitvoer te tonen."""
+    if not candles:
+        return "leeg"
+    from datetime import datetime, timezone
+
+    def fmt(ms: int) -> str:
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+    return f"{fmt(candles[0].ts)} t/m {fmt(candles[-1].ts)} UTC"
+
+
 @dataclass
 class OrderResult:
     order_id: str
@@ -46,11 +77,13 @@ class ExchangeAdapter(ABC):
     """Interface for any trading venue (crypto exchange or stock broker)."""
 
     @abstractmethod
-    def get_candles(self, market: str, interval: str, limit: int) -> list[Candle]: ...
+    def get_candles(self, market: str, interval: str, limit: int,
+                    end_ms: int | None = None) -> list[Candle]: ...
 
-    def get_candles_history(self, market: str, interval: str, total: int) -> list[Candle]:
+    def get_candles_history(self, market: str, interval: str, total: int,
+                            end_ms: int | None = None) -> list[Candle]:
         """Default: één get_candles-call; BitvavoClient overridet met paginatie."""
-        return self.get_candles(market, interval, total)
+        return self.get_candles(market, interval, total, end_ms)
 
     @abstractmethod
     def get_price(self, market: str) -> float: ...
@@ -103,17 +136,25 @@ class BitvavoClient(ExchangeAdapter):
         return resp.json()
 
     # --- public data ------------------------------------------------------
-    def get_candles(self, market: str, interval: str, limit: int) -> list[Candle]:
-        raw = self._request("GET", f"/{market}/candles?interval={interval}&limit={limit}")
+    def get_candles(self, market: str, interval: str, limit: int,
+                    end_ms: int | None = None) -> list[Candle]:
+        pad = f"/{market}/candles?interval={interval}&limit={limit}"
+        if end_ms is not None:
+            pad += f"&end={end_ms}"
+        raw = self._request("GET", pad)
         # Bitvavo returns newest first; we want oldest first for indicator math.
         candles = [Candle(int(c[0]), float(c[1]), float(c[2]), float(c[3]),
                           float(c[4]), float(c[5])) for c in raw]
         return sorted(candles, key=lambda c: c.ts)
 
-    def get_candles_history(self, market: str, interval: str, total: int) -> list[Candle]:
-        """Haalt meer dan 1440 candles op via paginatie met de end-parameter."""
+    def get_candles_history(self, market: str, interval: str, total: int,
+                            end_ms: int | None = None) -> list[Candle]:
+        """Haalt meer dan 1440 candles op via paginatie met de end-parameter.
+
+        `end_ms` pint het EINDE van het venster, zodat twee runs op verschillende
+        momenten exact dezelfde candles zien.
+        """
         out: list[Candle] = []
-        end_ms: int | None = None
         while len(out) < total:
             batch = min(1440, total - len(out))
             path = f"/{market}/candles?interval={interval}&limit={batch}"

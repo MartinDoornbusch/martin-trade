@@ -216,3 +216,49 @@ def test_return_over_dd_is_floored_against_tiny_drawdowns():
     assert return_over_dd(10.0, 0.0) == 10.0
     assert return_over_dd(10.0, 0.2) == 10.0
     assert return_over_dd(None, 5.0) == 0.0
+
+
+# --- anker-check: venster pinnen en de bedrading van calibrate ------------------
+
+def test_parse_end_ms_accepts_iso_and_epoch():
+    """`--limit N` haalt de N NIEUWSTE candles op, dus twee runs op verschillende
+    momenten zien andere data. Voor de anker-check is dat fataal: dan vergelijk je
+    een codeverschil met een datavenster-verschil."""
+    from tradebot.exchange import parse_end_ms
+
+    assert parse_end_ms(None) is None
+    assert parse_end_ms("") is None
+    assert parse_end_ms("1785945600000") == 1785945600000
+    assert parse_end_ms("2026-08-05T16:00:00Z") == 1785945600000
+    assert parse_end_ms("2026-08-05T16:00:00") == 1785945600000   # naief = UTC
+
+
+def test_get_candles_passes_the_end_parameter():
+    class Spion(FakeHistoryClient):
+        paden: list = []
+
+        def _request(self, method, path, body=None, auth=False):
+            Spion.paden.append(path)
+            return super()._request(method, path, body, auth)
+
+    Spion.paden = []
+    Spion().get_candles("BTC-EUR", "4h", 100, end_ms=1785945600000)
+    assert "end=1785945600000" in Spion.paden[0]
+
+    Spion.paden = []
+    Spion().get_candles("BTC-EUR", "4h", 100)
+    assert "end=" not in Spion.paden[0]
+
+
+def test_calibration_step_actually_toggles_slippage_on_the_fill():
+    """Regressie op een defect dat pas in Martins run zichtbaar werd: de
+    slippage-stap gaf delta +0,00 omdat `run_stap` de vlag niet doorgaf. De stap
+    stond in de tabel maar deed niets, en dat is erger dan hem weglaten."""
+    import inspect
+
+    from tradebot import calibrate
+
+    bron = inspect.getsource(calibrate.run_stap)
+    assert bron.count("slippage_on_fill=stap.slippage") == 2, (
+        "beide backtest-aanroepen in run_stap moeten de slippage-vlag doorgeven")
+    assert "per_markt" in bron, "referentierij moet per markt uitgesplitst worden"

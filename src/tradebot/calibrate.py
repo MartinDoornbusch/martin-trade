@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from .backtest import DEFAULT_WARMUP, run_backtest, run_portfolio_backtest
 from .config import get_config
 from .decision import FeeModel
-from .exchange import BitvavoClient, Candle
+from .exchange import BitvavoClient, Candle, candle_window, parse_end_ms
 from .optimizer import default_warmup
 
 # Warmup van de run van 18 juli: de vaste 60 uit de oude backtester.
@@ -113,6 +113,12 @@ def config_voor(cfg, stap: Stap):
 
 
 def fee_model_voor(cfg, stap: Stap) -> FeeModel:
+    """Altijd het ECHTE fee-model, ook in de referentierij.
+
+    De buffer op nul zetten om "geen slippage" te modelleren was fout: dat verlaagt
+    ook `min_edge` van 1,10% naar 1,00%, terwijl de oude code die 1,10% wél
+    hanteerde. Of de fill geslipt wordt is een aparte vlag (`slippage_on_fill`).
+    """
     return FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
                     cfg.fees["slippage_buffer_pct"])
 
@@ -123,12 +129,16 @@ def run_stap(data: dict[str, list[Candle]], cfg, stap: Stap) -> dict:
     warmup = default_warmup(c.strategy) if stap.geschaalde_warmup else OUDE_WARMUP
     if stap.portfolio:
         return run_portfolio_backtest(data, c, fm, warmup=warmup, intrabar=stap.intrabar,
-                                      trend_break=stap.trend_break)
+                                      trend_break=stap.trend_break,
+                                      slippage_on_fill=stap.slippage)
     # Enkelvoudige modus draait per markt en wordt gemiddeld, zodat de vergelijking
     # met de portfolio-stap over dezelfde markten gaat.
-    resultaten = [run_backtest(candles, c, fm, warmup=warmup, intrabar=stap.intrabar,
-                               trend_break=stap.trend_break)
-                  for candles in data.values()]
+    per_markt = {markt: run_backtest(candles, c, fm, warmup=warmup,
+                                     intrabar=stap.intrabar,
+                                     trend_break=stap.trend_break,
+                                     slippage_on_fill=stap.slippage)
+                 for markt, candles in data.items()}
+    resultaten = list(per_markt.values())
     n = len(resultaten)
     trades = sum(r["closed_trades"] for r in resultaten)
     wins = sum((r["win_rate_pct"] or 0) * r["closed_trades"] / 100 for r in resultaten)
@@ -139,6 +149,7 @@ def run_stap(data: dict[str, list[Candle]], cfg, stap: Stap) -> dict:
         "net_return_pct": round(sum(r["net_return_pct"] for r in resultaten) / n, 2),
         "max_drawdown_pct": round(sum(r["max_drawdown_pct"] for r in resultaten) / n, 1),
         "total_fees_eur": round(sum(r["total_fees_eur"] for r in resultaten), 2),
+        "per_markt": per_markt,
     }
 
 
@@ -155,6 +166,7 @@ def attributie(data: dict[str, list[Candle]], cfg) -> list[dict]:
             "win": r["win_rate_pct"] or 0.0,
             "dd": r["max_drawdown_pct"],
             "productie": stap.productie,
+            "per_markt": r.get("per_markt"),
         })
         vorige = r["net_return_pct"]
     return rijen
@@ -168,6 +180,18 @@ def print_attributie(rijen: list[dict]) -> None:
         vlag = "  <- productie" if r["productie"] else ""
         print(f"{r['naam']:38s} {r['punt']:10s} {r['rendement']:>8.2f} {delta:>8s} "
               f"{r['trades']:>7d} {r['win']:>6.1f} {r['dd']:>6.1f}{vlag}")
+    referentie = rijen[0]
+    if referentie.get("per_markt"):
+        print("\nReferentierij per markt - leg deze vijf naast de ankerrun van de oude")
+        print("code (commit 56d9e55). Wijken ze alle vijf een beetje af, dan zit het in de")
+        print("kostenboekhouding; wijkt er een sterk af, dan in een specifieke trade.")
+        print(f"\n{'markt':12s} {'rend%':>8s} {'trades':>7s} {'win%':>6s} {'dd%':>6s} "
+              f"{'fees EUR':>9s}")
+        for markt, r in sorted(referentie["per_markt"].items()):
+            print(f"{markt:12s} {r['net_return_pct']:>8.2f} {r['closed_trades']:>7d} "
+                  f"{(r['win_rate_pct'] or 0):>6.1f} {r['max_drawdown_pct']:>6.1f} "
+                  f"{r['total_fees_eur']:>9.2f}")
+
     print("\nDe rij met '<- productie' beschrijft het huidige gedrag. De laatste rij")
     print("zet de breakeven-stop BINDEND (in een backtest doet een shadow-gate per")
     print("definitie niets); in productie staat hij op shadow. De chase-guard zit")
@@ -186,18 +210,28 @@ def main() -> None:
     parser.add_argument("markets", nargs="+")
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--limit", type=int, default=1100)
+    parser.add_argument("--end", default=None,
+                        help="einde van het venster (ISO-8601 of epoch ms). "
+                             "Zonder dit pakt --limit de NIEUWSTE candles, dus "
+                             "twee runs op verschillende momenten zien andere data")
     args = parser.parse_args()
 
     cfg = get_config()
     feed = BitvavoClient()
-    fetch = feed.get_candles_history if args.limit > 1440 else feed.get_candles
-    data = {m: fetch(m, args.interval, args.limit) for m in args.markets}
+    end_ms = parse_end_ms(args.end)
+    fetch = feed.get_candles_history if (args.limit > 1440 or end_ms) else feed.get_candles
+    data = {m: fetch(m, args.interval, args.limit, end_ms) for m in args.markets}
 
     print(f"\nAttributie op de productievariant: ema{cfg.strategy['ema_fast']}/"
           f"{cfg.strategy['ema_slow']}, score>={cfg.strategy['min_signal_score']}, "
           f"atr*{cfg.decision['atr_stop_multiplier']}, rr{cfg.decision['reward_risk_ratio']}")
+    eerste = next(iter(data.values()))
     print(f"{', '.join(args.markets)} ({args.interval}, "
           f"{min(len(v) for v in data.values())} candles per markt)")
+    waarschuwing = "" if args.end else (
+        "  <- NIET gepind; gebruik --end om dit venster vast te leggen en de "
+        "ankerrun exact te herhalen")
+    print(f"venster: {candle_window(eerste)}{waarschuwing}")
     print(f"warmup oud {OUDE_WARMUP} -> geschaald {default_warmup(cfg.strategy)} "
           f"(DEFAULT_WARMUP in de backtester is {DEFAULT_WARMUP})")
     print_attributie(attributie(data, cfg))

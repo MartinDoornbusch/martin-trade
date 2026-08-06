@@ -27,7 +27,7 @@ import itertools
 from .backtest import run_backtest, run_portfolio_backtest
 from .config import get_config
 from .decision import FeeModel
-from .exchange import BitvavoClient, Candle
+from .exchange import BitvavoClient, Candle, candle_window, parse_end_ms
 
 # Pass 1: de parameters die bepalen WANNEER er een signaal is en hoe ver stop en
 # target liggen.
@@ -219,6 +219,9 @@ def main() -> None:
     parser.add_argument("markets", nargs="+")
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--limit", type=int, default=3000)
+    parser.add_argument("--end", default=None,
+                        help="einde van het venster (ISO-8601 of epoch ms), "
+                             "zodat twee runs exact dezelfde candles zien")
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--min-trades", type=int, default=MIN_TRADES_RELIABLE,
                         help="drempel voor de kop van de tabel; daaronder is max "
@@ -231,8 +234,9 @@ def main() -> None:
 
     cfg = get_config()
     feed = BitvavoClient()
-    fetch = feed.get_candles_history if args.limit > 1440 else feed.get_candles
-    data = {m: fetch(m, args.interval, args.limit) for m in args.markets}
+    end_ms = parse_end_ms(args.end)
+    fetch = feed.get_candles_history if (args.limit > 1440 or end_ms) else feed.get_candles
+    data = {m: fetch(m, args.interval, args.limit, end_ms) for m in args.markets}
     train, test = split_data(data)
     fee_model = FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
                          cfg.fees["slippage_buffer_pct"])
@@ -242,6 +246,7 @@ def main() -> None:
     n_bars = min(len(v) for v in data.values())
     print(f"\nOptimizer {', '.join(args.markets)} ({args.interval}): {n_bars} candles per "
           f"markt, train {int(n_bars * 0.7)} / test {n_bars - int(n_bars * 0.7)}")
+    print(f"venster: {candle_window(next(iter(data.values())))}")
     print(f"warmup {warmup} candles (geschaald met de traagste EMA in de grid, "
           f"gelijk voor alle varianten), {len(core)} varianten x 2 perioden")
 
