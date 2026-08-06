@@ -65,6 +65,10 @@ class TradingCycle:
                         secrets.live_max_capital_eur)
         else:
             self.broker = PaperBroker(self.feed, self.fee_model, cfg.risk["paper_start_eur"])
+        # Het fee-model volgt de brokermodus, zodat fee-gate, scanner, time-stop en
+        # breakeven-offset alle vier dezelfde round-trip hanteren in plaats van dat
+        # de een de broker volgt en de ander de paper-aanname vastbakt.
+        self.fee_model.entry_is_maker = self.broker.entry_is_maker
         self.decider = DecisionEngine(self.fee_model, RiskManager(cfg.risk), cfg.decision)
         self.llm: LLMRouter = build_router(cfg.llm_providers, secrets,
                                            int(cfg.llm.get("timeout_seconds", 20)))
@@ -292,8 +296,7 @@ class TradingCycle:
         hit, why = breakeven_stop_hit(
             candles, pos.opened_at, pos.entry_price, snap.price, snap.atr,
             float(be_cfg.get("trigger_atr", 1.0)),
-            breakeven_offset_pct(be_cfg, self.fee_model,
-                                 getattr(self.broker, "entry_is_maker", False)))
+            breakeven_offset_pct(be_cfg, self.fee_model))
         if not hit:
             return False, ""
         if bool(be_cfg.get("binding", False)):

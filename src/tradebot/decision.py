@@ -39,33 +39,51 @@ def correlated_positions(own_closes: list[float],
 
 @dataclass
 class FeeModel:
+    """Kosten van een round-trip, inclusief hoe de broker hem werkelijk maakt.
+
+    `entry_is_maker` hoort hier en niet bij elke aanroeper: het is één eigenschap
+    van de draaiende opzet en de brokers dragen hem zelf (`PaperBroker` false,
+    `LiveBroker` true). Zo volgen de fee-gate, de scanner, de time-stop en de
+    breakeven-offset automatisch dezelfde aanname, in plaats van dat de een de
+    brokermodus volgt en de ander de paper-aanname vastbakt.
+    """
     maker_pct: float
     taker_pct: float
     slippage_buffer_pct: float
+    entry_is_maker: bool = False
 
-    def round_trip_pct(self, use_taker: bool = True) -> float:
-        """SYMMETRISCHE round-trip: beide benen taker (of beide maker)."""
-        fee = self.taker_pct if use_taker else self.maker_pct
-        return 2 * fee  # buy + sell
+    def round_trip_pct(self, entry_is_maker: bool | None = None) -> float:
+        """Werkelijke round-trip: entry-fee plus exit-fee.
 
-    def round_trip_asymmetric_pct(self, entry_is_maker: bool) -> float:
-        """Round-trip zoals de broker hem werkelijk maakt.
-
-        In paper zijn beide benen taker (0,50% bij het basistarief). `LiveBroker`
-        doet echter maker-entries (limit postOnly) en market-exits, dus live is de
-        werkelijke round-trip maker + taker (0,40%). De symmetrische variant kent
-        die combinatie niet: `round_trip_pct(use_taker=False)` geeft 2x maker, wat
-        geen van beide is.
+        Paper vult beide benen als taker (0,50% bij het basistarief). `LiveBroker`
+        doet een maker-entry (limit postOnly) en een market-exit, dus live is het
+        maker + taker (0,40%). Tot v0.20.0 stond hier `2 * taker` met een
+        `use_taker`-vlag die nergens werd gebruikt en die de werkelijke combinatie
+        maker+taker niet eens kon uitdrukken.
         """
-        entry = self.maker_pct if entry_is_maker else self.taker_pct
-        return entry + self.taker_pct
+        maker_entry = self.entry_is_maker if entry_is_maker is None else entry_is_maker
+        return (self.maker_pct if maker_entry else self.taker_pct) + self.taker_pct
 
-    def min_edge_pct(self, min_profit_pct: float, use_taker: bool = True) -> float:
-        return self.round_trip_pct(use_taker) + self.slippage_buffer_pct + min_profit_pct
+    def min_edge_pct(self, min_profit_pct: float,
+                     entry_is_maker: bool | None = None) -> float:
+        """Vereiste beweging: round-trip + slippage-buffer + minimale winst.
+
+        Volgt de brokermodus via `round_trip_pct`. In paper verandert er niets
+        (beide benen taker, dus 1,10% blijft 1,10%); in live wordt het 1,00%, wat
+        klopt omdat de entry daar maker is. Bewust NIET meegenomen: de tweede
+        divergentie tussen scanner en engine (echte spread per markt tegen de vaste
+        buffer van 0,10). Die verandert wél welke kandidaten door de gate komen, dus
+        de populatie, dus onder de per-gate fingerprint de meetcohorte van alle vier
+        de gates. Zie `docs/ontwerp-spread-bron-van-waarheid.md`: besloten, maar
+        uitgevoerd op hetzelfde moment dat de eerste gate bindend wordt, zodat die
+        reset één keer betaald wordt in plaats van twee.
+        """
+        return (self.round_trip_pct(entry_is_maker) + self.slippage_buffer_pct
+                + min_profit_pct)
 
 
 def breakeven_offset_pct(be_cfg: dict, fee_model: FeeModel,
-                         entry_is_maker: bool = False) -> float:
+                         entry_is_maker: bool | None = None) -> float:
     """Drempel waarop de breakeven-stop vuurt, afgeleid uit het fee-model.
 
     Stond als losse `offset_pct: 0.55` in config, los van het fee-model: bij een
@@ -86,7 +104,7 @@ def breakeven_offset_pct(be_cfg: dict, fee_model: FeeModel,
     if expliciet is not None:
         return float(expliciet)
     marge = float(be_cfg.get("offset_margin_pct", 0.05) or 0.0)
-    return round(fee_model.round_trip_asymmetric_pct(entry_is_maker) + marge, 4)
+    return round(fee_model.round_trip_pct(entry_is_maker) + marge, 4)
 
 
 @dataclass

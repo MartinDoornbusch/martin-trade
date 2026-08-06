@@ -88,7 +88,8 @@ def advice():
     cfg = get_config()
     feed = get_feed()
     fee_model = FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
-                         cfg.fees["slippage_buffer_pct"])
+                         cfg.fees["slippage_buffer_pct"],
+                         entry_is_maker=get_secrets().trading_mode == "live")
     min_edge = fee_model.min_edge_pct(float(cfg.decision["min_profit_pct"]))
     with session() as s:
         open_markets = [r.market for r in s.execute(

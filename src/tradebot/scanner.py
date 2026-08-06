@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 
+from .config import get_secrets
 from .decision import FeeModel
 from .strategy import build_snapshot, evaluate_buy
 
@@ -68,7 +69,8 @@ def select_auto_fill(results: list[dict], exclude: set[str], want: int) -> list[
 def scan(feed, cfg, top_n: int = 20) -> tuple[list[dict], dict]:
     """Volledige scan. Returns (resultaten, statistieken over de trechter)."""
     fee_model = FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
-                         cfg.fees["slippage_buffer_pct"])
+                         cfg.fees["slippage_buffer_pct"],
+                         entry_is_maker=get_secrets().trading_mode == "live")
     min_profit = float(cfg.decision["min_profit_pct"])
     interval = cfg.schedule["candle_interval"]
     try:

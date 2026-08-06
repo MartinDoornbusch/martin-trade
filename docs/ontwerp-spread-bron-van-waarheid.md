@@ -146,3 +146,25 @@ de fase 3-activering, waar het naast de vier bestaande live-blockers hoort.
    dunne markten bewust verkeerd.
 3. Vervangt de spread-correctie de `1,5x edge-eis` van de getrapte liquiditeit
    (fase A3 / v0.20.0), of stapelen ze?
+
+---
+
+## Besluit van Martin (2026-08-05, review ronde 2)
+
+De notitie gooide twee lekken op één hoop. Ze zijn gesplitst en krijgen een ander tempo.
+
+### Lek 1 — maker/taker-asymmetrie: UITGEVOERD in v0.20.0
+
+`min_edge_pct` rekende altijd met `2 x taker`, terwijl `LiveBroker` een maker-entry (limit postOnly) en een market-exit doet. Live werd de fee-gate daardoor systematisch te streng gemeten.
+
+Opgelost met dezelfde constructie als de breakeven-offset (5.1): `FeeModel` draagt `entry_is_maker`, de brokers zetten hem (`PaperBroker` false, `LiveBroker` true), en `round_trip_pct` geeft de werkelijke combinatie. Daarmee volgen fee-gate, scanner, time-stop en breakeven-offset alle vier dezelfde aanname.
+
+Waarom nu en niet later: het is een **no-op voor fase 2** (paper vult beide benen als taker, dus 1,10% blijft 1,10%) en een correctie voor fase 3 (1,00%). Er is dus geen meetrisico. En laat je het staan, dan heb je een breakeven-offset die de brokermodus volgt naast een fee-gate die dat niet doet: precies de halve consistentie waar je later over struikelt.
+
+### Lek 2 — echte spread per markt in de engine: BESLOTEN, UITGESTELD
+
+De engine kent de spread niet, dus gepinde markten met een brede spread passeren de fee-gate op 1,10% terwijl hun werkelijke kosten hoger liggen. De scanner rekent wel met de echte spread per markt. Voorstel uit deze notitie (één `required_edge_pct` met de buffer als vloer, spread-map per cyclus uit `get_ticker_24h`) blijft staan.
+
+**Niet nu uitvoeren.** Deze wijziging verandert welke kandidaten door de fee-gate komen, dus de populatie buys, dus onder de per-gate fingerprint van v0.20.0 de meetcohorte van **alle vier** de shadow-gates. Dat is een volledige reset van de fase 2-meting.
+
+**Wel uitvoeren op hetzelfde moment dat de eerste gate bindend wordt.** Die flip reset de cohortes toch al (zie het register in PROJECTPLAN.md), dus dan betaal je de reset één keer in plaats van twee. Noteer beide wijzigingen dan in dezelfde regel van het register.

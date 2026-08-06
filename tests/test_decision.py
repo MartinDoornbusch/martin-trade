@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from tradebot.decision import (
     Decision,
     DecisionEngine,
@@ -171,3 +173,29 @@ def test_daily_loss_cap_gate():
     d = engine().evaluate_buy(candidate(), [], None, 1000, 1000, daily_pnl_eur=-50)
     assert d.action == "skip"
     assert "daily loss cap" in d.reason
+
+
+# --- 4.2 (helft): maker/taker-asymmetrie in de fee-gate -------------------------
+
+def test_round_trip_and_fee_gate_follow_the_broker_mode():
+    """Besluit 4.2, eerste helft. `min_edge_pct` rekende altijd met 2x taker,
+    terwijl `LiveBroker` een maker-entry (limit postOnly) en een market-exit doet.
+    Live werd de fee-gate daardoor systematisch te streng gemeten.
+
+    No-op voor fase 2 (paper vult beide benen als taker, dus 1,10% blijft 1,10%) en
+    een correctie voor fase 3 (1,00%). Bewust NIET meegenomen: de scanner-versus-
+    engine-divergentie op de spread, want die verandert wél welke kandidaten door de
+    gate komen en daarmee de meetcohorte van alle vier de shadow-gates.
+    """
+    paper = FeeModel(0.15, 0.25, 0.10, entry_is_maker=False)
+    live = FeeModel(0.15, 0.25, 0.10, entry_is_maker=True)
+
+    assert paper.round_trip_pct() == 0.5          # taker + taker
+    assert live.round_trip_pct() == 0.4           # maker + taker
+    assert paper.min_edge_pct(0.5) == 1.1         # ongewijzigd t.o.v. v0.19.0
+    assert live.min_edge_pct(0.5) == pytest.approx(1.0)
+
+
+def test_fee_model_defaults_to_the_paper_assumption():
+    """Zonder expliciete modus blijft het oude, conservatieve gedrag gelden."""
+    assert FeeModel(0.15, 0.25, 0.10).round_trip_pct() == 0.5
