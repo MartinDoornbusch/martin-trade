@@ -190,13 +190,28 @@ Tweede externe review op v0.19.0. Zes blokken; blok 1 raakt de draaiende paper-r
 - [x] 1.5 Restval in de meet-scoping gedicht: de chase-parameters staan onder `strategy` en de LLM-parameters onder `decision`, dus allebei IN de kern — aan `max_chase_atr` draaien zou alsnog alle vier de klokken resetten. Opgelost via de shadow-semantiek zelf: een gate die niet bindend is blokkeert niets en verandert de populatie buys dus niet, dus zijn parameters vallen buiten ieders hash zolang `binding: false` (zijn eigen hash ziet ze altijd). De binding-vlag telt wel altijd mee, en zodra een gate bindend staat komt zijn hele sectie in ieders scope (`gate_sections`). Vastgepind in `tests/test_meetscoping.py`, apart gehouden in de geest van `test_addon_config.py`: het bewaakt een afspraak, geen implementatie
 - [x] 1.6 Eenrichtingsverkeer bij het bindend maken van een gate, vastgelegd in de docstring van `gate_fingerprint`: vanaf dat moment blokkeert de gate en levert hij zelf geen shadow-events met gerealiseerde uitkomst meer op. De go/no-go wordt dus genomen op de data die er tot dat moment ligt. Ga daarom **ruim** boven de 20 afgewikkelde trades zitten voordat je omzet, niet er net overheen. Terugzetten naar shadow geeft exact dezelfde hash als vóór de flip (de hash gaat over waarden), dus de oude cohorte wordt weer opgepakt; alleen de bindende periode vormt een eigen cohorte, en dat is correct want daar was de populatie anders
 
+### Openstaand vóór fase 3: de vier live-blockers uit reviewronde 1
+
+Deze vier zijn in v0.20.0 **expliciet buiten scope gehouden** en staan nog steeds open. Ze blokkeren fase 3, ongeacht hoe schoon de rest van de lijst eruitziet. Genoteerd omdat een afgevinkte lijst anders de indruk wekt dat de weg naar live vrij is.
+
+- [ ] **L1. Niet-atomaire sell in `LiveBroker`.** Een verkoop die halverwege faalt laat positie en administratie uit elkaar lopen; er is geen compensatie of herstelpad
+- [ ] **L2. Geen exchange-side stop-loss.** De stop bestaat alleen in het geheugen van de bot. Valt het proces, de Pi of de netwerkverbinding weg, dan staat de positie onbeschermd open. De position guard (60s) dekt dat niet: die draait in hetzelfde proces
+- [ ] **L3. Geen lock tussen position guard en analysecyclus.** Beide kunnen dezelfde positie sluiten; ze delen geen slot, dus een dubbele sell is mogelijk
+- [ ] **L4. Geen reconciliatie bij opstart.** Na een herstart wordt de eigen administratie niet tegen de werkelijke exchange-posities gelegd, dus een verschil blijft onopgemerkt
+- [ ] **L5 (uit fase 3 hierboven).** Een achtergebleven open **paper**-positie blokkeert door `PositionRow.market unique=True` een live-positie in dezelfde markt op dezelfde DB. Sluiten of archiveren vóór de omschakeling
+
 ### Register van gate-flips (shadow <-> bindend)
 
 Elke omzetting is een gedateerde gebeurtenis, geen knop: hij reset de meetcohorte van alle gates en is daarmee de verklaring voor elke sprong in de meetdata. Leeg laten betekent "alle vier staan sinds v0.20.0 in shadow".
 
-| Datum | Gate | Van | Naar | Aanleiding / n bij besluit |
-|-------|------|-----|------|----------------------------|
-| — | — | — | — | nog geen enkele gate bindend gemaakt |
+| Datum | Gate | Van | Naar | n bij besluit | Duur van het gat | Aanleiding |
+|-------|------|-----|------|---------------|------------------|------------|
+| — | — | — | — | — | — | nog geen enkele gate bindend gemaakt |
+
+De kolom **duur van het gat** hoort erbij omdat een cohorte na terugzetten niet aaneengesloten is in de tijd: je poolt dan observaties van vóór en ná een periode waarin het marktregime volledig veranderd kan zijn, terwijl de drempel van 20 een homogene steekproef veronderstelt. Twee dingen om te weten bij een flip:
+
+- **Terugzetten hervat de oude cohorte, het opent geen derde.** De hash gaat over waarden, dus shadow -> bindend -> shadow geeft exact dezelfde hash als vóór de flip. De bindende periode vormt een eigen cohorte, en dat is juist correct want daar was de populatie anders.
+- **"Exacte terugzetting" is load-bearing.** Verander je tijdens de bindende periode ook maar één waarde in de kern, dan matcht de terugkeer-hash niet en is de oude cohorte alsnog wees. En juist in zo'n periode ga je waarschijnlijk tunen, want dat is de reden om bindend te draaien.
 
 **Blok 2 — backtester gelijktrekken met de engine**
 De backtester modelleerde sinds v0.18.0 een strategie die niet meer bestond. Vier afwijkingen, alle vier gerepareerd; de module draait nu op dezelfde functies en dezelfde config-objecten als `engine.TradingCycle`.
@@ -241,6 +256,7 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 
 | Datum | Wijziging | Getest |
 |-------|-----------|--------|
+| 2026-08-05 | v0.20.0 eindcontrole: alle 18 genummerde punten uit reviewronde 2 aantoonbaar afgehandeld (code plus benoemde regressietest per punt, machinaal gecontroleerd), plus drie punten die tijdens de ronde zijn ontstaan (chase-guard, meet-scoping per gate, fee-gate volgt brokermodus). De vier live-blockers uit ronde 1 staan expliciet als open genoteerd: ze zijn buiten scope gehouden en blokkeren fase 3 onverminderd | 236 tests, ruff, bandit exit 0 |
 | 2026-08-05 | v0.20.0 blok 6 (review ronde 2): hermeetpakket. `tradebot.calibrate` stapelt de zes backtester-correcties cumulatief op de productievariant en rapporteert de delta per stap, zodat een verschuivende winnaar te attribueren is in plaats van alleen vast te stellen. Backtester kreeg daarvoor een `intrabar`-schakelaar (alleen voor attributie). `docs/kalibratie-v0.20.0.md` bevat de commando's, de lege tabellen en de drie voorwaarden waaronder config gewijzigd mag worden | 236 tests (2 nieuw), ruff, bandit exit 0 |
 | 2026-08-05 | v0.20.0 besluit 4.2 (helft uitgevoerd): `FeeModel` draagt `entry_is_maker`, gezet door de broker, zodat fee-gate, scanner, time-stop en breakeven-offset alle vier de werkelijke round-trip hanteren (paper taker+taker 0,50%, live maker+taker 0,40%). No-op voor de lopende paper-meting, correctie voor fase 3. De spread-divergentie tussen scanner en engine blijft uitgesteld tot de eerste gate-flip, omdat die de populatie en daarmee alle vier de meetcohortes verandert | 234 tests (2 nieuw), ruff, bandit exit 0 |
 | 2026-08-05 | v0.20.0 blok 5.3/5.4 (review ronde 2): leeskant van de mode- en config-scoping afgemaakt (drie CLI's met `--all`-ontsnapping), en de look-ahead in `veto._entry_index` gerepareerd. Drieledig: entry op de laatst gesloten candle, scanvenster begint bij de bar die op vetomoment liep, horizon blijft verankerd op de entry. Alle drie apart vastgepind en los teruggedraaid ter verificatie | 232 tests (3 nieuw), ruff, bandit exit 0 |
