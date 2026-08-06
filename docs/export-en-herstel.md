@@ -78,6 +78,18 @@ DATABASE_URL="sqlite:///$SCRATCH" PYTHONPATH=src python -m tradebot.analysis.cha
 #    ... --import op de lege DB, daarna de add-on starten
 ```
 
+PowerShell (stap 2 en 3, als je de scratch-restore op Windows doet):
+
+```powershell
+$env:DATABASE_URL = "sqlite:///$env:TEMP\tradebot-restore.db"
+$env:PYTHONPATH   = "src"
+python -m tradebot.export --import <pad-naar-export>.json.gz
+python -m tradebot.analysis.regime
+python -m tradebot.analysis.breakeven
+python -m tradebot.analysis.chase
+Remove-Item Env:DATABASE_URL      # anders draait de rest van je sessie op de scratch-DB
+```
+
 ### Uitkomst van de gedraaide restore
 
 Een ongeteste back-up is een hypothese, geen voorziening. Deze tabel invullen ná stap 4,

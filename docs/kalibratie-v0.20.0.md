@@ -36,6 +36,10 @@ van de toenmalige `strategy.py` doet `cfg["rsi_oversold"]`, en die is in v0.19.0
 door `rsi_buy_zone_min/max`. Wijs je de oude code zonder meer naar de huidige config, dan
 crasht hij op een `KeyError`. Voeg die ene sleutel toe aan een kopie:
 
+> **PowerShell op Windows.** De blokken hieronder zijn bash. PowerShell kent geen
+> `VAR=waarde commando`-prefix en gebruikt een backtick in plaats van `\` als regelvervolg.
+> Per blok staat de PowerShell-variant eronder.
+
 ```bash
 # Ankerconfig = de huidige config plus de ene sleutel die de oude code nodig heeft.
 # rsi_oversold 35 geeft in de oude regel (rsi > 25 and rsi < rsi_oversold + 10)
@@ -51,6 +55,26 @@ for M in BTC-EUR ETH-EUR SOL-EUR XRP-EUR LINK-EUR; do
         "$M" --interval 4h --limit 1100
 done
 ```
+
+PowerShell:
+
+```powershell
+Copy-Item config\config.yaml "$env:TEMP\anker-config.yaml"
+#  -> voeg met de hand `rsi_oversold: 35` toe ONDER de bestaande strategy-sectie
+
+git worktree add "$env:TEMP\juli18" 56d9e55
+Set-Location "$env:TEMP\juli18"
+$env:CONFIG_PATH = "$env:TEMP\anker-config.yaml"
+$env:PYTHONPATH  = "src"
+foreach ($m in "BTC-EUR","ETH-EUR","SOL-EUR","XRP-EUR","LINK-EUR") {
+    python -m tradebot.backtest $m --interval 4h --limit 1100
+}
+```
+
+> **Ruim `CONFIG_PATH` daarna op**: `Remove-Item Env:CONFIG_PATH`. In PowerShell blijft een
+> `$env:`-waarde staan voor de rest van de sessie, dus zonder die regel draaien je volgende
+> runs stilzwijgend op de ankerconfig in plaats van op de repo-config. Dat is precies het
+> soort stil verschil dat de anker-check moet uitsluiten.
 
 De attributierun draait op de repo-config, dus de vergelijking gaat dan zuiver over code.
 Welke velden de oude code leest en dus moeten kloppen: `strategy` (ema_fast, ema_slow,
@@ -161,6 +185,11 @@ PYTHONPATH=src python -m tradebot.calibrate \
     BTC-EUR ETH-EUR SOL-EUR XRP-EUR LINK-EUR --interval 4h --limit 1100
 ```
 
+```powershell
+$env:PYTHONPATH = "src"
+python -m tradebot.calibrate BTC-EUR ETH-EUR SOL-EUR XRP-EUR LINK-EUR --interval 4h --limit 1100
+```
+
 `--limit 1100` (circa 6 maanden 4h) is hier het juiste venster: vergelijkbaarheid met juli
 telt zwaarder dan statistische ruimte, want dit is een verschilmeting op dezelfde data.
 
@@ -227,6 +256,11 @@ Bij het lezen:
 ```bash
 PYTHONPATH=src python -m tradebot.optimizer \
     BTC-EUR ETH-EUR SOL-EUR XRP-EUR LINK-EUR --interval 4h --limit 3000 --portfolio
+```
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m tradebot.optimizer BTC-EUR ETH-EUR SOL-EUR XRP-EUR LINK-EUR --interval 4h --limit 3000 --portfolio
 ```
 
 **Bewust een ander venster dan stap 2.** Met `--limit 1100` en een 70/30-split blijven er
