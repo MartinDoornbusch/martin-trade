@@ -314,3 +314,74 @@ def test_live_bitvavo_fetch_and_analyze():
     result = veto.analyze_vetos(feed, cfg, vetos=vetos)
     assert result["n_vetos"] == 1
     assert result["fixed_horizon"] is not None
+
+
+# --- 5.4: look-ahead in de counterfactual-entry ---------------------------------
+
+def _lookahead_candles(n: int = 80) -> list:
+    """Reeks waarin elke candle een eigen, herkenbare slotkoers heeft, zodat te zien
+    is welke bar als entry en welke als eerste scanbar wordt gebruikt."""
+    from tradebot.exchange import Candle
+    step = 4 * 3600 * 1000
+    return [Candle(ts=1_700_000_000_000 + i * step, open=100.0 + i,
+                   high=100.0 + i + 0.5, low=100.0 + i - 0.5,
+                   close=100.0 + i, volume=1.0) for i in range(n)]
+
+
+def test_entry_index_uses_the_last_closed_candle():
+    """Regressie op punt 5.4, deel 1: `bisect_right(ts, veto_ms) - 1` gaf de candle
+    die op vetomoment nog LIEP, en zijn `close` uit de historie is de definitieve
+    slotkoers — dus een prijs uit de toekomst van het besluit."""
+    from tradebot.analysis.veto import _entry_index
+
+    cs = _lookahead_candles()
+    lopend = 70
+    veto_ms = cs[lopend].ts + 2 * 3600 * 1000       # halverwege die bar
+    assert _entry_index(cs, veto_ms) == lopend - 1
+
+
+def test_the_scan_window_starts_at_the_candle_that_was_running():
+    """Regressie op punt 5.4, deel 2: het TP/SL-venster rekent RELATIEF aan de
+    entry-index, dus het begint nu bij de bar die op vetomoment liep. Die koersactie
+    ligt ná de entry en moet meetellen; bleef het venster op zijn oude absolute plek
+    staan, dan sla je een volledige candle over en bias je richting timeout in plaats
+    van stop- en target-treffers.
+
+    Alleen die ene bar kan het target raken: hij heeft een uitschieter naar boven en
+    alle latere bars blijven er ruim onder. Verschuift het venster één bar, dan
+    verandert de uitkomst van "target" naar "timeout".
+    """
+    from tradebot.analysis.veto import VetoParams, _entry_index, _tp_sl
+    from tradebot.exchange import Candle
+
+    step = 4 * 3600 * 1000
+    lopend = 70
+    cs = [Candle(ts=1_700_000_000_000 + i * step, open=100.0 + i * 0.01,
+                 high=100.0 + i * 0.01 + (5.0 if i == lopend else 0.1),
+                 low=100.0 + i * 0.01 - 0.1, close=100.0 + i * 0.01, volume=1.0)
+          for i in range(80)]
+    idx = _entry_index(cs, cs[lopend].ts + 2 * 3600 * 1000)
+    assert idx == lopend - 1
+
+    p = VetoParams(interval="4h", cost_pct=0.0, atr_stop_multiplier=2.0,
+                   reward_risk_ratio=1.5, position_size_eur=250.0, tpsl_max_candles=48)
+    entry = cs[idx].close
+    atr = (cs[lopend].high - entry) / (p.atr_stop_multiplier * p.reward_risk_ratio)
+
+    _, exit_reason = _tp_sl(cs, idx, entry, atr, p)
+    assert exit_reason == "target"
+
+
+def test_the_fixed_horizon_stays_anchored_on_the_entry():
+    """Deel 3: de vaste horizon blijft `horizon_candles` bars ná de entry in plaats
+    van mee te schuiven; anders compenseert de nieuwe off-by-one de oude deels en is
+    achteraf niet te zien welke van de twee je meet."""
+    from tradebot.analysis.veto import VetoParams, _entry_index, _fixed_horizon
+
+    cs = _lookahead_candles()
+    idx = _entry_index(cs, cs[70].ts + 2 * 3600 * 1000)
+    p = VetoParams(interval="4h", cost_pct=0.0, atr_stop_multiplier=2.0,
+                   reward_risk_ratio=1.5, position_size_eur=250.0, horizon_candles=6)
+    entry = cs[idx].close
+    verwacht = (cs[idx + 6].close / entry - 1.0) * 100
+    assert _fixed_horizon(cs, idx, entry, p) == pytest.approx(verwacht)

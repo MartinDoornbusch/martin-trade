@@ -38,10 +38,25 @@ def analyze_regime(cfg, **kwargs) -> dict:
 
 
 def main() -> None:  # pragma: no cover - CLI-gemak, niet in de testsuite
-    import json
+    """CLI: python -m tradebot.analysis.regime [--all]
 
-    from ..config import get_config
-    print(json.dumps(analyze_regime(get_config()), indent=2, default=str))
+    Standaard alleen de huidige config en de huidige mode (schone meting). `--all`
+    meet elk event ooit, ongeacht configuratie: de vervuilde totaalmeting, waarin
+    ook rijen van vóór v0.20.0 vallen die nog geen gate-hash dragen.
+    """
+    import json
+    import sys
+
+    from ..config import gate_fingerprint, get_config, get_secrets
+    from ..db import init_db
+    cfg = get_config()
+    secrets = get_secrets()
+    init_db(secrets.database_url)
+    scope_all = "--all" in sys.argv[1:]
+    print(json.dumps(
+        analyze_regime(cfg, mode=None if scope_all else secrets.trading_mode,
+           gate_hash=None if scope_all else gate_fingerprint(cfg, "regime")),
+        indent=2, default=str))
 
 
 if __name__ == "__main__":  # pragma: no cover

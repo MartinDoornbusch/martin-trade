@@ -160,10 +160,39 @@ def _to_ms(ts) -> int:
 # --- candle-indexering -----------------------------------------------------
 
 def _entry_index(candles: list[Candle], veto_ms: int) -> int | None:
-    """Index van de candle die op/voor het veto-moment sloot (bisect op ts)."""
+    """Index van de laatste AFGESLOTEN candle op het veto-moment.
+
+    Bitvavo's `ts` is de OPENtijd van een candle, dus `bisect_right(ts, veto_ms) - 1`
+    geeft de bar die op dat moment nog liep. Zijn `close` uit de historie is de
+    definitieve slotkoers en ligt dus in de toekomst ten opzichte van het besluit:
+    milde look-ahead. Daarom nog één stap terug.
+
+    Dit is de tegenhanger van blok 1: sinds v0.20.0 baseert de engine een entry op
+    de laatst gesloten candle, dus de counterfactual moet dat ook doen, anders meet
+    hij een strategie die niet meer draait (hetzelfde argument als bij blok 2).
+
+    De fix is drieledig en werkt in één aanpassing, omdat de twee andere delen
+    RELATIEF aan deze index rekenen. Dat is bewust en wordt vastgepind in
+    `tests/test_veto_analysis.py`:
+
+    1. entryprijs = close van de nieuwe index (de laatst gesloten bar);
+    2. `_tp_sl` scant `range(idx + 1, ...)`, dus het venster begint nu bij de bar
+       die op vetomoment liep. Die koersactie ligt ná de entry en telt dus mee;
+       zou het venster op zijn oude absolute positie blijven staan, dan sla je een
+       volledige candle over en bias je richting timeout in plaats van stop/target;
+    3. `_fixed_horizon` rekent `idx + horizon_candles`, dus de horizon blijft
+       precies `horizon_candles` bars ná de entry in plaats van mee te schuiven.
+
+    Anders dan bij blok 2 is de biasrichting hier NIET bekend: een toekomstige close
+    kan gunstiger of ongunstiger uitvallen dan de prijs op besluitmoment. Dit is een
+    correctheidsfix, geen bias-fix, en hij raakt alleen de counterfactual-kolommen,
+    niet de echte shadow-uitkomst. `analyze_regime` en de andere shadow-gates
+    gebruiken deze functie niet en blijven ongemoeid.
+    """
     import bisect
     ts_list = [c.ts for c in candles]
-    idx = bisect.bisect_right(ts_list, veto_ms) - 1
+    lopend = bisect.bisect_right(ts_list, veto_ms) - 1
+    idx = lopend - 1
     if idx < WARMUP_CANDLES or idx >= len(candles):
         return None
     return idx
