@@ -108,7 +108,8 @@ def _exits_params(cfg, fee_model: FeeModel, entry_is_maker: bool = False) -> dic
 
 
 def _check_exit_at_bar(pos: _Pos, candles: list[Candle], i: int, snap: MarketSnapshot,
-                       ex: dict, round_trip_pct: float) -> tuple[float, str] | None:
+                       ex: dict, round_trip_pct: float,
+                       intrabar: bool = True) -> tuple[float, str] | None:
     """Exit-beslissing voor bar `i`, in dezelfde volgorde als de engine.
 
     1. stop/target INTRABAR (`strategy.intrabar_exit`): de position guard draait
@@ -118,7 +119,14 @@ def _check_exit_at_bar(pos: _Pos, candles: list[Candle], i: int, snap: MarketSna
     3. breakeven-stop op de slotkoers, alleen als hij in config bindend is; in
        shadow verkoopt de engine niet, dus de backtester ook niet.
     """
-    what = intrabar_exit(candles[i], pos.stop, pos.target)
+    if intrabar:
+        what = intrabar_exit(candles[i], pos.stop, pos.target)
+    else:
+        # Alleen voor attributie (zie `tradebot.calibrate`): het oude, foute model
+        # dat de SLOTKOERS met stop en target vergeleek. Nooit voor een echte meting.
+        close_ = candles[i].close
+        what = ("stop" if close_ <= pos.stop
+                else "target" if close_ >= pos.target else None)
     if what == "stop":
         return pos.stop, "stop loss"
     if what == "target":
@@ -143,7 +151,7 @@ def _check_exit_at_bar(pos: _Pos, candles: list[Candle], i: int, snap: MarketSna
 
 
 def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
-         start_eur: float, warmup: int, mode: str) -> dict:
+         start_eur: float, warmup: int, mode: str, intrabar: bool = True) -> dict:
     """Gedeelde kern voor beide modi: identieke entry- en exitlogica, alleen de
     sizing- en limietregels verschillen."""
     strategy_cfg = cfg.strategy
@@ -197,7 +205,8 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
             if pos is not None:
                 if i <= pos.entry_index:
                     continue
-                hit = _check_exit_at_bar(pos, candles, i, snap, ex, round_trip)
+                hit = _check_exit_at_bar(pos, candles, i, snap, ex, round_trip,
+                                         intrabar)
                 if hit is None:
                     continue
                 raw_price, why = hit
@@ -317,16 +326,19 @@ def _cluster_blocked(candles_by_market: dict[str, list[Candle]], positions: dict
 
 
 def run_backtest(candles: list[Candle], cfg, fee_model: FeeModel,
-                 start_eur: float = 1000.0, warmup: int = DEFAULT_WARMUP) -> dict:
+                 start_eur: float = 1000.0, warmup: int = DEFAULT_WARMUP,
+                 intrabar: bool = True) -> dict:
     """Enkelvoudige markt, all-in per positie: modus "single" (signaalonderzoek)."""
-    return _run({"BT": candles}, cfg, fee_model, start_eur, warmup, "single")
+    return _run({"BT": candles}, cfg, fee_model, start_eur, warmup, "single", intrabar)
 
 
 def run_portfolio_backtest(candles_by_market: dict[str, list[Candle]], cfg,
                            fee_model: FeeModel, start_eur: float = 1000.0,
-                           warmup: int = DEFAULT_WARMUP) -> dict:
+                           warmup: int = DEFAULT_WARMUP,
+                           intrabar: bool = True) -> dict:
     """Meerdere markten met gedeelde cash en alle risk-gates: modus "portfolio"."""
-    return _run(candles_by_market, cfg, fee_model, start_eur, warmup, "portfolio")
+    return _run(candles_by_market, cfg, fee_model, start_eur, warmup, "portfolio",
+                intrabar)
 
 
 def main() -> None:

@@ -270,3 +270,43 @@ def test_output_labels_which_mode_ran():
     port = run_portfolio_backtest({"A-EUR": data}, make_cfg(), fees(), warmup=WARMUP)
     assert port["mode"] == "portfolio"
     assert port["markets"] == 1
+
+
+# --- blok 6: attributie ---------------------------------------------------------
+
+def test_close_based_exits_are_available_for_attribution_only():
+    """De attributie-run (`tradebot.calibrate`) moet het OUDE, foute exitmodel kunnen
+    nadraaien om de correctie van 2.2 los te kunnen meten. Zonder die schakelaar zet
+    je zes correcties tegelijk aan en weet je alleen dát de winnaar verschoof, niet
+    waardoor. De vlag staat default op de correcte intrabar-logica."""
+    closes = [100.0] * (WARMUP + 1) + [99.0]
+    lows = [c * 0.98 for c in closes]
+    lows[-1] = 91.0
+    data = candles(closes, lows=lows)
+    cfg = make_cfg()
+
+    correct = run_backtest(data, cfg, fees(), warmup=WARMUP)
+    oud = run_backtest(data, cfg, fees(), warmup=WARMUP, intrabar=False)
+
+    assert correct["closed_trades"] == 1        # low prikte door de stop
+    assert oud["closed_trades"] == 0            # slotkoers lag erboven
+    assert oud["open_at_end"] == 1
+
+
+def test_calibration_steps_stack_cumulatively():
+    """Elke stap zet één correctie erbij en laat de voorgaande staan; alleen zo is de
+    delta per stap te lezen als "wat deze correctie toevoegde"."""
+    from tradebot.calibrate import STAPPEN
+
+    velden = ("intrabar", "slippage", "time_stop", "breakeven", "geschaalde_warmup",
+              "portfolio")
+    aan = {veld: False for veld in velden}
+    for stap in STAPPEN:
+        for veld in velden:
+            nieuw = getattr(stap, veld)
+            assert nieuw or not aan[veld], (
+                f"stap '{stap.naam}' zet {veld} weer uit; stapeling moet cumulatief zijn")
+            aan[veld] = nieuw
+    assert all(aan.values()), "de laatste stap moet alle correcties aan hebben"
+    assert not any(getattr(STAPPEN[0], veld) for veld in velden), (
+        "de eerste stap moet het v0.18.0-model zijn, dus alles uit")
