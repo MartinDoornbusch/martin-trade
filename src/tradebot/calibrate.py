@@ -1,15 +1,29 @@
 """Attributie-run: waar komt het verschil met de kalibratie van 18 juli 2026 vandaan?
 
-Die run gebruikte een backtester die op ZES punten anders was dan de huidige. Zet
+Die run gebruikte een backtester die op ZEVEN punten anders was dan de huidige. Zet
 je die tegelijk aan en de winnaar verschuift, dan weet je alleen dát hij verschoof
 en niet waardoor. De vraag "zijn ema20/50, rr 1,5 en score 3 nog steeds de
 winnaars" is dan niet te beantwoorden.
 
-Volledige attributie over zes assen is te duur en ook niet nodig voor de hele
+Volledige attributie over zeven assen is te duur en ook niet nodig voor de hele
 grid. Deze module stapelt de correcties op ÉÉN referentievariant (de
-productieconfig) en rapporteert de delta per stap. Zes extra runs, en het verschil
-tussen een cijfer en een verklaring. De volledige grid draai je daarna één keer
-met alles aan, via `python -m tradebot.optimizer`.
+productieconfig) en rapporteert de delta per stap. Zeven extra runs, en het
+verschil tussen een cijfer en een verklaring. De volledige grid draai je daarna
+één keer met alles aan, via `python -m tradebot.optimizer`.
+
+VALIDEER EERST DE REFERENTIERIJ. Het v0.18.0-model wordt hier gereconstrueerd door
+correcties uit te zetten, niet door de oude code te draaien. Die reconstructie is
+alleen geldig als rij 1 de uitvoer van 18 juli daadwerkelijk reproduceert op
+dezelfde data. Er is geen document met die uitvoer (zie
+`docs/kalibratie-v0.20.0.md`), dus de enige echte anker-check is de oude code zelf
+draaien uit commit 56d9e55. Wijkt rij 1 af, dan is er onderweg nog iets veranderd
+en is elke delta eronder betekenisloos.
+
+De onderste rij is NIET de productiebot. De breakeven-stop staat in de stapeling
+bindend, wat voor een backtest onvermijdelijk is (een shadow-gate doet per
+definitie niets), terwijl hij in productie op shadow staat. De chase-guard zit
+helemaal niet in de backtester. De rij die het huidige gedrag beschrijft is
+gemarkeerd met `<- productie`.
 
 De stapeling is cumulatief in een vaste volgorde. Let op bij het lezen: de
 correcties zijn niet additief. Slippage op een exit die door de time-stop wordt
@@ -47,36 +61,41 @@ class Stap:
     """Eén correctie, cumulatief bovenop alle voorgaande."""
     naam: str
     punt: str
+    trend_break: bool
     time_stop: bool
     breakeven: bool
     intrabar: bool
     slippage: bool
     portfolio: bool
     geschaalde_warmup: bool
+    productie: bool = False     # beschrijft deze rij het huidige productiegedrag?
 
 
 STAPPEN = [
     Stap("v0.18.0-model (zoals 18 juli)", "referentie",
-         time_stop=False, breakeven=False, intrabar=False, slippage=False,
-         portfolio=False, geschaalde_warmup=False),
+         trend_break=True, time_stop=False, breakeven=False, intrabar=False,
+         slippage=False, portfolio=False, geschaalde_warmup=False),
+    Stap("- trend-break-exit", "r1/1.2",
+         trend_break=False, time_stop=False, breakeven=False, intrabar=False,
+         slippage=False, portfolio=False, geschaalde_warmup=False),
     Stap("+ intrabar exits", "2.2",
-         time_stop=False, breakeven=False, intrabar=True, slippage=False,
-         portfolio=False, geschaalde_warmup=False),
+         trend_break=False, time_stop=False, breakeven=False, intrabar=True,
+         slippage=False, portfolio=False, geschaalde_warmup=False),
     Stap("+ slippage op beide benen", "2.3",
-         time_stop=False, breakeven=False, intrabar=True, slippage=True,
-         portfolio=False, geschaalde_warmup=False),
+         trend_break=False, time_stop=False, breakeven=False, intrabar=True,
+         slippage=True, portfolio=False, geschaalde_warmup=False),
     Stap("+ time-stop", "2.1",
-         time_stop=True, breakeven=False, intrabar=True, slippage=True,
-         portfolio=False, geschaalde_warmup=False),
-    Stap("+ breakeven-stop (bindend)", "2.1",
-         time_stop=True, breakeven=True, intrabar=True, slippage=True,
-         portfolio=False, geschaalde_warmup=False),
+         trend_break=False, time_stop=True, breakeven=False, intrabar=True,
+         slippage=True, portfolio=False, geschaalde_warmup=False),
     Stap("+ geschaalde warmup", "3.2",
-         time_stop=True, breakeven=True, intrabar=True, slippage=True,
-         portfolio=False, geschaalde_warmup=True),
+         trend_break=False, time_stop=True, breakeven=False, intrabar=True,
+         slippage=True, portfolio=False, geschaalde_warmup=True),
     Stap("+ bucket-sizing en slots", "2.4",
-         time_stop=True, breakeven=True, intrabar=True, slippage=True,
-         portfolio=True, geschaalde_warmup=True),
+         trend_break=False, time_stop=True, breakeven=False, intrabar=True,
+         slippage=True, portfolio=True, geschaalde_warmup=True, productie=True),
+    Stap("+ breakeven-stop BINDEND", "2.1",
+         trend_break=False, time_stop=True, breakeven=True, intrabar=True,
+         slippage=True, portfolio=True, geschaalde_warmup=True),
 ]
 
 
@@ -103,10 +122,12 @@ def run_stap(data: dict[str, list[Candle]], cfg, stap: Stap) -> dict:
     fm = fee_model_voor(cfg, stap)
     warmup = default_warmup(c.strategy) if stap.geschaalde_warmup else OUDE_WARMUP
     if stap.portfolio:
-        return run_portfolio_backtest(data, c, fm, warmup=warmup, intrabar=stap.intrabar)
+        return run_portfolio_backtest(data, c, fm, warmup=warmup, intrabar=stap.intrabar,
+                                      trend_break=stap.trend_break)
     # Enkelvoudige modus draait per markt en wordt gemiddeld, zodat de vergelijking
     # met de portfolio-stap over dezelfde markten gaat.
-    resultaten = [run_backtest(candles, c, fm, warmup=warmup, intrabar=stap.intrabar)
+    resultaten = [run_backtest(candles, c, fm, warmup=warmup, intrabar=stap.intrabar,
+                               trend_break=stap.trend_break)
                   for candles in data.values()]
     n = len(resultaten)
     trades = sum(r["closed_trades"] for r in resultaten)
@@ -133,6 +154,7 @@ def attributie(data: dict[str, list[Candle]], cfg) -> list[dict]:
             "trades": r["closed_trades"],
             "win": r["win_rate_pct"] or 0.0,
             "dd": r["max_drawdown_pct"],
+            "productie": stap.productie,
         })
         vorige = r["net_return_pct"]
     return rijen
@@ -143,8 +165,13 @@ def print_attributie(rijen: list[dict]) -> None:
           f"{'win%':>6s} {'dd%':>6s}")
     for r in rijen:
         delta = "  —" if r["delta"] is None else f"{r['delta']:+.2f}"
+        vlag = "  <- productie" if r["productie"] else ""
         print(f"{r['naam']:38s} {r['punt']:10s} {r['rendement']:>8.2f} {delta:>8s} "
-              f"{r['trades']:>7d} {r['win']:>6.1f} {r['dd']:>6.1f}")
+              f"{r['trades']:>7d} {r['win']:>6.1f} {r['dd']:>6.1f}{vlag}")
+    print("\nDe rij met '<- productie' beschrijft het huidige gedrag. De laatste rij")
+    print("zet de breakeven-stop BINDEND (in een backtest doet een shadow-gate per")
+    print("definitie niets); in productie staat hij op shadow. De chase-guard zit")
+    print("helemaal niet in de backtester.")
     print("\nDe correcties zijn niet additief: een andere stapelvolgorde geeft andere")
     print("tussenstappen bij hetzelfde eindresultaat. Lees de delta's als 'wat deze")
     print("correctie toevoegde gegeven de voorgaande', niet als een losse bijdrage.")

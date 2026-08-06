@@ -104,12 +104,15 @@ def _exits_params(cfg, fee_model: FeeModel, entry_is_maker: bool = False) -> dic
         "be_binding": bool(be.get("binding", False)),
         "be_trigger_atr": float(be.get("trigger_atr", 1.0)),
         "be_offset_pct": breakeven_offset_pct(be, fee_model, entry_is_maker),
+        "rsi_overbought": float((getattr(cfg, "strategy", {}) or {}).get(
+            "rsi_overbought", 70)),
     }
 
 
 def _check_exit_at_bar(pos: _Pos, candles: list[Candle], i: int, snap: MarketSnapshot,
                        ex: dict, round_trip_pct: float,
-                       intrabar: bool = True) -> tuple[float, str] | None:
+                       intrabar: bool = True,
+                       trend_break: bool = False) -> tuple[float, str] | None:
     """Exit-beslissing voor bar `i`, in dezelfde volgorde als de engine.
 
     1. stop/target INTRABAR (`strategy.intrabar_exit`): de position guard draait
@@ -147,11 +150,17 @@ def _check_exit_at_bar(pos: _Pos, candles: list[Candle], i: int, snap: MarketSna
                                       ex["be_trigger_atr"], ex["be_offset_pct"])
         if hit:
             return close, why
+    if trend_break and snap.ema_fast < snap.ema_slow and snap.rsi > ex["rsi_overbought"]:
+        # Alleen voor attributie: de trend-break-exit die tot v0.19.0 in `check_exit`
+        # zat en daar geschrapt is omdat hij twee vrijwel disjuncte condities eiste.
+        # Hoort in de referentierij van `tradebot.calibrate`, nergens anders.
+        return close, "trend break: EMA cross down with overbought RSI"
     return None
 
 
 def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
-         start_eur: float, warmup: int, mode: str, intrabar: bool = True) -> dict:
+         start_eur: float, warmup: int, mode: str, intrabar: bool = True,
+         trend_break: bool = False) -> dict:
     """Gedeelde kern voor beide modi: identieke entry- en exitlogica, alleen de
     sizing- en limietregels verschillen."""
     strategy_cfg = cfg.strategy
@@ -206,7 +215,7 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
                 if i <= pos.entry_index:
                     continue
                 hit = _check_exit_at_bar(pos, candles, i, snap, ex, round_trip,
-                                         intrabar)
+                                         intrabar, trend_break)
                 if hit is None:
                     continue
                 raw_price, why = hit
@@ -327,18 +336,19 @@ def _cluster_blocked(candles_by_market: dict[str, list[Candle]], positions: dict
 
 def run_backtest(candles: list[Candle], cfg, fee_model: FeeModel,
                  start_eur: float = 1000.0, warmup: int = DEFAULT_WARMUP,
-                 intrabar: bool = True) -> dict:
+                 intrabar: bool = True, trend_break: bool = False) -> dict:
     """Enkelvoudige markt, all-in per positie: modus "single" (signaalonderzoek)."""
-    return _run({"BT": candles}, cfg, fee_model, start_eur, warmup, "single", intrabar)
+    return _run({"BT": candles}, cfg, fee_model, start_eur, warmup, "single", intrabar,
+                trend_break)
 
 
 def run_portfolio_backtest(candles_by_market: dict[str, list[Candle]], cfg,
                            fee_model: FeeModel, start_eur: float = 1000.0,
                            warmup: int = DEFAULT_WARMUP,
-                           intrabar: bool = True) -> dict:
+                           intrabar: bool = True, trend_break: bool = False) -> dict:
     """Meerdere markten met gedeelde cash en alle risk-gates: modus "portfolio"."""
     return _run(candles_by_market, cfg, fee_model, start_eur, warmup, "portfolio",
-                intrabar)
+                intrabar, trend_break)
 
 
 def main() -> None:
