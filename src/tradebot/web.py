@@ -726,7 +726,9 @@ function renderGate(elId, d, opts){
     card = '<div class="card" style="min-width:260px"><span>Netto gate (echte uitkomst)</span><div style="margin-top:6px;font-size:13px" class="muted">events gevonden, nog geen gekoppeld aan een afgewikkelde trade</div></div>';
   }
   const dedup = d.n_deduped ? ` · ${d.n_deduped} herhaalde treffers samengevoegd tot de eerste per positie` : '';
-  const progress = `<p class="muted" style="font-size:12px">${opts.params} · modus: <b>${mode}</b> · positie € ${fmt(d.position_size_eur)} · voortgang: <b>${d.n_resolved}/${d.target_resolved}</b> afgewikkelde trades ${d.n_resolved<d.target_resolved?'(nog te weinig voor een harde uitspraak)':'(genoeg voor een eerste uitspraak)'}</p>`;
+  const doel = (d.run_purpose && d.run_purpose.length) ? d.run_purpose.join(', ') : 'onbekend';
+  const doelvlag = doel.indexOf('infrastructuur') >= 0 ? ' <b class="neg">(geen strategievalidatie)</b>' : '';
+  const progress = `<p class="muted" style="font-size:12px">doel van de run: <b>${doel}</b>${doelvlag} · ${opts.params} · modus: <b>${mode}</b> · positie € ${fmt(d.position_size_eur)} · voortgang: <b>${d.n_resolved}/${d.target_resolved}</b> afgewikkelde trades ${d.n_resolved<d.target_resolved?'(nog te weinig voor een harde uitspraak)':'(genoeg voor een eerste uitspraak)'}</p>`;
   const note = `<p class="muted" style="font-size:12px">${d.n_events} events · ${d.n_unresolved} nog niet afgewikkeld${dedup} · netto positief = de gate voorkwam per saldo verlies, negatief = hij sneed winst weg · marge = 95% Wilson · alleen de huidige config (eigen hash per gate)</p>`;
   const bd = (d.per_market && d.per_market.length)
     ? '<h2 style="margin-top:14px">Per markt</h2><table><tr><th>groep</th><th class="num">n</th><th class="num">precisie</th><th class="num">vermeden</th><th class="num">gemist</th><th class="num">netto gate</th></tr>' +

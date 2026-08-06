@@ -88,6 +88,16 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] Aandachtspunt bij fase 3-activering: door die unique-constraint blokkeert een achtergebleven open **paper**-positie een live-positie in dezelfde markt op dezelfde DB. Oplossen door open paper-posities te sluiten of te archiveren vóór de omschakeling, niet door de constraint te verslappen
 - [ ] ACTIVERING (handmatig, pas na fase 2 go): Bitvavo API-key met trade-rechten (géén withdrawal, IP-whitelist), `trading_mode=live` + bevestigingszin invullen, klein kapitaal
 
+### Richtingen na "geen edge" (2026-08-06)
+
+Beoordeeld op wat ze aan de STRUCTURELE termen veranderen, niet aan het signaal. Volgorde is kosten, niet voorkeur.
+
+1. **Langere horizon (4h -> 1d).** ATR schaalt met de wortel van de tijd, dus zes bars verder maakt alfa ongeveer 2,45 keer groter terwijl de round-trip kosten gelijk blijven. Via `p*` zakt de lat van 52% naar 44,9%: **zeven procentpunt, zonder één regel signaallogica**. Vastgepind in `tests/test_decision.py::test_horizon_switch_lowers_the_bar_by_seven_points`. Goedkoopste ingreep die er is
+2. **Maker-entry, taker-exit (0,40%).** Levert circa 2 procentpunt, dus fors minder dan de horizonwissel: de horizon raakt de noemer van `p*`, de kosten alleen de teller. **Maker op het EXIT-been is bewust géén optie**: `LiveBroker` doet market-exits met de motivering dat een gemiste exit kapitaal kost. Een maker-stop vult mogelijk niet in een snelle beweging, dus precies wanneer je hem nodig hebt. Dat ruilt 0,10 procentpunt fee tegen staartrisico en die ruil staat asymmetrisch verkeerd
+3. **Cross-sectioneel in plaats van absoluut.** Niet "koop elk instrument dat er goed uitziet" maar "koop de sterkste van vijf". Dit is de enige richting die het correlatieprobleem structureel raakt in plaats van te erkennen: vijf majors op 0,7-0,9 correlatie zijn één positie, en de cluster-cap begrenst dat alleen. Het verandert de vraag van "gaat dit omhoog" (zwaar gearbitreerd) naar "welke van deze vijf is relatief het sterkst" (moeilijk, maar een andere en minder bevolkte vraag), en het haalt de marktbeta eruit die de hele meting zojuist domineerde. Alfa wordt dan gemeten tegen het mandje in plaats van tegen de markt
+4. **Informatie die niet in de prijs zit.** Funding rates en basis zijn categorisch iets anders dan de news/sentiment die de post-mortem afwees: dat zijn prijzen van hefboom, geen stemmingsproxy. Ander project qua omvang
+5. **Ander doel: risicogestuurde blootstelling.** De data suggereert dat ~45% blootstelling ~43% van de stijging en ~26% van de daling vangt. **Dat is één configuratie, geselecteerd uit 324 op twee vensters, met 32 trades en alfa -1,82 / +5,40.** De asymmetrie wijst de goede kant op, maar aantoonbaar wordt dit pas op data die niet is gebruikt om de configuratie te kiezen
+
 ### Fase 4 — Aandelen
 - [ ] Brokerkeuze definitief: Alpaca (US-only, beste API, $0 commissie) vs IBKR (breder, complexere API)
 - [ ] `ExchangeAdapter` implementatie voor gekozen broker
@@ -241,6 +251,14 @@ Deze vier zijn in v0.20.0 **expliciet buiten scope gehouden** en staan nog steed
 - [ ] **L4. Geen reconciliatie bij opstart.** Na een herstart wordt de eigen administratie niet tegen de werkelijke exchange-posities gelegd, dus een verschil blijft onopgemerkt
 - [ ] **L5 (uit fase 3 hierboven).** Een achtergebleven open **paper**-positie blokkeert door `PositionRow.market unique=True` een live-positie in dezelfde markt op dezelfde DB. Sluiten of archiveren vóór de omschakeling
 
+### Wat de vier gates wel en niet konden (2026-08-06)
+
+De vier shadow-gates (LLM-veto, regime, breakeven-stop, chase-guard) plus de time-stop waren het antwoord op de faalwijze van de vórige bot, waar een LLM elk uur zelf BUY/HOLD/SELL besliste. **Dat probleem hebben ze opgelost, en dat was echt werk.** De LLM kan niet meer initiëren, exits zijn mechanisch, en elke gate is los meetbaar.
+
+**Ze kunnen alleen geen edge maken die er niet is.** Een gate die een kansloze instap filtert maakt van een verlies een kleiner verlies. Dat is precies wat de kalibratie liet zien: de best overlevende configuraties zijn die met de mínste gates, en het regime-filter dat het beste "overleeft" doet dat door afwezigheid, met alfa -20 tot -37 in een stijgend venster.
+
+**De verleiding om het volgende signaal opnieuw met vier gates te omringen is de fout die hier gemeten is.** Deze zin staat hier zodat hij over drie maanden te herkennen is in een document in plaats van in een impuls. Bouw eerst een signaal waarvan de alfa positief is; gates komen daarna, en alleen die waarvoor een meting bestaat.
+
 ### Stand van zaken na de hermeting (2026-08-06)
 
 | Bevinding | Zekerheid | Grond |
@@ -342,6 +360,7 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 
 | Datum | Wijziging | Getest |
 |-------|-----------|--------|
+| 2026-08-06 | Afsluiting fase 2-meting: `meta.run_purpose` reist mee met elk bewijsstuk (meetexport, elk shadow-event, elke analyzer-uitvoer en het dashboard), zodat een infrastructuurtest over een half jaar niet als strategievalidatie gelezen wordt. Richtingen na 'geen edge' vastgelegd met de horizonwissel gekwantificeerd (-7 procentpunt op `p*`, code-gedekt) en cross-sectioneel als enige richting die het correlatieprobleem structureel raakt. Wat de vier gates wel en niet konden expliciet opgeschreven | 279 tests (2 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Besluit 4.1: EV-gate goedgekeurd als ontwerp, niet gebouwd (de kalibratie heeft het ingehaald; de prior is gemeten en negatief). Wél de formule eruit gehaald: `breakeven_win_rate` vervangt de optellende fee-gate, met `p*` per kandidaat op het dashboard. Go/no-go-criterium vervangen: 'win-rate > 45%' was afgeleid van de kostenloze 40% en zou fase 3 hebben vrijgegeven bij een verliesgevende strategie | 277 tests (5 nieuw), ruff, bandit exit 0, node --check op de dashboard-JS |
 | 2026-08-06 | Eindverdict fase 2: **geen edge**, gemeten over twee jaar met een stijgend (+46,94%) én een dalend (-35,51%) venster, met blootstelling uitgerekend. Beste alfa over 324 varianten: +1,17 punt. De relatieve outperformance uit de eerste run was blootstellingsreductie; het regime-filter blijkt een blootstellingsknop met alfa -20 tot -37 in het stijgende venster, waarmee het 'bewijs' uit de vorige stand van zaken is ingetrokken. Derde optimizertabel op alfa toegevoegd | 273 tests (1 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Tijd-in-markt (kapitaalgewogen `exposure_pct`) en alfa-kolommen in de optimizer, plus kopen-en-vasthouden per venster én per kwartaal in de kop. Reden: in een dalend venster verslaat elke long-only variant die minder in de markt zit het vasthouden bijna per definitie, dus zonder blootstelling eruit te rekenen is outperformance niet te onderscheiden van afwezigheid. Stand van zaken met zekerheidsniveau per bevinding vastgelegd | 272 tests (3 nieuw), ruff, bandit exit 0 |

@@ -56,6 +56,7 @@ class AppConfig(BaseModel):
     exits: dict[str, Any] = {}
     curation: dict[str, Any] = {}
     export: dict[str, Any] = {}
+    meta: dict[str, Any] = {}
     llm: dict[str, Any]
 
     @property

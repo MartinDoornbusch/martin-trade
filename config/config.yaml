@@ -80,6 +80,9 @@ regime:                              # markt-brede regime-gate (gecodeerd, geen 
   proxy_market: "BTC-EUR"            # BTC als markt-proxy: down-trend = risk-off
   binding: false                     # false = shadow: gelogd maar blokkeert de koop niet (meet gate-waarde). true pas na bewijs (fase 2 go)
 
+meta:                                # reist mee met elk bewijsstuk (meetexport en elk shadow-event)
+  run_purpose: "infrastructuurtest"    # WAAROM deze run draait. Sinds 2026-08-06 is de fase 2-vraag beantwoord met "geen edge" (tweejarige backtest, stijgend en dalend venster, blootstelling uitgerekend). De paper-run valideert dus geen strategie meer. Zonder dit label bouwt het meetapparaat maandenlang keurig gescopede cohortes op die over een half jaar als strategievalidatie gelezen worden. Zet terug op "strategievalidatie" zodra er een signaal draait waarvan dat wel geldt
+
 export:                              # lichte meetexport naast de HA-image-back-up (ander herstelpad: honderden kB gzip i.p.v. een versleuteld image, terugzetten in seconden)
   enabled: true
   dir: ""                            # leeg = naast de database (in de add-on /data/exports)

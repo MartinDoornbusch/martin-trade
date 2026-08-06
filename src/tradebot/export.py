@@ -62,7 +62,7 @@ TABELLEN = {
 
 # Config-secties die mee moeten om een meting later te kunnen duiden.
 CONFIG_SECTIES = ("strategy", "decision", "fees", "risk", "exits", "regime",
-                  "universe", "schedule", "markets", "watchlist", "blocklist")
+                  "universe", "schedule", "markets", "watchlist", "blocklist", "meta")
 
 
 def _waarde(v):
@@ -84,6 +84,10 @@ def build_export(cfg, mode: str | None = None) -> dict:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "version": __version__,
             "mode": mode,
+            # Waarom deze run draait. Zonder dit label is een nette, gescopede
+            # dataset over een half jaar niet te onderscheiden van strategiebewijs.
+            "run_purpose": str((getattr(cfg, "meta", {}) or {}).get(
+                "run_purpose", "onbekend")),
             "rows": {naam: len(rijen) for naam, rijen in data.items()},
             # Zonder deze twee is de export data zonder context: je weet dan wel
             # wat er gebeurde, maar niet onder welke configuratie.

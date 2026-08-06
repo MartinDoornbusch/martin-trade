@@ -247,3 +247,26 @@ De 40% break-even die in dit project herhaaldelijk als lat is gebruikt, is de KO
 asymptoot. Met `c = 0,60%` ligt de werkelijke lat op 44 tot 52%. Elke eerdere vergelijking
 ("27,2% tegen een break-even van 40%") onderschatte het gat dus. Het go/no-go-criterium in
 PROJECTPLAN is daarop aangepast.
+
+### Wat `p*` zegt over de horizon (2026-08-06)
+
+De formule beantwoordt meer dan de gate-vraag. ATR schaalt met de wortel van de tijd, dus
+van 4h naar 1d is zes bars en wordt alfa ongeveer 2,45 keer groter, terwijl `c` gelijk
+blijft:
+
+| Horizon | alfa (ATR/prijs) | `p*` bij c = 0,60% |
+|---------|------------------|--------------------|
+| 4h | 1,00% | 52,0% |
+| 1d | 2,45% | 44,9% |
+
+**Zeven procentpunt lager, zonder één regel signaallogica te veranderen.** Ter vergelijking:
+maker-entry met taker-exit (0,40% in plaats van 0,50%) levert ongeveer 2 procentpunt. De
+horizon raakt de noemer van `p*`, de kosten alleen de teller.
+
+Maker op het exit-been is geen optie en dat is een bewuste keuze uit fase 3: `LiveBroker`
+doet market-exits omdat een gemiste exit kapitaal kost. Een maker-stop vult mogelijk niet in
+een snelle beweging, dus precies wanneer je hem nodig hebt. Dat ruilt 0,10 procentpunt fee
+tegen staartrisico.
+
+Vastgepind in `tests/test_decision.py::test_horizon_switch_lowers_the_bar_by_seven_points`,
+zodat de getallen in dit document niet van de code kunnen afdrijven.

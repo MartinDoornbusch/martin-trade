@@ -249,3 +249,30 @@ def test_round_trip_and_fee_gate_follow_the_broker_mode():
 def test_fee_model_defaults_to_the_paper_assumption():
     """Zonder expliciete modus blijft het oude, conservatieve gedrag gelden."""
     assert FeeModel(0.15, 0.25, 0.10).round_trip_pct() == 0.5
+
+
+def test_horizon_switch_lowers_the_bar_by_seven_points():
+    """Kwantificering van de goedkoopste structurele verbetering, code-gedekt zodat de
+    claim in `docs/ontwerp-ev-gate.md` niet kan afdrijven.
+
+    ATR schaalt met de wortel van de tijd. Van 4h naar 1d is zes bars, dus alfa wordt
+    ongeveer sqrt(6) = 2,45 keer groter terwijl de round-trip kosten gelijk blijven.
+    Via p* = (m*a + c) / (m*a * (1+r)) haalt die wissel alleen al zeven procentpunt
+    van de lat, zonder één regel signaallogica te veranderen.
+    """
+    from math import sqrt
+
+    from tradebot.decision import breakeven_win_rate
+
+    kosten = 0.60
+    vier_uur = breakeven_win_rate(1.0, 2.0, 1.5, kosten)
+    dagelijks = breakeven_win_rate(1.0 * sqrt(6), 2.0, 1.5, kosten)
+
+    assert vier_uur == pytest.approx(0.520, abs=0.001)
+    assert dagelijks == pytest.approx(0.449, abs=0.001)
+    assert (vier_uur - dagelijks) * 100 == pytest.approx(7.1, abs=0.1)
+
+    # Maker-entry en taker-exit (0,40% i.p.v. 0,50%) helpt, maar veel minder: de
+    # horizon raakt de noemer, de kosten alleen de teller.
+    goedkoper = breakeven_win_rate(1.0, 2.0, 1.5, 0.50)
+    assert (vier_uur - goedkoper) * 100 == pytest.approx(2.0, abs=0.1)

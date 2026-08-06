@@ -433,6 +433,15 @@ class TradingCycle:
                   if f"shadow_{gate}" in details}
         if hashes:
             details["gate_hash"] = hashes
+            # Waarom deze run draait, mee in het bewijsstuk zelf. Draait de bot als
+            # infrastructuurtest op een strategie waarvan al vaststaat dat ze geen
+            # edge heeft, dan bouwt het meetapparaat anders maandenlang keurig
+            # gescopede cohortes op die later als strategievalidatie gelezen worden.
+            # Dat is de spiegelbeeldige fout van de verdwenen julikalibratie: geen
+            # bewijs dat weg is, maar bewijs dat betekenis krijgt die het nooit had.
+            doel = str((getattr(self.cfg, "meta", {}) or {}).get("run_purpose", "")).strip()
+            if doel:
+                details["run_purpose"] = doel
         with session() as s:
             s.add(SignalRow(market=market, action=action, decision=decision,
                             score=score, reason=reason[:1000], details=details,

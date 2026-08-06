@@ -37,6 +37,7 @@ def make_cfg(**over) -> SimpleNamespace:
         schedule={"candle_interval": "4h"},
         exits={"breakeven_stop": {"binding": False, "trigger_atr": 1.0}},
         regime={"binding": False}, universe={"auto_fill": True}, export={},
+        meta={},
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -254,3 +255,29 @@ def test_share_copy_lands_outside_data(tmp_path, memory_db):
 
     # Buiten de add-on (geen /share-ouder) faalt hij stil in plaats van te breken.
     assert kopieer_naar_share(pad, str(tmp_path / "bestaat-niet" / "x")) is None
+
+
+def test_run_purpose_travels_with_the_evidence(memory_db, tmp_path):
+    """Spiegelbeeld van de verdwenen julikalibratie: daar verdween het bewijs, hier
+    dreigt bewijs betekenis te krijgen die het nooit had. Draait de bot als
+    infrastructuurtest op een strategie waarvan vaststaat dat ze geen edge heeft, dan
+    bouwt het meetapparaat keurig gescopede cohortes op die over een half jaar als
+    strategievalidatie gelezen worden. Het doel hoort dus in het bewijsstuk zelf, niet
+    in iemands hoofd."""
+    from types import SimpleNamespace
+
+    cfg = make_cfg(meta={"run_purpose": "infrastructuurtest"})
+    vul_db()
+    pad = schrijf_export(cfg, tmp_path, mode="paper")
+    meta = lees_export(pad)["meta"]
+
+    assert meta["run_purpose"] == "infrastructuurtest"
+    assert meta["config"]["meta"]["run_purpose"] == "infrastructuurtest"
+
+    # en de analyzers lezen het uit de EVENTS, niet uit de config van vandaag
+    from tradebot.analysis import analyze_regime
+    events = [{"ts": 1_700_000_000_000, "market": "A-EUR", "shadow_regime": "risk-off",
+               "run_purpose": "infrastructuurtest"}]
+    d = analyze_regime(SimpleNamespace(**{**vars(cfg), "meta": {}}),
+                       events=events, trades=[])
+    assert d["run_purpose"] == ["infrastructuurtest"]

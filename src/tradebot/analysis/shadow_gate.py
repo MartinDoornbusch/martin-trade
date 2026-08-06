@@ -189,6 +189,10 @@ def analyze_shadow_gate(cfg, spec: GateSpec, *, events: list[dict] | None = None
         "position_size_eur": round(p.position_size_eur, 2),
         "config_hash": gate_hash,
         "config_scope": "current" if gate_hash else "all",
+        # Uit de events zelf, niet uit de huidige config: het doel van de run TOEN
+        # de data ontstond is wat de meting duidt.
+        "run_purpose": sorted({str(e.get("run_purpose", "")) for e in events
+                               if e.get("run_purpose")}) or ["onbekend"],
         "summary": None,
         "per_market": [],
     }
