@@ -8,7 +8,7 @@ te vallen. De export is geen vervanging maar een tweede herstelpad, en meteen he
 bewijsartefact: hij draagt de config en de per-gate fingerprints waaronder de data
 is ontstaan.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -29,9 +29,12 @@ def make_cfg(**over) -> SimpleNamespace:
     base = dict(
         markets=["BTC-EUR"], watchlist=[], blocklist=[],
         strategy={"ema_fast": 20, "ema_slow": 50, "chase_guard_binding": False},
-        decision={"reward_risk_ratio": 1.5, "llm_veto_binding": False},
+        decision={"reward_risk_ratio": 1.5, "llm_veto_binding": False,
+                  "atr_stop_multiplier": 2.0, "min_profit_pct": 0.50},
         fees={"maker_pct": 0.15, "taker_pct": 0.25, "slippage_buffer_pct": 0.10},
-        risk={"bucket_eur": 250.0}, schedule={"candle_interval": "4h"},
+        risk={"bucket_eur": 250.0, "sizing": "bucket", "paper_start_eur": 1000.0,
+              "max_position_pct": 25.0},
+        schedule={"candle_interval": "4h"},
         exits={"breakeven_stop": {"binding": False, "trigger_atr": 1.0}},
         regime={"binding": False}, universe={"auto_fill": True}, export={},
     )
@@ -161,3 +164,93 @@ def test_sqlite_runs_in_wal_with_a_busy_timeout(tmp_path):
     assert journal.lower() == "wal"
     assert timeout == db.SQLITE_BUSY_TIMEOUT_MS
     assert sync == 2, "synchronous moet FULL blijven: deze DB is het verslag van echt geld"
+
+
+# --- de restore echt draaien, met de analyzers erop -----------------------------
+
+def gate_cijfers(cfg) -> dict:
+    """Wat het dashboard zou tonen: de netto gate-waarde per shadow-gate."""
+    from tradebot.analysis import analyze_breakeven, analyze_chase, analyze_regime
+
+    return {naam: fn(cfg, mode="paper") for naam, fn in
+            (("regime", analyze_regime), ("breakeven", analyze_breakeven),
+             ("chase", analyze_chase))}
+
+
+def vul_db_met_meetdata() -> None:
+    """Een afgewikkelde regime-down shadow-buy plus een breakeven-treffer, dus
+    genoeg om alle drie de analyzers een uitkomst te laten produceren."""
+    basis = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    stap = timedelta(hours=4)
+    with db.session() as s:
+        s.add(db.TradeRow(ts=basis, market="ETH-EUR", side="buy", amount=1.0,
+                          price=100.0, fee_eur=0.25, mode="paper", reason="setup"))
+        s.add(db.TradeRow(ts=basis + 3 * stap, market="ETH-EUR", side="sell", amount=1.0,
+                          price=90.0, fee_eur=0.23, pnl_eur=-10.5, mode="paper",
+                          reason="stop loss"))
+        s.add(db.SignalRow(ts=basis, market="ETH-EUR", action="buy", decision="buy",
+                           score=3, reason="SHADOW-REGIME genegeerd", mode="paper",
+                           details={"shadow_regime": "regime gate: BTC-EUR trend down",
+                                    "shadow_chase": "chase-guard: 1.2x ATR",
+                                    "gate_hash": {"regime": "h-regime",
+                                                  "chase": "h-chase"}}))
+        s.add(db.SignalRow(ts=basis + stap, market="ETH-EUR", action="sell",
+                           decision="shadow", score=0, reason="SHADOW-BREAKEVEN",
+                           mode="paper",
+                           details={"shadow_breakeven": "treffer", "price": 100.55,
+                                    "entry_price": 100.0,
+                                    "gate_hash": {"breakeven": "h-be"}}))
+        s.commit()
+
+
+def test_restore_reproduces_the_gate_numbers(memory_db, tmp_path):
+    """De restore is één keer echt gedraaid in plaats van alleen beschreven.
+
+    Een ongeteste back-up is een hypothese, geen voorziening. Deze test doet wat de
+    handmatige procedure doet: exporteren, wissen, terugzetten, en dan de ANALYZERS
+    erop draaien om te controleren of de gate-cijfers gelijk zijn. Rijtellingen
+    vergelijken is niet genoeg; het gaat om de conclusies die op die rijen rusten.
+    """
+    cfg = make_cfg()
+    vul_db_met_meetdata()
+    voor = gate_cijfers(cfg)
+    assert voor["regime"]["n_resolved"] == 1, "testdata levert geen meetbare gate op"
+    assert voor["breakeven"]["n_resolved"] == 1
+    assert voor["chase"]["n_resolved"] == 1
+
+    pad = schrijf_export(cfg, tmp_path, mode="paper")
+
+    # Wissen en terugzetten, zoals de procedure in docs/export-en-herstel.md
+    db._engine = None
+    db._Session = None
+    db.init_db(f"sqlite:///{tmp_path}/hersteld.db")
+    importeer(pad)
+
+    na = gate_cijfers(cfg)
+    for gate in voor:
+        assert na[gate]["summary"] == voor[gate]["summary"], f"{gate} wijkt af"
+        assert na[gate]["n_resolved"] == voor[gate]["n_resolved"]
+        assert na[gate]["per_market"] == voor[gate]["per_market"]
+
+
+def test_share_copy_lands_outside_data(tmp_path, memory_db):
+    """`/data` is niet vanaf het netwerk te benaderen en overleeft geen
+    herinstallatie van de add-on, dus een export die alleen daar staat is alleen te
+    verzilveren via precies het image dat hij moest vermijden."""
+    from tradebot.export import geplande_export, kopieer_naar_share
+
+    vul_db()
+    data_map = tmp_path / "data" / "exports"
+    share_map = tmp_path / "share" / "tradebot-export"
+    share_map.parent.mkdir(parents=True)
+
+    cfg = make_cfg(export={"dir": str(data_map), "share_dir": str(share_map)})
+    pad = geplande_export(cfg, f"sqlite:///{tmp_path}/data/tradebot.db", "paper")
+
+    assert pad is not None and pad.parent == data_map
+    kopieen = list(share_map.glob("tradebot-export-*.json.gz"))
+    assert len(kopieen) == 1
+    assert kopieen[0].read_bytes() == pad.read_bytes()
+
+    # Buiten de add-on (geen /share-ouder) faalt hij stil in plaats van te breken.
+    assert kopieer_naar_share(pad, str(tmp_path / "bestaat-niet" / "x")) is None

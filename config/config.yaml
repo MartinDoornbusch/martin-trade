@@ -82,6 +82,8 @@ export:                              # lichte meetexport naast de HA-image-back-
   enabled: true
   dir: ""                            # leeg = naast de database (in de add-on /data/exports)
   keep: 30                           # aantal exports dat bewaard blijft; 3 dagen image-retentie is te kort voor een meting van 4-8 weken
+  share_dir: "/share/tradebot-export"  # tweede bestemming buiten /data: via Samba te pakken zonder de add-on aan te raken en overleeft herinstallatie. Leeg = alleen /data
+  share_keep: 7                      # hoeveel exports daar blijven staan (kleiner, want /share is de grijpvoorraad en niet het archief)
   interval_hours: 24
 
 llm:

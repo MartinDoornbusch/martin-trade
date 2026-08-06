@@ -24,6 +24,10 @@ ports_description:
   8000/tcp: Dashboard (optioneel, alleen nodig zonder ingress)
 map:
   - addon_config:rw
+  # /share voor de meetexport: /data is niet vanaf het netwerk te benaderen en
+  # overleeft geen herinstallatie van de add-on, waardoor de export alleen te
+  # verzilveren is via precies het image dat hij moest vermijden.
+  - share:rw
 # Regel voor deze lijst (zie ook config.py): opties zijn OPERATIONEEL, de
 # strategie staat in config/config.yaml. Een knop hoort hier alleen thuis als
 # omzetten een bedrijfsvoeringsbeslissing is die geen deploy mag vergen én de

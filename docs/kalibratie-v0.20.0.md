@@ -147,6 +147,11 @@ Bij het lezen:
   close-exits werden intrabar-stops gemist, dus overleefden er méér posities tot aan die
   derde regel. Zou je de trend-break pas aanzetten nadat de intrabar-correctie erin zit, dan
   meet je zijn effect in een wereld die nooit heeft bestaan, en systematisch te laag.
+- Verwachting bij 3.2 (warmup), en dit is de scherpste toetsbare voorspelling van de hele
+  ronde: `docs/review-v0.19.0.md` stelt dat de te korte warmup juist tegen ema 20/50 werkte,
+  omdat die variant de minst geconvergeerde indicator kreeg. Als dat klopt, komt ema 20/50
+  er in stap 3 **beter** uit dan op 18 juli, niet slechter. Wordt hij juist zwakker, dan was
+  die redenering fout en verdient de keuze van 18 juli een tweede blik.
 - Verwachting bij r1/1.2: delta ongeveer nul. **Let op: dat is een aanname, geen meting.**
   Het bewijs uit ronde 1 was tweeledig, coverage liet zien dat de TESTSUITE die regel nooit
   raakte en de twee condities zijn bijna disjunct, en geen van beide is een productiemeting.

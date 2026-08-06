@@ -23,6 +23,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,6 +42,14 @@ from .db import (
 )
 
 log = logging.getLogger(__name__)
+
+# Tweede bestemming naast de werkvoorraad. `/data` is niet vanaf het netwerk te
+# benaderen en overleeft geen verwijdering-en-herinstallatie van de add-on: om er
+# een bestand uit te halen heb je óf een draaiende Pi (dan had je de export niet
+# nodig) óf precies het image dat de export moest vermijden. `/share` staat ook in
+# de back-up, is via Samba te pakken zonder de add-on aan te raken, en blijft staan
+# bij herinstallatie.
+DEFAULT_SHARE_DIR = "/share/tradebot-export"
 
 TABELLEN = {
     "trades": TradeRow,
@@ -162,16 +171,56 @@ def export_map(cfg, database_url: str) -> Path:
     return Path("data/exports")
 
 
+def kopieer_naar_share(pad: Path, share_dir: str | None = None) -> Path | None:
+    """Zet de nieuwste export ook buiten `/data` neer.
+
+    Faalt stil als de map niet bestaat (buiten de add-on, bijvoorbeeld op een
+    ontwikkelmachine): dat is geen fout maar een andere omgeving.
+    """
+    doel = Path(share_dir or DEFAULT_SHARE_DIR)
+    if not doel.parent.exists():
+        return None
+    doel.mkdir(parents=True, exist_ok=True)
+    kopie = doel / pad.name
+    shutil.copy2(pad, kopie)
+    return kopie
+
+
+def wal_checkpoint() -> None:
+    """Schrijf de WAL terug in het hoofdbestand na een export.
+
+    Sinds v0.20.0 draait SQLite in WAL-modus, dus `tradebot.db` is op zichzelf niet
+    meer de volledige database: er staan `-wal` en `-shm` naast en gecommitte
+    transacties kunnen nog in de WAL zitten. Een PASSIVE checkpoint blokkeert nooit
+    en verkleint het venster waarin iemand die onder druk snel "even het
+    db-bestand" veiligstelt, een onvolledige kopie meeneemt. Het VERVANGT die regel
+    niet: kopieer altijd alle drie de bestanden, of gebruik deze export.
+    """
+    from .db import _engine
+    if _engine is None or _engine.dialect.name != "sqlite":
+        return
+    with _engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA wal_checkpoint(PASSIVE)")
+
+
 def geplande_export(cfg, database_url: str, mode: str) -> Path | None:
-    """Scheduler-taak: schrijf een export en ruim oude op. Mag nooit de bot breken."""
+    """Scheduler-taak: schrijf een export, kopieer naar /share, ruim oude op.
+
+    Mag nooit de bot breken.
+    """
     export_cfg = getattr(cfg, "export", {}) or {}
     if not bool(export_cfg.get("enabled", True)):
         return None
     try:
         doelmap = export_map(cfg, database_url)
         pad = schrijf_export(cfg, doelmap, mode)
+        kopie = kopieer_naar_share(pad, export_cfg.get("share_dir"))
         verwijderd = opruimen(doelmap, int(export_cfg.get("keep", 30)))
-        log.info("meetexport geschreven: %s (%d oude opgeruimd)", pad.name, len(verwijderd))
+        if kopie is not None:
+            opruimen(kopie.parent, int(export_cfg.get("share_keep", 7)))
+        wal_checkpoint()
+        log.info("meetexport geschreven: %s (%d oude opgeruimd, share=%s)",
+                 pad.name, len(verwijderd), kopie or "n.v.t.")
         return pad
     except Exception:  # noqa: BLE001 - een mislukte export mag de bot niet stoppen
         log.exception("meetexport mislukt")
