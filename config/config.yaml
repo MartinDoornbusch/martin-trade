@@ -37,7 +37,8 @@ fees:
   slippage_buffer_pct: 0.10
 
 decision:
-  min_profit_pct: 0.50               # minimale winst boven fees+slippage
+  min_profit_pct: 0.50               # minimale winst boven fees+slippage (alleen nog rapportage; de optellende fee-gate blokkeerde in twee jaar backtest 0,0% van de kandidaten)
+  max_breakeven_win_rate: 0.50       # DE fee-gate sinds v0.20.0: weiger een setup die meer dan deze trefkans nodig heeft om quitte te spelen. p* = (m*a + c) / (m*a * (1+r)) uit docs/ontwerp-ev-gate.md; bij ATR 1% van de prijs is dat 52%, bij ATR 3% 44%. 0 = uit
   atr_stop_multiplier: 2.0           # stop loss = entry - 2*ATR
   reward_risk_ratio: 1.5             # take profit = entry + 1.5*(2*ATR)
   use_llm_second_opinion: true

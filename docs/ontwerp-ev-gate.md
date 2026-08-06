@@ -210,3 +210,40 @@ de kosten in plaats van er los van te staan.
 3. Moet het go/no-go-criterium "win-rate > 45%" vervangen worden door een
    ATR-bewuste variant, of laten we het staan als indicator naast "netto positief
    na fees"?
+
+---
+
+## Besluit van Martin (2026-08-06): goedgekeurd als ontwerp, niet bouwen
+
+Niet omdat het ontwerp slecht is, maar omdat de kalibratie het heeft ingehaald.
+
+- **Stap 2 (backtest als prior).** Die prior is inmiddels gemeten in plaats van geschat, en
+  hij is negatief. De shrinkage-machinerie bouwen zou met veel moeite ontdekken wat er al
+  staat: de EV per trade is niet positief, en de alfa van de beste van 324 varianten is
+  +1,17 en -1,82 punt.
+- **Stap 3 (bindend bij bovengrens onder nul).** Die voorwaarde is op strategieniveau al
+  vervuld, vóór de eerste live trade. Een circuit breaker die bij inschakeling meteen alles
+  blokkeert is geen gate maar een conclusie.
+- **Stap 1 (de meter).** Blijft verdedigbaar, maar zijn waarde is verschoven: hij moest
+  zichtbaar maken of je in de buurt van break-even opereert, en dat weet je nu offline. Wat
+  overblijft is monitoring van de paper-run tegen het backtest-verdict.
+
+Daarbovenop zou het de vijfde gate zijn op een signaal met negatieve alfa.
+
+### Wat er wél uit is gehaald
+
+De formule uit §1 is het bruikbaarste onderdeel van dit document en heeft geen historie
+nodig: `p*` volgt uit ATR, de niveaus en de kosten. `decision.breakeven_win_rate` vervangt
+sinds v0.20.0 de optellende fee-gate (plafond `decision.max_breakeven_win_rate`, 0,50) en
+`p*` staat bij elke kandidaat op het dashboard.
+
+Daarmee verandert de vraag van "ligt het doel 1,1% weg", waarop het antwoord in twee jaar
+backtest 100% van de tijd ja was, in "geloven we dat we op deze setup 48% halen". Dat is de
+eerlijke versie van kernprincipe 2, en het is ongeveer tien regels code.
+
+### Correctie die uit dit document volgde
+
+De 40% break-even die in dit project herhaaldelijk als lat is gebruikt, is de KOSTENLOZE
+asymptoot. Met `c = 0,60%` ligt de werkelijke lat op 44 tot 52%. Elke eerdere vergelijking
+("27,2% tegen een break-even van 40%") onderschatte het gat dus. Het go/no-go-criterium in
+PROJECTPLAN is daarop aangepast.

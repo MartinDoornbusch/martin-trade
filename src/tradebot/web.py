@@ -16,7 +16,7 @@ from .backtest import max_drawdown_pct
 from .config import gate_fingerprint, get_config, get_secrets
 from .correlation import correlation_from_closes
 from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, session
-from .decision import FeeModel, RiskManager
+from .decision import FeeModel, RiskManager, breakeven_win_rate
 from .exchange import BitvavoClient
 from .indicators import ema
 from .lists import get_lists, is_paused, modify, set_paused
@@ -149,6 +149,13 @@ def advice():
                 "rsi": round(snap.rsi, 0),
                 "expected_move_pct": round(expected, 2),
                 "min_edge_pct": round(min_edge, 2),
+                "breakeven_win_rate_pct": (
+                    lambda p: None if p is None else round(p * 100, 1))(
+                    breakeven_win_rate(
+                        snap.atr / snap.price * 100 if snap.price > 0 else 0.0,
+                        float(cfg.decision["atr_stop_multiplier"]),
+                        float(cfg.decision["reward_risk_ratio"]),
+                        fee_model.round_trip_pct() + fee_model.slippage_buffer_pct)),
                 "fee_ok": fee_ok,
                 "correlation": round(corr_max, 2) if corr_max is not None else None,
                 "correlation_with": corr_with,
@@ -546,6 +553,7 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 <dt><b>Score</b></dt><dd>Aantal bevestigende koopcondities tegelijk (uptrend, RSI-herstelzone, MACD-omslag, koers bij onderband). Pas bij 3+ ontstaat een kandidaat-signaal.</dd>
 <dt><b>SL (stop loss)</b></dt><dd>Mechanische verkoop bij entry − 2×ATR: begrenst het verlies per trade. Geen AI-inspraak.</dd>
 <dt><b>TP (take profit)</b></dt><dd>Mechanische verkoop bij entry + 4×ATR (2× de stop-afstand, reward/risk 2:1).</dd>
+<dt><b>p* (break-even-trefkans)</b></dt><dd>Welk percentage winnende trades deze setup nodig heeft om na kosten quitte te spelen: p* = (m·a + c) / (m·a · (1+r)), met a = ATR als % van de prijs. Bij ATR 1% is dat ~52%, bij ATR 3% ~44%. De vaak genoemde 40% geldt alleen zonder kosten. Dit vervangt sinds v0.20.0 de oude fee-gate, die in twee jaar backtest nul kandidaten blokkeerde omdat hij vroeg of het doel ver genoeg weg lag in plaats van of de verwachtingswaarde positief is.</dd>
 <dt><b>Verw. move / vereist</b></dt><dd>Verwachte gunstige beweging tot de TP (ATR-gebaseerd) versus het minimum: round-trip fees (0,50%) + spread/slippage + minimale winst (0,50%). Alleen kopen als verwacht &gt; vereist: de fee-gate, dé les uit de vorige bot.</dd>
 <dt><b>Spread</b></dt><dd>Verschil tussen bied- en laatprijs; onzichtbare kost bovenop de fees. Bij kleine coins vaak groter dan de fee zelf, daarom telt de scanner hem mee in "vereist".</dd>
 <dt><b>Cooldown</b></dt><dd>Wachttijd per markt na een trade (12u): voorkomt fee-vretend heen-en-weer handelen.</dd>
@@ -763,10 +771,10 @@ async function load(){
       ? `<tr><td>${m.market}</td><td colspan="7" class="muted">${m.error}</td></tr>`
       : `<tr><td>${m.market}</td><td class="num">€ ${fmtp(m.price)}</td><td class="num ${cls(m.change_24h_pct)}">${fmt(m.change_24h_pct,1)}%</td><td class="num">${fmt(m.rsi,0)}</td><td class="${m.trend}">${m.trend==='up'?'▲ up':'▼ down'}</td><td class="num">${fmt(m.ema_gap_pct)}%</td><td class="num ${cls(m.macd_hist)}">${fmt(m.macd_hist,4)}</td><td class="num">${fmt(m.atr_pct,1)}%</td></tr>`).join('');
   document.getElementById('advice').innerHTML =
-    '<tr><th>markt</th><th>type</th><th>advies</th><th class="num">score</th><th class="num">verw. move</th><th class="num">vereist</th><th class="num">correlatie</th><th>toelichting</th></tr>' +
+    '<tr><th>markt</th><th>type</th><th>advies</th><th class="num">score</th><th class="num" title="break-even-trefkans: welk percentage winnende trades deze setup nodig heeft om quitte te spelen, uit ATR en de kosten. De veelgenoemde 40% is de kostenloze asymptoot">p*</th><th class="num">verw. move</th><th class="num">vereist</th><th class="num">correlatie</th><th>toelichting</th></tr>' +
     adv.map(a=> a.error
       ? `<tr><td>${a.market}</td><td colspan="7" class="muted">${a.error}</td></tr>`
-      : `<tr><td>${a.market}</td><td class="muted">${a.tradeable?'trade':'watch'}</td><td class="${a.advies.startsWith('instappen')?'pos':(a.advies.startsWith('vermijden')?'neg':'muted')}">${a.advies}</td><td class="num">${a.score}/${a.score_needed}</td><td class="num ${a.fee_ok?'pos':'neg'}">${fmt(a.expected_move_pct)}%</td><td class="num">${fmt(a.min_edge_pct)}%</td><td class="num">${a.correlation==null?'—':fmt(a.correlation)+(a.correlation_with?' ('+a.correlation_with+')':'')}</td><td>${(a.reasons||[]).join('; ')||'—'}</td></tr>`).join('');
+      : `<tr><td>${a.market}</td><td class="muted">${a.tradeable?'trade':'watch'}</td><td class="${a.advies.startsWith('instappen')?'pos':(a.advies.startsWith('vermijden')?'neg':'muted')}">${a.advies}</td><td class="num">${a.score}/${a.score_needed}</td><td class="num ${a.breakeven_win_rate_pct>50?'neg':''}">${a.breakeven_win_rate_pct==null?'—':fmt(a.breakeven_win_rate_pct,1)+'%'}</td><td class="num ${a.fee_ok?'pos':'neg'}">${fmt(a.expected_move_pct)}%</td><td class="num">${fmt(a.min_edge_pct)}%</td><td class="num">${a.correlation==null?'—':fmt(a.correlation)+(a.correlation_with?' ('+a.correlation_with+')':'')}</td><td>${(a.reasons||[]).join('; ')||'—'}</td></tr>`).join('');
   if(pf.max_positions!=null){ document.getElementById('posmax').textContent = `(${pf.open_positions}/${pf.max_positions} slots)`; }
   document.getElementById('positions').innerHTML =
     '<tr><th>markt</th><th class="num">aantal</th><th class="num">entry</th><th class="num">nu</th><th class="num">waarde</th><th class="num">ongereal. P&L</th><th class="num">SL</th><th class="num">TP</th></tr>' +
@@ -804,7 +812,7 @@ async function load(){
   const scStats = sc.stats ? `<tr><td colspan="9" class="muted">trechter: ${sc.stats.eur_markets} EUR-markten gescand → ${sc.stats.liquid} door liquiditeitsfilter (volume ≥ € ${Number(sc.stats.min_volume_eur).toLocaleString('nl-NL')}, spread ≤ ${sc.stats.max_spread_pct}%) → ${sc.stats.analyzed} geanalyseerd → top ${sc.stats.shown} getoond</td></tr>` : '';
   document.getElementById('scanner').innerHTML = sc.error
     ? `<tr><td class="muted">fout: ${sc.error}</td></tr>`
-    : (scStats + '<tr><th>markt</th><th class="num">24h volume</th><th class="num">spread</th><th class="num">score</th><th>trend</th><th class="num">RSI</th><th class="num">verw. move</th><th class="num">vereist</th><th>actie</th></tr>' +
+    : (scStats + '<tr><th>markt</th><th class="num">24h volume</th><th class="num">spread</th><th class="num">score</th><th>trend</th><th class="num">RSI</th><th class="num" title="break-even-trefkans: welk percentage winnende trades deze setup nodig heeft om quitte te spelen, uit ATR en de kosten. De veelgenoemde 40% is de kostenloze asymptoot">p*</th><th class="num">verw. move</th><th class="num">vereist</th><th>actie</th></tr>' +
        sc.results.map(r=>`<tr><td>${r.market}</td><td class="num">€ ${Number(r.volume_eur).toLocaleString('nl-NL')}</td><td class="num">${fmt(r.spread_pct)}%</td><td class="num">${r.score}/${r.score_needed}</td><td class="${r.trend}">${r.trend==='up'?'▲':'▼'}</td><td class="num">${fmt(r.rsi,0)}</td><td class="num ${r.fee_ok?'pos':'neg'}">${fmt(r.expected_move_pct)}%</td><td class="num">${fmt(r.required_pct)}%</td><td>${r.in_markets?'<span class="muted">in trading</span>':(r.in_watchlist?`<span class="muted">in watchlist</span> <button class="rowbtn" onclick="act('markets','${r.market}','add')">→ trade</button>`:`<button class="rowbtn" onclick="act('watchlist','${r.market}','add')">+ watch</button> <button class="rowbtn" onclick="act('markets','${r.market}','add')">+ trade</button>`)}</td></tr>`).join(''));
   const eq = await q('api/equity');
   const eqEl = document.getElementById('equity');

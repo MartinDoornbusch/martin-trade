@@ -19,7 +19,7 @@ RISK_CFG = {"max_position_pct": 25.0, "max_open_positions": 3,
             "paper_start_eur": 1000.0}
 DEC_CFG = {"min_profit_pct": 0.50, "atr_stop_multiplier": 2.0,
            "reward_risk_ratio": 2.0, "use_llm_second_opinion": False,
-           "llm_min_confidence": 0.6}
+           "llm_min_confidence": 0.6, "max_breakeven_win_rate": 0.50}
 
 
 def snap(price=100.0, atr=1.0) -> MarketSnapshot:
@@ -125,15 +125,65 @@ def test_shadow_none_keeps_buy():
     assert d.action == "buy"
 
 
-def test_fee_gate_blocks_small_expected_move():
-    # atr=0.2 -> expected move = 0.2*2*2/100 = 0.8% < 1.1% required
+def test_breakeven_gate_blocks_a_setup_that_needs_an_implausible_hit_rate():
+    """De optellende fee-gate is in v0.20.0 vervangen door de break-even-trefkans.
+
+    Aanleiding: over twee jaar backtest blokkeerde die gate 0,0% van de kandidaten.
+    Hij vroeg "ligt het koersdoel minstens 1,10% weg", en dat was altijd zo, want
+    de verwachte beweging is ATR x 2 x r en dus 10 tot 15% op 4h-crypto. Hij toetste
+    of de beweging groot genoeg was, niet of de verwachtingswaarde positief is.
+
+    Hier: ATR 0,2% van de prijs vraagt een trefkans van (0,4 + 0,6) / (0,4 x 3) =
+    83%. Dat is geen setup, dat is een loterij.
+    """
     d = engine().evaluate_buy(candidate(atr=0.2), [], None, 1000, 1000, 0)
     assert d.action == "skip"
-    assert "fee gate" in d.reason
+    assert "break-even-gate" in d.reason
+    assert d.details["breakeven_win_rate"] > 0.80
 
 
-def test_fee_gate_allows_sufficient_move():
-    # atr=1.0 -> expected move 4% > 1.1%
+def test_breakeven_gate_allows_a_plausible_setup():
+    """ATR 1% van de prijs met r = 2,0 vraagt (2 + 0,6) / (2 x 3) = 43%. Haalbaar,
+    dus de trade mag door."""
+    d = engine().evaluate_buy(candidate(atr=1.0), [], None, 1000, 1000, 0)
+    assert d.action == "buy"
+    assert 0.40 < d.details["breakeven_win_rate"] < 0.50
+
+
+def test_breakeven_win_rate_matches_the_design_document():
+    """Formule uit docs/ontwerp-ev-gate.md §1, veralgemeend. De veelgenoemde 40% is
+    de KOSTENLOZE asymptoot en dus altijd te soepel: met c = 0,60% ligt de lat op 44
+    tot 52% bij een realistische ATR van 1 tot 3% van de prijs."""
+    from tradebot.decision import breakeven_win_rate
+
+    for atr_pct, verwacht in [(1.0, 0.52), (2.0, 0.46), (3.0, 0.44)]:
+        p_ster = breakeven_win_rate(atr_pct, 2.0, 1.5, 0.60)
+        assert p_ster == pytest.approx(verwacht, abs=0.005), (atr_pct, p_ster)
+    # kostenloos -> de asymptoot van 40%
+    assert breakeven_win_rate(2.0, 2.0, 1.5, 0.0) == pytest.approx(0.40)
+    assert breakeven_win_rate(0.0, 2.0, 1.5, 0.60) is None
+
+
+def test_old_fee_gate_numbers_are_still_reported():
+    """`expected_pct` en `min_edge_pct` blijven in de details staan: het dashboard
+    toont ze en de vergelijking met de oude meting moet leesbaar blijven."""
+    d = engine().evaluate_buy(candidate(atr=1.0), [], None, 1000, 1000, 0)
+    assert d.details["expected_pct"] > d.details["min_edge_pct"]
+
+
+def test_gate_is_off_when_no_ceiling_is_configured():
+    """Zonder `max_breakeven_win_rate` gedraagt de engine zich als vóór v0.20.0, dus
+    een bestaande config verandert niet stil van gedrag."""
+    from tradebot.decision import DecisionEngine
+
+    zonder = DecisionEngine(FEES, RiskManager(RISK_CFG),
+                            {k: v for k, v in DEC_CFG.items()
+                             if k != "max_breakeven_win_rate"})
+    d = zonder.evaluate_buy(candidate(atr=0.2), [], None, 1000, 1000, 0)
+    assert d.action == "buy"
+
+
+def test_levels_and_size_are_unchanged():
     d = engine().evaluate_buy(candidate(atr=1.0), [], None, 1000, 1000, 0)
     assert d.action == "buy"
     assert d.amount_quote_eur == 250.0  # 25% of 1000

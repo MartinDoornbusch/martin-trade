@@ -82,6 +82,37 @@ class FeeModel:
                 + min_profit_pct)
 
 
+def breakeven_win_rate(atr_pct: float, atr_stop_multiplier: float,
+                       reward_risk_ratio: float, cost_pct: float) -> float | None:
+    """Trefkans die deze setup nodig heeft om quitte te spelen, als fractie.
+
+    Uit `docs/ontwerp-ev-gate.md` §1, veralgemeend van de daar uitgewerkte
+    m=2 / r=1,5:
+
+        EV = p * m*r*a - (1-p) * m*a - c = 0
+        p* = (m*a + c) / (m*a * (1 + r))
+
+    met `a` = ATR als fractie van de prijs, `m` = `atr_stop_multiplier`, `r` =
+    `reward_risk_ratio` en `c` = round-trip kosten in procent.
+
+    Dit vervangt de optellende fee-gate, en dat is geen cosmetische wijziging. De
+    oude gate vroeg "ligt het koersdoel minstens 1,10% weg", en het antwoord daarop
+    was over twee jaar backtest 100% van de tijd ja: 0,0% van de kandidaten werd
+    geblokkeerd. Hij toetste of de beweging groot genoeg was, niet of de trade
+    positieve verwachtingswaarde heeft.
+
+    `p*` stelt wel de goede vraag, en hij heeft geen historie nodig: hij volgt uit
+    ATR, de niveaus en de kosten. Bij een ATR van 1% van de prijs is p* ongeveer
+    52%, bij 3% ongeveer 44%. De veelgenoemde 40% is de kostenloze asymptoot en
+    dus altijd te soepel.
+    """
+    if atr_pct <= 0 or atr_stop_multiplier <= 0 or reward_risk_ratio <= 0:
+        return None
+    stop = atr_stop_multiplier * atr_pct
+    noemer = stop * (1 + reward_risk_ratio)
+    return (stop + cost_pct) / noemer if noemer > 0 else None
+
+
 def breakeven_offset_pct(be_cfg: dict, fee_model: FeeModel,
                          entry_is_maker: bool | None = None) -> float:
     """Drempel waarop de breakeven-stop vuurt, afgeleid uit het fee-model.
@@ -214,25 +245,39 @@ class DecisionEngine:
         if not ok:
             return Decision(market, "skip", f"risk gate: {why}")
 
-        # Gate 2: fee gate — the core protection against fee bleed
+        # Gate 2: break-even-trefkans. Vervangt de optellende fee-gate, die in twee
+        # jaar backtest 0,0% van de kandidaten blokkeerde omdat hij de verkeerde vraag
+        # stelde: "ligt het doel ver genoeg weg" in plaats van "is de verwachtings-
+        # waarde positief". Zie `breakeven_win_rate` en docs/ontwerp-ev-gate.md.
         expected = self.expected_move_pct(candidate)
         min_edge = self.fees.min_edge_pct(float(self.cfg["min_profit_pct"]))
-        if expected < min_edge:
-            return Decision(market, "skip",
-                            f"fee gate: expected move {expected:.2f}% < required {min_edge:.2f}%",
-                            details={"expected_pct": expected, "min_edge_pct": min_edge})
+        snap = candidate.snapshot
+        p_ster = breakeven_win_rate(
+            snap.atr / snap.price * 100 if snap.price > 0 else 0.0,
+            float(self.cfg["atr_stop_multiplier"]),
+            float(self.cfg["reward_risk_ratio"]),
+            self.fees.round_trip_pct() + self.fees.slippage_buffer_pct)
+        details = {"expected_pct": expected, "min_edge_pct": min_edge,
+                   "breakeven_win_rate": None if p_ster is None else round(p_ster, 4)}
+        plafond = float(self.cfg.get("max_breakeven_win_rate", 0.0) or 0.0)
+        if p_ster is not None and plafond > 0 and p_ster > plafond:
+            return Decision(
+                market, "skip",
+                f"break-even-gate: deze setup vraagt {p_ster * 100:.1f}% trefkans "
+                f"(max {plafond * 100:.0f}%); ATR is te klein t.o.v. de kosten",
+                details=details)
 
         size = self.risk.position_size_eur(portfolio_eur, free_eur)
         if size < 10:  # Bitvavo minimum order ~5 EUR; below 10 fees dominate
-            return Decision(market, "skip", f"position size too small ({size:.2f} EUR)")
+            return Decision(market, "skip", f"position size too small ({size:.2f} EUR)",
+                            details=details)
 
         stop, target = self.levels(candidate)
         return Decision(market, "buy",
                         "; ".join(candidate.reasons),
                         amount_quote_eur=round(size, 2),
                         stop_loss=stop, take_profit=target,
-                        details={"expected_pct": expected, "min_edge_pct": min_edge,
-                                 "score": candidate.score})
+                        details={**details, "score": candidate.score})
 
 
 def apply_regime_filter(decision: Decision, regime_ok: bool, proxy_market: str,
