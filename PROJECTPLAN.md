@@ -212,6 +212,21 @@ De HA-back-up draait dagelijks, bewaart er drie, omvat alle apps en gaat naar de
 
 - [~] `scanner.scan()` stond op 52% dekking terwijl de functie sinds v0.17.0 in het koudepad van auto-fill zit en dus elke cyclus in productie draait. De unittests dekten alleen `liquidity_filter`. Aanleiding: bij de fee-model-wijziging van v0.20.0 kwam er een `get_secrets()`-aanroep in `scan()` zonder import, en geen enkele test raakte die regel. Vier rookproeven toegevoegd die de functie end-to-end doorlopen (inclusief blocklist en een kapotte markt); geverifieerd dat ze op de ontbrekende import omvallen. Nog te doen: dezelfde controle op de overige koudepaden (`main.publish_mqtt`, `notify`)
 
+### Publicatiebeslissing: de reviewdocumenten blijven in de publieke repo
+
+`docs/review-v0.18.0.md` en `docs/review-v0.19.0.md` staan in `martin-trade`, en die repo is publiek. Ze bevatten een uitgeschreven lijst van hoe het live-pad kapot te krijgen is (niet-atomaire sell, ontbrekende exchange-side stop-loss, leeg `dashboard_token` als default) plus de post-mortem van de vorige bot met het verlies van 15%.
+
+**Besluit (2026-08-06): laten staan, bewust.** Afweging:
+
+- de marginale onthulling is klein. Dezelfde post-mortem staat al maanden in dit bestand, dat even publiek is, en het lege `dashboard_token` staat in de code zelf. Alleen de concentratie is nieuw;
+- de blockers zijn pas exploiteerbaar zodra er een Bitvavo-key met traderechten aan hangt. Nu draait alles paper met een read-only key, en de fase 3-activering is dubbel vergrendeld;
+- de sterkste mitigatie is niet redigeren maar de blockers sluiten. Zolang ze open staan verandert weglaten niets aan het risico, alleen aan de vindbaarheid;
+- de documenten zijn precies het bewijs waarvan deze twee rondes lieten zien dat het verdwijnt. Ze weghalen zou dat patroon herhalen.
+
+Voorwaarde bij fase 3-activering: heroverweeg dit besluit vóór de eerste live-key. Vanaf dat moment verandert de kosten-batenafweging, want dan is er iets te winnen voor een aanvaller.
+
+**Procedureel gevolg:** dit besluit werd genomen door een `git add -A`, niet door een afweging. Dat is de tweede keer dat dat commando meepakte wat niet bedoeld was (eerder de drie `.disabled`-bestanden en `.coverage`). De oplossing is niet nog een `.gitignore`-regel maar het commando niet meer gebruiken: vanaf nu committen met expliciete paden.
+
 ### Openstaand vóór fase 3: de vier live-blockers uit reviewronde 1
 
 Deze vier zijn in v0.20.0 **expliciet buiten scope gehouden** en staan nog steeds open. Ze blokkeren fase 3, ongeacht hoe schoon de rest van de lijst eruitziet. Genoteerd omdat een afgevinkte lijst anders de indruk wekt dat de weg naar live vrij is.
@@ -278,6 +293,7 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 
 | Datum | Wijziging | Getest |
 |-------|-----------|--------|
+| 2026-08-06 | Publicatiebeslissing vastgelegd: de twee reviewdocumenten blijven in de publieke repo, met de afweging en de voorwaarde om dat vóór de eerste live-key te heroverwegen. Procedureel gevolg: geen `git add -A` meer, committen met expliciete paden. Warmup-verwachting in het kalibratiedoc afgezwakt tot wat de onderbouwing draagt: de te korte warmup produceert ruis in `ema_fast > ema_slow`, geen consistente straf in één richting, dus de toets is relatief (rang t.o.v. de andere EMA-paren) en gaat over stabiliteit (rang op train én test, kleinere gap) | n.v.t. (documentatie) |
 | 2026-08-06 | v0.20.0 export hersteld op zijn eigen doel: alleen `/data` was niet te verzilveren zonder precies het image dat de export moest vermijden, dus de nieuwste kopie gaat ook naar `/share/tradebot-export` (`share:rw` in de add-on). Herstelprocedure inclusief de ontbrekende wisstap vastgelegd in `docs/export-en-herstel.md`, met een CI-test die exporteert, wist, terugzet en de uitkomst van alle drie de analyzers vergelijkt in plaats van rijtellingen. WAL-sidecarwaarschuwing vastgelegd plus een PASSIVE checkpoint na elke export | 250 tests (2 nieuw), ruff, bandit exit 0 |
 | 2026-08-05 | v0.20.0 databewaring: lichte meetexport (`tradebot.export`, dagelijks, 41 kB gzip per maand data, met config en per-gate fingerprints erin en een `--import`-herstelpad) als tweede herstelpad naast de image-back-up met drie dagen retentie; SQLite op WAL met `busy_timeout` (openstaand punt uit ronde 1, nu ook nodig omdat de back-up een warme kopie maakt), `synchronous` bewust op FULL. Derde versielocatie gevonden en gekoppeld: `src/tradebot/__init__.py` stond nog op 0.18.0 en die waarde belandt in elke export | 248 tests (8 nieuw), ruff, bandit exit 0 |
 | 2026-08-05 | v0.20.0 anker-check gepind en een overclaim rechtgezet: `CONFIG_PATH` op beide runs met een ankerconfig (de oude code crasht op de huidige config, want `rsi_oversold` bestaat niet meer), trend-break in rij 1 zelf met close-exits in plaats van als latere stap, legacy-drempel vast op 70 zoals de oude code, en de claim "heeft in productie nooit gevuurd" afgezwakt tot een aanname: dat was coverage op de testsuite, geen productiemeting | 240 tests, ruff, bandit exit 0 |
