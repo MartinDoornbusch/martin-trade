@@ -54,7 +54,9 @@ def make_cfg(**over) -> SimpleNamespace:
             "max_correlation": 0.85, "correlation_lookback": 60,
             "max_correlated_positions": 99}
     risk.update(over.pop("risk", {}))
+    regime = over.pop("regime", {})
     return SimpleNamespace(
+        regime=regime,
         strategy={"ema_fast": 3, "ema_slow": 5, "rsi_period": 14, "atr_period": 14,
                   "rsi_buy_zone_min": 25, "rsi_buy_zone_max": 45,
                   "rsi_overbought": 70, "min_signal_score": 1},
@@ -375,3 +377,64 @@ def test_slippage_flag_only_touches_the_fill():
     assert met["closed_trades"] == zonder["closed_trades"] == 1
     verschil = zonder["net_return_pct"] - met["net_return_pct"]
     assert 0.15 < verschil < 0.25
+
+
+# --- regime-filter in de backtester ---------------------------------------------
+
+def dalend(n: int, start: float = 100.0) -> list[Candle]:
+    """Proxy-reeks die risk-off staat: EMA-snel onder EMA-traag."""
+    return candles([start * (1 - 0.01) ** i for i in range(n)])
+
+
+def test_regime_filter_blocks_entries_when_binding():
+    """Het regime-filter ontbrak volledig in de backtester, terwijl het het enige
+    mechanisme is dat in productie al gebouwd is om een verliesregime te vermijden.
+    Zonder deze as kan de grid alleen zeggen welke variant het meest verdiende in het
+    gunstige venster, niet of er een configuratie is die het slechte venster
+    overleeft."""
+    data = {"A-EUR": candles([100.0] * (WARMUP + 5))}
+    proxy = dalend(WARMUP + 5)
+
+    aan = make_cfg(regime={"enabled": True, "binding": True, "proxy_market": "P-EUR"})
+    uit = make_cfg(regime={"enabled": True, "binding": False, "proxy_market": "P-EUR"})
+
+    geblokkeerd = run_portfolio_backtest(data, aan, fees(), warmup=WARMUP,
+                                         proxy_candles=proxy)
+    open_ = run_portfolio_backtest(data, uit, fees(), warmup=WARMUP, proxy_candles=proxy)
+
+    assert geblokkeerd["regime"] == "bindend"
+    assert geblokkeerd["open_at_end"] == 0 and geblokkeerd["closed_trades"] == 0
+    assert open_["regime"] == "uit"
+    assert open_["open_at_end"] == 1
+
+
+def test_regime_filter_follows_the_shadow_setting():
+    """Staat de gate in config op shadow, dan blokkeert hij in productie ook niets en
+    hoort de backtest hem evenmin toe te passen; anders modelleert hij een strengere
+    bot dan er draait."""
+    data = {"A-EUR": candles([100.0] * (WARMUP + 5))}
+    cfg = make_cfg(regime={"enabled": True, "binding": False, "proxy_market": "P-EUR"})
+    r = run_portfolio_backtest(data, cfg, fees(), warmup=WARMUP,
+                               proxy_candles=dalend(WARMUP + 5))
+    assert r["regime"] == "uit"
+    assert r["open_at_end"] == 1
+
+
+def test_missing_proxy_is_visible_not_silent():
+    """Een stil uitgeschakelde gate is erger dan geen gate: je leest de uitkomst dan
+    als "regime helpt niet" terwijl hij nooit gedraaid heeft."""
+    data = {"A-EUR": candles([100.0] * (WARMUP + 5))}
+    cfg = make_cfg(regime={"enabled": True, "binding": True, "proxy_market": "ONBEKEND"})
+    r = run_portfolio_backtest(data, cfg, fees(), warmup=WARMUP)
+    assert r["regime"] == "proxy ONTBREEKT"
+
+
+def test_regime_uses_the_proxy_from_the_dataset_when_present():
+    """In portfolio-modus zit BTC-EUR meestal gewoon in de markten; dan hoeft de
+    aanroeper niets mee te geven."""
+    data = {"A-EUR": candles([100.0] * (WARMUP + 5)),
+            "BTC-EUR": dalend(WARMUP + 5)}
+    cfg = make_cfg(regime={"enabled": True, "binding": True, "proxy_market": "BTC-EUR"})
+    r = run_portfolio_backtest(data, cfg, fees(), warmup=WARMUP)
+    assert r["regime"] == "bindend"
+    assert r["closed_trades"] == 0 and r["open_at_end"] == 0

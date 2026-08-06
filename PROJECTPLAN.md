@@ -237,6 +237,31 @@ Deze vier zijn in v0.20.0 **expliciet buiten scope gehouden** en staan nog steed
 - [ ] **L4. Geen reconciliatie bij opstart.** Na een herstart wordt de eigen administratie niet tegen de werkelijke exchange-posities gelegd, dus een verschil blijft onopgemerkt
 - [ ] **L5 (uit fase 3 hierboven).** Een achtergebleven open **paper**-positie blokkeert door `PositionRow.market unique=True` een live-positie in dezelfde markt op dezelfde DB. Sluiten of archiveren vóór de omschakeling
 
+### Voorwaarde: geen bindende gate zonder meting
+
+Dit stond als gewoonte in de tekst en is één keer overgeslagen: de time-stop is in v0.18.0
+**bindend** in productie gezet zonder enige meting, terwijl de regel voor elke andere gate
+was dat hij eerst in shadow draait. Daarom nu als voorwaarde, met een tweede regel die het
+tot een controle maakt in plaats van een voornemen:
+
+1. **Een nieuwe gate gaat bindend pas na een positieve netto gate over minstens 20
+   afgewikkelde trades in shadow.** Geen uitzonderingen voor "dit is duidelijk goed" of
+   "dit is maar een exit".
+2. **Een bestaande bindende gate zonder meting hoort terug naar shadow** tot hij er wel een
+   heeft. Dat geldt nu voor de time-stop.
+
+Regel 2 is de belangrijke, want die maakt van dit incident een controle die de volgende keer
+vanzelf afgaat. Zonder die regel repareer je één gate en herhaal je het patroon bij de
+volgende.
+
+| Gate | Bindend sinds | Gemeten? | Actie |
+|------|---------------|----------|-------|
+| LLM-veto | nooit (shadow) | ja, netto negatief | blijft shadow |
+| regime | nooit (shadow) | loopt | — |
+| breakeven-stop | nooit (shadow) | loopt sinds v0.20.0 | — |
+| chase-guard | nooit (shadow) | loopt sinds v0.20.0 | — |
+| **time-stop** | **v0.18.0** | **nee** | **terug naar shadow, of aantonen met `--vergelijk`** |
+
 ### Register van gate-flips (shadow <-> bindend)
 
 Elke omzetting is een gedateerde gebeurtenis, geen knop: hij reset de meetcohorte van alle gates en is daarmee de verklaring voor elke sprong in de meetdata. Leeg laten betekent "alle vier staan sinds v0.20.0 in shadow".
@@ -293,6 +318,7 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 
 | Datum | Wijziging | Getest |
 |-------|-----------|--------|
+| 2026-08-06 | Regime-filter in de backtester (ontbrak volledig, terwijl het het enige gebouwde mechanisme is om een verliesregime te vermijden) en als extra as in pass 1 van de optimizer; `calibrate --vergelijk` draait de productieconfig in portfolio-modus met time-stop en regime als assen, zodat de time-stop-vraag beantwoord wordt in de modus waarin de bot draait. No-op-bewaking in twee lagen: harde fout als een stap niets aan de invoer verandert, markering als het resultaat identiek is (dat laatste kan geen exception zijn, want een correctie die echt niets doet ziet er identiek uit). Gate-regel als voorwaarde in plaats van gewoonte, met de time-stop als openstaand geval | 261 tests (9 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Publicatiebeslissing vastgelegd: de twee reviewdocumenten blijven in de publieke repo, met de afweging en de voorwaarde om dat vóór de eerste live-key te heroverwegen. Procedureel gevolg: geen `git add -A` meer, committen met expliciete paden. Warmup-verwachting in het kalibratiedoc afgezwakt tot wat de onderbouwing draagt: de te korte warmup produceert ruis in `ema_fast > ema_slow`, geen consistente straf in één richting, dus de toets is relatief (rang t.o.v. de andere EMA-paren) en gaat over stabiliteit (rang op train én test, kleinere gap) | n.v.t. (documentatie) |
 | 2026-08-06 | v0.20.0 export hersteld op zijn eigen doel: alleen `/data` was niet te verzilveren zonder precies het image dat de export moest vermijden, dus de nieuwste kopie gaat ook naar `/share/tradebot-export` (`share:rw` in de add-on). Herstelprocedure inclusief de ontbrekende wisstap vastgelegd in `docs/export-en-herstel.md`, met een CI-test die exporteert, wist, terugzet en de uitkomst van alle drie de analyzers vergelijkt in plaats van rijtellingen. WAL-sidecarwaarschuwing vastgelegd plus een PASSIVE checkpoint na elke export | 250 tests (2 nieuw), ruff, bandit exit 0 |
 | 2026-08-05 | v0.20.0 databewaring: lichte meetexport (`tradebot.export`, dagelijks, 41 kB gzip per maand data, met config en per-gate fingerprints erin en een `--import`-herstelpad) als tweede herstelpad naast de image-back-up met drie dagen retentie; SQLite op WAL met `busy_timeout` (openstaand punt uit ronde 1, nu ook nodig omdat de back-up een warme kopie maakt), `synchronous` bewust op FULL. Derde versielocatie gevonden en gekoppeld: `src/tradebot/__init__.py` stond nog op 0.18.0 en die waarde belandt in elke export | 248 tests (8 nieuw), ruff, bandit exit 0 |

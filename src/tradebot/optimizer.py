@@ -36,6 +36,12 @@ GRID = {
     "min_signal_score": [2, 3, 4],
     "atr_stop_multiplier": [1.5, 2.0, 2.5],
     "reward_risk_ratio": [1.5, 2.0, 3.0],
+    # Het regime-filter hoort in pass 1 en niet in de exit-pass: het is een
+    # ENTRY-gate en bepaalt dus welke trades er überhaupt zijn. Belangrijker: het is
+    # het enige mechanisme dat al gebouwd is om een verliesregime te vermijden, dus
+    # de vraag "is er een configuratie die het slechte venster overleeft" is zonder
+    # deze as niet te beantwoorden.
+    "regime_binding": [False, True],
 }
 
 # Pass 2: de parameters die bepalen wanneer een positie WEER DICHT gaat, plus de
@@ -100,15 +106,18 @@ def grid_warmup(configs: list) -> int:
 
 def variants(cfg):
     """Pass 1: (omschrijving, aangepaste config) per kern-combinatie."""
-    for (ef, es), score, atr_m, rr in itertools.product(
+    for (ef, es), score, atr_m, rr, regime in itertools.product(
             GRID["ema"], GRID["min_signal_score"],
-            GRID["atr_stop_multiplier"], GRID["reward_risk_ratio"]):
+            GRID["atr_stop_multiplier"], GRID["reward_risk_ratio"],
+            GRID["regime_binding"]):
         c = cfg.model_copy(deep=True)
         c.strategy["ema_fast"], c.strategy["ema_slow"] = ef, es
         c.strategy["min_signal_score"] = score
         c.decision["atr_stop_multiplier"] = atr_m
         c.decision["reward_risk_ratio"] = rr
-        yield f"ema{ef}/{es} score>={score} atr*{atr_m} rr{rr}", c
+        c.regime = {**(c.regime or {}), "enabled": True, "binding": regime}
+        yield (f"ema{ef}/{es} score>={score} atr*{atr_m} rr{rr} "
+               f"regime:{'aan' if regime else 'uit'}"), c
 
 
 def exit_variants(cfg):
@@ -149,15 +158,20 @@ def return_over_dd(net_return_pct: float | None, max_dd_pct: float | None) -> fl
 
 
 def _run_period(data: dict[str, list[Candle]], cfg, fee_model: FeeModel,
-                warmup: int, portfolio: bool) -> dict:
+                warmup: int, portfolio: bool,
+                proxy_candles: list[Candle] | None = None) -> dict:
     if portfolio or len(data) > 1:
-        return run_portfolio_backtest(data, cfg, fee_model, warmup=warmup)
-    return run_backtest(next(iter(data.values())), cfg, fee_model, warmup=warmup)
+        return run_portfolio_backtest(data, cfg, fee_model, warmup=warmup,
+                                      proxy_candles=proxy_candles)
+    return run_backtest(next(iter(data.values())), cfg, fee_model, warmup=warmup,
+                        proxy_candles=proxy_candles)
 
 
 def evaluate(variant_list: list, train: dict, test: dict, fee_model: FeeModel,
              warmup: int, portfolio: bool,
-             min_trades: int = MIN_TRADES_RELIABLE) -> list[dict]:
+             min_trades: int = MIN_TRADES_RELIABLE,
+             proxy_train: list[Candle] | None = None,
+             proxy_test: list[Candle] | None = None) -> list[dict]:
     """Draai ELKE variant op beide perioden en rangschik op de testhelft.
 
     Rangschikking: eerst betrouwbaarheid (>= `min_trades` afgewikkelde trades),
@@ -166,8 +180,8 @@ def evaluate(variant_list: list, train: dict, test: dict, fee_model: FeeModel,
     """
     rows = []
     for desc, c in variant_list:
-        r_train = _run_period(train, c, fee_model, warmup, portfolio)
-        r_test = _run_period(test, c, fee_model, warmup, portfolio)
+        r_train = _run_period(train, c, fee_model, warmup, portfolio, proxy_train)
+        r_test = _run_period(test, c, fee_model, warmup, portfolio, proxy_test)
         rows.append({
             "desc": desc,
             "cfg": c,
@@ -180,6 +194,7 @@ def evaluate(variant_list: list, train: dict, test: dict, fee_model: FeeModel,
             "dd_pct": r_test["max_drawdown_pct"],
             "test_rar": return_over_dd(r_test["net_return_pct"], r_test["max_drawdown_pct"]),
             "mode": r_test["mode"],
+            "regime": r_test.get("regime", "uit"),
         })
     for r in rows:
         r["reliable"] = r["trades"] >= min_trades
@@ -250,7 +265,13 @@ def main() -> None:
     print(f"warmup {warmup} candles (geschaald met de traagste EMA in de grid, "
           f"gelijk voor alle varianten), {len(core)} varianten x 2 perioden")
 
-    rows = evaluate(core, train, test, fee_model, warmup, args.portfolio, args.min_trades)
+    proxy_market = str((cfg.regime or {}).get("proxy_market", "BTC-EUR"))
+    proxy_train, proxy_test = train.get(proxy_market), test.get(proxy_market)
+    if proxy_train is None:
+        print(f"LET OP: proxy-markt {proxy_market} zit niet in de dataset, dus de "
+              f"regime-varianten kunnen niet draaien. Voeg hem toe aan de markten.")
+    rows = evaluate(core, train, test, fee_model, warmup, args.portfolio, args.min_trades,
+                    proxy_train, proxy_test)
     print_table("PASS 1 - kernparameters (gesorteerd op risicogecorrigeerd TEST-rendement)",
                 rows, args.top, args.min_trades)
 
@@ -261,7 +282,7 @@ def main() -> None:
         print(f"\nPASS 2 op de winnaar van pass 1: {rows[0]['desc']} "
               f"({len(exits)} varianten x 2 perioden)")
         rows2 = evaluate(exits, train, test, fee_model, max(warmup, warmup2),
-                         args.portfolio, args.min_trades)
+                         args.portfolio, args.min_trades, proxy_train, proxy_test)
         print_table("PASS 2 - exit- en drempelparameters", rows2, args.top, args.min_trades)
 
     print("\nLet op: kies op de test-kolom, niet op train. Een grote gap = overfit.")

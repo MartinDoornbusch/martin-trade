@@ -59,20 +59,25 @@ def test_max_drawdown():
 
 
 def make_cfg() -> AppConfig:
-    return AppConfig(markets=["BTC-EUR"], schedule={}, fees={},
+    return AppConfig(markets=["BTC-EUR"], schedule={},
+                     fees={"maker_pct": 0.15, "taker_pct": 0.25,
+                           "slippage_buffer_pct": 0.10},
                      strategy={"ema_fast": 12, "ema_slow": 26, "min_signal_score": 3,
                                "atr_period": 14, "rsi_buy_zone_min": 25,
                                "rsi_buy_zone_max": 45},
                      decision={"atr_stop_multiplier": 2.0, "reward_risk_ratio": 2.0,
                                "min_profit_pct": 0.5},
-                     risk={}, llm={}, exits={"time_stop_candles": 12})
+                     risk={}, llm={}, exits={"time_stop_candles": 12},
+                     regime={"enabled": True, "binding": False,
+                             "proxy_market": "BTC-EUR"})
 
 
 def test_variants_cover_full_grid_and_apply_overrides():
     cfg = make_cfg()
     combos = list(variants(cfg))
     expected = (len(GRID["ema"]) * len(GRID["min_signal_score"])
-                * len(GRID["atr_stop_multiplier"]) * len(GRID["reward_risk_ratio"]))
+                * len(GRID["atr_stop_multiplier"]) * len(GRID["reward_risk_ratio"])
+                * len(GRID["regime_binding"]))
     assert len(combos) == expected
     desc, c = combos[0]
     assert (c.strategy["ema_fast"], c.strategy["ema_slow"]) == GRID["ema"][0]
@@ -84,7 +89,7 @@ def test_variants_cover_full_grid_and_apply_overrides():
 def _fake_period(results: dict[int, tuple[float, float]], seen: list):
     """Vervangt de backtest-run: leest het antwoord uit `results` op basis van een
     marker op de config, en noteert welke (marker, periode, warmup) langskwamen."""
-    def fake(data, cfg, fee_model, warmup, portfolio):
+    def fake(data, cfg, fee_model, warmup, portfolio, proxy=None):
         periode = next(iter(data))
         seen.append((cfg.marker, periode, warmup))
         train_pct, test_pct = results[cfg.marker]
@@ -121,7 +126,7 @@ def test_low_trade_variants_sink_to_the_bottom(monkeypatch):
     risicogecorrigeerde ranking systematisch laagfrequente varianten, en dat is bij
     een fee-probleem precies de verkeerde kant op. Ze vallen niet weg maar zakken
     naar onderen, gemarkeerd."""
-    def fake(data, cfg, fee_model, warmup, portfolio):
+    def fake(data, cfg, fee_model, warmup, portfolio, proxy=None):
         return {"net_return_pct": 99.0 if cfg.marker == 0 else 5.0,
                 "closed_trades": 15 if cfg.marker == 0 else 40,
                 "win_rate_pct": 100.0, "max_drawdown_pct": 1.0, "mode": "single"}
@@ -250,15 +255,56 @@ def test_get_candles_passes_the_end_parameter():
     assert "end=" not in Spion.paden[0]
 
 
-def test_calibration_step_actually_toggles_slippage_on_the_fill():
-    """Regressie op een defect dat pas in Martins run zichtbaar werd: de
-    slippage-stap gaf delta +0,00 omdat `run_stap` de vlag niet doorgaf. De stap
-    stond in de tabel maar deed niets, en dat is erger dan hem weglaten."""
-    import inspect
+def test_no_calibration_step_can_become_a_no_op():
+    """Regressie op een defect dat pas in de echte run zichtbaar werd: de
+    slippage-stap gaf delta +0,00 met identieke trades omdat `run_stap` de vlag niet
+    doorgaf. Zo'n rij is erger dan een ontbrekende rij, want hij leest als een
+    bevinding ("slippage kost niets") terwijl er niets gemeten is.
 
+    Bewust een GEDRAGSassertie en geen bron-inspectie: die zou dit ene geval vangen
+    maar breken bij de volgende refactor, en zou niets zeggen over stappen die nog
+    gebouwd moeten worden. Hier krijgt elke stap een signatuur van alles wat hij aan
+    de backtester meegeeft, en twee opeenvolgende signaturen mogen nooit gelijk zijn.
+    """
+    import pytest
+
+    from tradebot.calibrate import (
+        STAPPEN,
+        controleer_geen_no_ops,
+        stap_signatuur,
+    )
+
+    cfg = make_cfg()
+    controleer_geen_no_ops(cfg, STAPPEN)          # de echte stapeling is schoon
+
+    signaturen = [stap_signatuur(cfg, s) for s in STAPPEN]
+    assert len(set(signaturen)) == len(STAPPEN), "elke stap moet een eigen invoer hebben"
+
+    # Een gedupliceerde stap moet hard falen, ook als hij er in de tabel prima uitziet.
+    from dataclasses import replace as vervang
+    kapot = list(STAPPEN[:3]) + [vervang(STAPPEN[2], naam="stiekem een no-op")]
+    with pytest.raises(ValueError, match="verandert niets"):
+        controleer_geen_no_ops(cfg, kapot)
+
+
+def test_identical_results_are_flagged_but_not_fatal():
+    """Laag 2 van de no-op-bewaking. Een identiek RESULTAAT kan twee dingen
+    betekenen: de correctie doet op deze data niets (de trend-break-exit is daar het
+    voorbeeld van, en dán is delta 0,00 juist de bevinding), of de stap is niet
+    bedraad. Die twee zijn aan het resultaat niet te onderscheiden, dus dit mag geen
+    exception zijn — wel een markering, zodat "delta 0,00" nooit meer stilzwijgend
+    als bevinding gelezen wordt."""
     from tradebot import calibrate
 
-    bron = inspect.getsource(calibrate.run_stap)
-    assert bron.count("slippage_on_fill=stap.slippage") == 2, (
-        "beide backtest-aanroepen in run_stap moeten de slippage-vlag doorgeven")
-    assert "per_markt" in bron, "referentierij moet per markt uitgesplitst worden"
+    vast = {"net_return_pct": 5.0, "closed_trades": 10, "win_rate_pct": 50.0,
+            "max_drawdown_pct": 8.0}
+    calibrate_run_stap = calibrate.run_stap
+    try:
+        calibrate.run_stap = lambda data, cfg, stap: dict(vast)
+        rijen = calibrate.attributie({}, make_cfg())
+    finally:
+        calibrate.run_stap = calibrate_run_stap
+
+    assert rijen[0]["identiek"] is False          # eerste rij heeft geen voorganger
+    assert all(r["identiek"] for r in rijen[1:])  # de rest is identiek en gemarkeerd
+    assert all(r["delta"] == 0.0 for r in rijen[1:])

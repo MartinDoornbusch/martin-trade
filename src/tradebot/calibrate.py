@@ -44,6 +44,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass
 
 from .backtest import DEFAULT_WARMUP, run_backtest, run_portfolio_backtest
@@ -123,6 +124,50 @@ def fee_model_voor(cfg, stap: Stap) -> FeeModel:
                     cfg.fees["slippage_buffer_pct"])
 
 
+def stap_signatuur(cfg, stap: Stap) -> str:
+    """Alles wat deze stap aan de backtester meegeeft, in één vergelijkbare vorm.
+
+    Bestaat om te voorkomen dat een stap stilletjes een no-op wordt. Dat is één keer
+    gebeurd: de slippage-stap gaf delta +0,00 met identieke trades omdat `run_stap`
+    de vlag niet doorgaf. Zo'n rij is erger dan een ontbrekende rij, want hij leest
+    als een bevinding ("slippage kost niets") terwijl er niets gemeten is.
+
+    Een bron-inspectie zou dit ene geval vangen maar breekt bij de volgende
+    refactor. Deze signatuur dekt ook stappen die nog gebouwd moeten worden:
+    verandert er niets aan de INVOER, dan faalt de run hard.
+
+    Dit is laag 1 van twee. Hij vangt een stap die niets zegt te veranderen, maar
+    niet een bedradingsfout waarbij de stap wél iets declareert en `run_stap` het
+    niet doorgeeft. Daarvoor is laag 2 nodig, in `attributie`: een identiek
+    RESULTAAT als de vorige stap. Dat kan geen harde fout zijn, want een correctie
+    die op deze data echt niets doet ziet er precies zo uit; de trend-break-exit is
+    daar het voorbeeld van. Vandaar een markering in plaats van een exception.
+    """
+    c = config_voor(cfg, stap)
+    fm = fee_model_voor(cfg, stap)
+    return json.dumps({
+        "strategy": c.strategy, "decision": c.decision, "exits": c.exits,
+        "regime": getattr(c, "regime", {}), "risk": c.risk,
+        "fees": [fm.maker_pct, fm.taker_pct, fm.slippage_buffer_pct],
+        "intrabar": stap.intrabar, "trend_break": stap.trend_break,
+        "slippage_on_fill": stap.slippage, "portfolio": stap.portfolio,
+        "warmup": default_warmup(c.strategy) if stap.geschaalde_warmup else OUDE_WARMUP,
+    }, sort_keys=True, default=str)
+
+
+def controleer_geen_no_ops(cfg, stappen: list[Stap]) -> None:
+    """Faal hard als een stap dezelfde invoer heeft als zijn voorganger."""
+    vorige = None
+    for stap in stappen:
+        huidig = stap_signatuur(cfg, stap)
+        if vorige is not None and huidig == vorige:
+            raise ValueError(
+                f"stap '{stap.naam}' ({stap.punt}) verandert niets aan de invoer van de "
+                f"backtester en zou dus altijd delta 0,00 geven. Een rij die niets meet "
+                f"leest als een bevinding; repareer de bedrading of haal de stap weg.")
+        vorige = huidig
+
+
 def run_stap(data: dict[str, list[Candle]], cfg, stap: Stap) -> dict:
     c = config_voor(cfg, stap)
     fm = fee_model_voor(cfg, stap)
@@ -153,10 +198,21 @@ def run_stap(data: dict[str, list[Candle]], cfg, stap: Stap) -> dict:
     }
 
 
+def _uitkomst(r: dict) -> tuple:
+    return (r["net_return_pct"], r["closed_trades"], r["win_rate_pct"],
+            r["max_drawdown_pct"])
+
+
 def attributie(data: dict[str, list[Candle]], cfg) -> list[dict]:
-    rijen, vorige = [], None
+    controleer_geen_no_ops(cfg, STAPPEN)          # laag 1: declareert de stap iets?
+    rijen, vorige, vorige_uitkomst = [], None, None
     for stap in STAPPEN:
         r = run_stap(data, cfg, stap)
+        # Laag 2: kwam er ook iets uit? Geen exception, want een correctie die op
+        # deze data echt niets doet ziet er identiek uit (de trend-break-exit is daar
+        # het voorbeeld van). Wel zichtbaar, zodat "delta 0,00" nooit meer
+        # onopgemerkt als bevinding gelezen wordt terwijl het een bedradingsfout is.
+        identiek = vorige_uitkomst is not None and _uitkomst(r) == vorige_uitkomst
         rijen.append({
             "naam": stap.naam,
             "punt": stap.punt,
@@ -166,9 +222,10 @@ def attributie(data: dict[str, list[Candle]], cfg) -> list[dict]:
             "win": r["win_rate_pct"] or 0.0,
             "dd": r["max_drawdown_pct"],
             "productie": stap.productie,
+            "identiek": identiek,
             "per_markt": r.get("per_markt"),
         })
-        vorige = r["net_return_pct"]
+        vorige, vorige_uitkomst = r["net_return_pct"], _uitkomst(r)
     return rijen
 
 
@@ -178,6 +235,9 @@ def print_attributie(rijen: list[dict]) -> None:
     for r in rijen:
         delta = "  —" if r["delta"] is None else f"{r['delta']:+.2f}"
         vlag = "  <- productie" if r["productie"] else ""
+        if r.get("identiek"):
+            vlag += "  <- IDENTIEK aan de vorige rij: of de correctie doet op deze " \
+                    "data niets, of de bedrading klopt niet"
         print(f"{r['naam']:38s} {r['punt']:10s} {r['rendement']:>8.2f} {delta:>8s} "
               f"{r['trades']:>7d} {r['win']:>6.1f} {r['dd']:>6.1f}{vlag}")
     referentie = rijen[0]
@@ -205,6 +265,60 @@ def print_attributie(rijen: list[dict]) -> None:
     print("bot méér trades maakte dan de backtest voorspelde.")
 
 
+def vergelijk_matrix(data: dict[str, list[Candle]], cfg) -> list[dict]:
+    """Productieconfig in PORTFOLIO-modus, met time-stop en regime als assen.
+
+    Twee vragen die de gestapelde attributie niet kan beantwoorden:
+
+    * de time-stop-delta daar wordt in `single` gemeten, all-in en zonder slots,
+      cooldown of correlatiecap. Dat is een bovengrens, geen productiegetal. En
+      zodra de portfolio-stap aangaat zit de time-stop er al in, dus het getal dat
+      je wilt weten rolt er nooit uit;
+    * het regime-filter is het enige mechanisme dat al gebouwd is om een
+      verliesregime te vermijden. De vraag is niet welke variant het meest verdiende
+      in het gunstige venster, maar of er een configuratie is die het slechte
+      venster overleeft.
+
+    Vier runs, alle vier in de modus waarin de bot draait.
+    """
+    warmup = default_warmup(cfg.strategy)
+    fm = FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
+                  cfg.fees["slippage_buffer_pct"])
+    proxy_market = str((getattr(cfg, "regime", {}) or {}).get("proxy_market", "BTC-EUR"))
+    uit = []
+    for n_ts in (int((cfg.exits or {}).get("time_stop_candles", 12) or 12), 0):
+        for regime in (False, True):
+            c = cfg.model_copy(deep=True)
+            c.exits = {**(c.exits or {}), "time_stop_candles": n_ts}
+            c.regime = {**(getattr(c, "regime", {}) or {}),
+                        "enabled": True, "binding": regime}
+            r = run_portfolio_backtest(data, c, fm, warmup=warmup,
+                                       proxy_candles=data.get(proxy_market))
+            # LET OP: `r` bevat zelf een sleutel "regime" (de gerapporteerde
+            # status). De gevraagde as heet daarom `regime_gevraagd`, anders
+            # overschrijft `**r` hem en tonen alle rijen dezelfde waarde.
+            uit.append({"time_stop": n_ts, "regime_gevraagd": regime, **r})
+    return uit
+
+
+def print_vergelijking(rijen: list[dict]) -> None:
+    print(f"\n{'time-stop':>10s} {'regime':>8s} {'status':>16s} {'rend%':>8s} "
+          f"{'trades':>7s} {'win%':>6s} {'dd%':>6s} {'fees EUR':>9s}")
+    for r in rijen:
+        gevraagd = "aan" if r["regime_gevraagd"] else "uit"
+        print(f"{r['time_stop']:>10d} {gevraagd:>8s} {r['regime']:>16s} "
+              f"{r['net_return_pct']:>8.2f} {r['closed_trades']:>7d} "
+              f"{(r['win_rate_pct'] or 0):>6.1f} {r['max_drawdown_pct']:>6.1f} "
+              f"{r['total_fees_eur']:>9.2f}")
+    if any(r["regime"] == "proxy ONTBREEKT" for r in rijen):
+        print("\nLET OP: de proxy-markt ontbreekt in de dataset, dus de regime-gate heeft")
+        print("niet gedraaid. Voeg hem toe aan de markten; een stil uitgeschakelde gate")
+        print("leest als 'regime helpt niet' terwijl hij nooit is toegepast.")
+    print("\nAlle vier in portfolio-modus, dus onderling vergelijkbaar en vergelijkbaar")
+    print("met de live-run. `time-stop 0` is de gate uit, niet op shadow: in een backtest")
+    print("doet een shadow-gate per definitie niets.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("markets", nargs="+")
@@ -214,6 +328,9 @@ def main() -> None:
                         help="einde van het venster (ISO-8601 of epoch ms). "
                              "Zonder dit pakt --limit de NIEUWSTE candles, dus "
                              "twee runs op verschillende momenten zien andere data")
+    parser.add_argument("--vergelijk", action="store_true",
+                        help="in plaats van de attributie: productieconfig in "
+                             "portfolio-modus met time-stop en regime als assen")
     args = parser.parse_args()
 
     cfg = get_config()
@@ -232,6 +349,10 @@ def main() -> None:
         "  <- NIET gepind; gebruik --end om dit venster vast te leggen en de "
         "ankerrun exact te herhalen")
     print(f"venster: {candle_window(eerste)}{waarschuwing}")
+    if args.vergelijk:
+        print("\nVergelijking op de productieconfig, alle vier in portfolio-modus")
+        print_vergelijking(vergelijk_matrix(data, cfg))
+        return
     print(f"warmup oud {OUDE_WARMUP} -> geschaald {default_warmup(cfg.strategy)} "
           f"(DEFAULT_WARMUP in de backtester is {DEFAULT_WARMUP})")
     print_attributie(attributie(data, cfg))

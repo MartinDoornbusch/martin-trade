@@ -100,6 +100,21 @@ def _interval_ms(candles: list[Candle]) -> int:
     return candles[-1].ts - candles[-2].ts if len(candles) >= 2 else 0
 
 
+def regime_reeks(proxy_candles: list[Candle], strategy_cfg: dict) -> dict[int, bool]:
+    """Per candle-timestamp: staat de proxy-markt risk-on (EMA-snel >= EMA-traag)?
+
+    Zelfde regel als `engine._proxy_regime_ok`, maar vooraf uitgerekend over de hele
+    reeks. Het regime-filter ontbrak volledig in de backtester, terwijl het het
+    enige mechanisme is dat in productie al gebouwd is om precies een verliesregime
+    te vermijden. Zonder deze reeks kan de grid alleen de vraag "welke variant
+    verdiende het meest in het gunstige venster" beantwoorden, en niet de vraag die
+    telt: is er een configuratie die het slechte venster overleeft.
+    """
+    snaps = build_snapshots("PROXY", proxy_candles, strategy_cfg)
+    return {c.ts: (True if snaps[i] is None else bool(snaps[i].ema_fast >= snaps[i].ema_slow))
+            for i, c in enumerate(proxy_candles)}
+
+
 def _exits_params(cfg, fee_model: FeeModel, entry_is_maker: bool = False) -> dict:
     exits = getattr(cfg, "exits", {}) or {}
     be = exits.get("breakeven_stop", {}) or {}
@@ -172,7 +187,8 @@ def _check_exit_at_bar(pos: _Pos, candles: list[Candle], i: int, snap: MarketSna
 
 def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
          start_eur: float, warmup: int, mode: str, intrabar: bool = True,
-         trend_break: bool = False, slippage_on_fill: bool = True) -> dict:
+         trend_break: bool = False, slippage_on_fill: bool = True,
+         proxy_candles: list[Candle] | None = None) -> dict:
     """Gedeelde kern voor beide modi: identieke entry- en exitlogica, alleen de
     sizing- en limietregels verschillen."""
     strategy_cfg = cfg.strategy
@@ -194,6 +210,17 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
     max_corr = float(risk_cfg.get("max_correlation", 0.85))
     corr_lookback = int(risk_cfg.get("correlation_lookback", 60))
     max_cluster = int(risk_cfg.get("max_correlated_positions", 2))
+
+    # Regime-gate, exact zoals de engine hem toepast: alleen actief als hij in config
+    # zowel `enabled` als `binding` is. Staat hij op shadow, dan blokkeert hij in
+    # productie ook niets en hoort de backtest hem evenmin toe te passen.
+    regime_cfg = getattr(cfg, "regime", {}) or {}
+    regime_gewenst = bool(regime_cfg.get("enabled", False)) and bool(
+        regime_cfg.get("binding", False))
+    proxy_market = str(regime_cfg.get("proxy_market", "BTC-EUR"))
+    proxy = proxy_candles if proxy_candles is not None else candles_by_market.get(proxy_market)
+    regime_ok = (regime_reeks(proxy, strategy_cfg)
+                 if regime_gewenst and proxy else None)
 
     markets = sorted(candles_by_market)
     snaps = {m: build_snapshots(m, candles_by_market[m], strategy_cfg) for m in markets}
@@ -252,6 +279,10 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
 
             if not snap.atr > 0:
                 continue
+            # Fail-open op een ontbrekende timestamp, net als de engine: een
+            # regime-datagat mag entries niet stilleggen.
+            if regime_ok is not None and not regime_ok.get(ts, True):
+                continue
             if evaluate_buy(snap, strategy_cfg).action != "buy":
                 continue
             stop_dist = snap.atr * atr_mult
@@ -300,6 +331,8 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
     return {
         "mode": mode,
         "markets": len(markets),
+        "regime": ("bindend" if regime_ok is not None else
+                   "proxy ONTBREEKT" if regime_gewenst else "uit"),
         "warmup": warmup,
         "closed_trades": trades,
         "open_at_end": len(positions),
@@ -353,20 +386,30 @@ def _cluster_blocked(candles_by_market: dict[str, list[Candle]], positions: dict
 def run_backtest(candles: list[Candle], cfg, fee_model: FeeModel,
                  start_eur: float = 1000.0, warmup: int = DEFAULT_WARMUP,
                  intrabar: bool = True, trend_break: bool = False,
-                 slippage_on_fill: bool = True) -> dict:
-    """Enkelvoudige markt, all-in per positie: modus "single" (signaalonderzoek)."""
+                 slippage_on_fill: bool = True,
+                 proxy_candles: list[Candle] | None = None) -> dict:
+    """Enkelvoudige markt, all-in per positie: modus "single" (signaalonderzoek).
+
+    `proxy_candles` is nodig als het regime-filter bindend staat: de proxy-markt is
+    dan een ANDERE markt dan de geteste, dus de aanroeper moet hem meegeven.
+    """
     return _run({"BT": candles}, cfg, fee_model, start_eur, warmup, "single", intrabar,
-                trend_break, slippage_on_fill)
+                trend_break, slippage_on_fill, proxy_candles)
 
 
 def run_portfolio_backtest(candles_by_market: dict[str, list[Candle]], cfg,
                            fee_model: FeeModel, start_eur: float = 1000.0,
                            warmup: int = DEFAULT_WARMUP,
                            intrabar: bool = True, trend_break: bool = False,
-                           slippage_on_fill: bool = True) -> dict:
-    """Meerdere markten met gedeelde cash en alle risk-gates: modus "portfolio"."""
+                           slippage_on_fill: bool = True,
+                           proxy_candles: list[Candle] | None = None) -> dict:
+    """Meerdere markten met gedeelde cash en alle risk-gates: modus "portfolio".
+
+    De proxy-markt wordt uit `candles_by_market` gehaald als hij erin zit; anders
+    meegeven via `proxy_candles`, want een stil uitgeschakelde gate is erger dan
+    geen gate."""
     return _run(candles_by_market, cfg, fee_model, start_eur, warmup, "portfolio",
-                intrabar, trend_break, slippage_on_fill)
+                intrabar, trend_break, slippage_on_fill, proxy_candles)
 
 
 def main() -> None:

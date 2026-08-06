@@ -113,6 +113,29 @@ Let op drie dingen bij die vergelijking:
   atr 2,0, `rsi_oversold: 35` (zone 25-45) en fees 0,15/0,25/0,10, dus het configverschil met
   vandaag is op elk veld dat de oude code leest exact nul.
 
+### Uitkomst van de anker-check (6 augustus 2026): rij 1 reproduceert
+
+Na de twee fixes hieronder en met een gepind venster (`--end 2026-08-06T08:00:00Z`) valt de
+per-markt-vergelijking zo uit:
+
+| Markt | Anker (oude code) | Rij 1 attributie | Verschil |
+|-------|-------------------|------------------|----------|
+| BTC-EUR | 14,46 / 20 / 55,0 / 13,7 / 104,42 | idem | identiek op alle vijf velden |
+| XRP-EUR | 6,25 / 16 / 43,8 / 12,4 / 81,97 | idem | identiek op alle vijf velden |
+| ETH-EUR | 18,14 / 15 / 53,3 / 16,6 / 82,73 | 18,23 | alleen rendement, +0,09 |
+| LINK-EUR | 25,67 / 18 / 55,6 / 18,3 / 103,40 | 26,71 | alleen rendement, +1,04 |
+| SOL-EUR | 18,27 / 17 / 47,1 / 16,3 / 106,03 | 5,58 / 16 / 43,8 | één trade minder |
+
+Twee markten kloppen tot op de decimaal op rendement, trades, win-rate, drawdown én fees.
+Bij ETH en LINK verschilt alleen het rendement terwijl fees en drawdown identiek zijn, wat
+past bij een randeffect. SOL is volledig verklaard door het vensterverschil: 17 tegen 16
+trades en 47,1% tegen 43,8% is precies één winnende trade minder (8/17 tegen 7/16), en met
+all-in sizing verlaagt die ene winnaar het kapitaal voor alle volgende trades, wat de fees
+van 106,03 naar 89,56 drukt. Intern consistent.
+
+**Conclusie: de reconstructie is geldig en de deltas eronder zijn leesbaar.** Herhaal de
+ankerrun met dezelfde `--end` om ook SOL te sluiten.
+
 ### Wat de eerste ankerrun opleverde (6 augustus 2026)
 
 Rij 1 reproduceerde het anker **niet** volledig, en dat is precies waarvoor deze stap
@@ -241,6 +264,16 @@ Bij het lezen:
   close-exits werden intrabar-stops gemist, dus overleefden er méér posities tot aan die
   derde regel. Zou je de trend-break pas aanzetten nadat de intrabar-correctie erin zit, dan
   meet je zijn effect in een wereld die nooit heeft bestaan, en systematisch te laag.
+- **De sprong naar portfolio-modus is grotendeels een artefact van de rijen erboven,
+  niet een eigenschap van bucket-sizing.** Die verklaring is één keer fout opgeschreven
+  ("bucket zet een kwart van het kapitaal in") en dat klopt niet: met portfolio 1000 en
+  bucket 250 geeft `effective_max_positions` vier slots, dus 4 x 250 = 100% inzetbaar. Puur
+  op inzet zou er niets af moeten. De echte oorzaak zit in de vergelijking: alle rijen
+  bóven de portfolio-stap draaien vijf onafhankelijke all-in runs van elk 1000 euro en
+  middelen die. Dat veronderstelt vijf keer je kapitaal en is dus geen haalbare strategie.
+  De portfolio-rij deelt één pot over vijf markten, met slotcontentie, gedeelde drawdown,
+  cooldown en correlatiecap. **Lees de rijen erboven dus als systematisch optimistisch; de
+  productierij is de enige eerlijke.**
 - Verwachting bij 3.2 (warmup). **Deze stond hier eerst te sterk geformuleerd**, en zo
   geformuleerd kun je een juiste redenering per ongeluk verwerpen. Wat er feitelijk gebeurt
   bij warmup 60 met een EMA die op `arr[0]` seedt: `ema_fast` (20) convergeert sneller dan
