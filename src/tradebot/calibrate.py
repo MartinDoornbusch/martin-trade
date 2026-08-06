@@ -314,6 +314,9 @@ def print_vergelijking(rijen: list[dict]) -> None:
         print("\nLET OP: de proxy-markt ontbreekt in de dataset, dus de regime-gate heeft")
         print("niet gedraaid. Voeg hem toe aan de markten; een stil uitgeschakelde gate")
         print("leest als 'regime helpt niet' terwijl hij nooit is toegepast.")
+    if rijen and rijen[0].get("buy_hold_pct") is not None:
+        print(f"\nIJkpunt: gelijkgewogen kopen-en-vasthouden over dezelfde markten en "
+              f"hetzelfde venster gaf {rijen[0]['buy_hold_pct']:+.2f}%.")
     print("\nAlle vier in portfolio-modus, dus onderling vergelijkbaar en vergelijkbaar")
     print("met de live-run. `time-stop 0` is de gate uit, niet op shadow: in een backtest")
     print("doet een shadow-gate per definitie niets.")

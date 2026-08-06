@@ -288,7 +288,17 @@ class TradingCycle:
                 self.fee_model.round_trip_pct(), n_ts,
                 float(exits_cfg.get("time_stop_min_net_pct", 0.0)))
             if hit:
-                return True, why
+                # Sinds v0.20.0 heeft ook deze gate een binding-vlag. Hij ging in
+                # v0.18.0 bindend zonder meting, tegen de eigen regel in dat elke
+                # gate eerst shadow draait; de eerste meting (portfolio-modus, echte
+                # data) gaf -15,7 procentpunt en een tekenwissel.
+                if bool(exits_cfg.get("time_stop_binding", True)):
+                    return True, why
+                self._log_signal(pos.market, "sell", "shadow", 0,
+                                 f"SHADOW-TIMESTOP genegeerd: {why}",
+                                 {"shadow_timestop": why, "price": snap.price,
+                                  "entry_price": pos.entry_price})
+                # bewust geen return: de breakeven-stop moet hierna nog kunnen vuren
 
         be_cfg = exits_cfg.get("breakeven_stop", {}) or {}
         if not bool(be_cfg.get("enabled", False)):

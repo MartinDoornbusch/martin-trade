@@ -438,3 +438,24 @@ def test_regime_uses_the_proxy_from_the_dataset_when_present():
     r = run_portfolio_backtest(data, cfg, fees(), warmup=WARMUP)
     assert r["regime"] == "bindend"
     assert r["closed_trades"] == 0 and r["open_at_end"] == 0
+
+
+def test_buy_and_hold_benchmark_uses_the_same_window():
+    """Zonder ijkpunt zegt een rendement weinig: "+9% over vijf maanden" is een
+    prestatie of een teleurstelling afhankelijk van wat de markt intussen deed, en
+    bij een long-only momentumstrategie in een stijgende markt is dat precies waar
+    de vraag "is er edge" over gaat. Het ijkpunt start op dezelfde bar als de
+    strategie, dus na de warmup."""
+    from tradebot.backtest import buy_hold_pct
+
+    stijgend = candles([100.0 * (1.01 ** i) for i in range(WARMUP + 11)])
+    verwacht = (stijgend[-1].close / stijgend[WARMUP].close - 1) * 100
+    assert buy_hold_pct({"A-EUR": stijgend}, WARMUP) == pytest.approx(verwacht, abs=0.01)
+
+    # gelijkgewogen over meerdere markten
+    vlak = candles([100.0] * (WARMUP + 11))
+    gemengd = buy_hold_pct({"A-EUR": stijgend, "B-EUR": vlak}, WARMUP)
+    assert gemengd == pytest.approx(verwacht / 2, abs=0.01)
+
+    r = run_portfolio_backtest({"A-EUR": stijgend}, make_cfg(), fees(), warmup=WARMUP)
+    assert r["buy_hold_pct"] == pytest.approx(verwacht, abs=0.01)

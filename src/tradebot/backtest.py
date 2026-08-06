@@ -49,6 +49,24 @@ MIN_ORDER_EUR = 10.0   # zelfde ondergrens als DecisionEngine.evaluate_buy
 LEGACY_TREND_BREAK_RSI = 70.0
 
 
+def buy_hold_pct(candles_by_market: dict[str, list[Candle]], warmup: int) -> float:
+    """Gelijkgewogen kopen-en-vasthouden over dezelfde markten en hetzelfde venster.
+
+    Zonder ijkpunt zegt een rendement weinig. "+9% over vijf maanden" is een
+    prestatie of een teleurstelling afhankelijk van wat de markt intussen deed, en
+    bij een long-only momentumstrategie in een stijgende markt is dat verschil
+    precies waar de vraag "is er edge" over gaat.
+    """
+    rendementen = []
+    for candles in candles_by_market.values():
+        if len(candles) <= warmup:
+            continue
+        start, eind = candles[warmup].close, candles[-1].close
+        if start > 0:
+            rendementen.append((eind / start - 1) * 100)
+    return round(sum(rendementen) / len(rendementen), 2) if rendementen else 0.0
+
+
 def max_drawdown_pct(equity: list[float]) -> float:
     """Grootste piek-naar-dal terugval in procenten."""
     peak, max_dd = float("-inf"), 0.0
@@ -341,6 +359,7 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
         "total_fees_eur": round(total_fees, 2),
         "max_drawdown_pct": max_drawdown_pct(equity_curve),
         "exit_reasons": exit_reasons,
+        "buy_hold_pct": buy_hold_pct(candles_by_market, warmup),
         "final_eur": round(final, 2),
     }
 

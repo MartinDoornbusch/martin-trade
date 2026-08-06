@@ -308,3 +308,25 @@ def test_identical_results_are_flagged_but_not_fatal():
     assert rijen[0]["identiek"] is False          # eerste rij heeft geen voorganger
     assert all(r["identiek"] for r in rijen[1:])  # de rest is identiek en gemarkeerd
     assert all(r["delta"] == 0.0 for r in rijen[1:])
+
+
+def test_min_pct_reports_the_worst_of_both_windows(monkeypatch):
+    """De 70/30-split is CHRONOLOGISCH: train is de oudere periode, test de recente.
+    Een variant die alleen op test wint, wint dus alleen in het meest recente
+    marktregime. `min_pct` is de uitkomst in het slechtste van de twee vensters en
+    beantwoordt de vraag die telt: overleeft een configuratie ook het ongunstige
+    venster."""
+    resultaten = {0: (-38.0, 6.9), 1: (2.0, 1.0)}
+    seen: list = []
+    monkeypatch.setattr(optimizer, "_run_period", _fake_period(resultaten, seen))
+    rows = evaluate([("regime-afhankelijk", SimpleNamespace(marker=0)),
+                     ("bescheiden maar stabiel", SimpleNamespace(marker=1))],
+                    {"TRAIN": []}, {"TEST": []}, None, 150, False, min_trades=5)
+
+    op_naam = {r["desc"]: r for r in rows}
+    assert op_naam["regime-afhankelijk"]["min_pct"] == -38.0
+    assert op_naam["bescheiden maar stabiel"]["min_pct"] == 1.0
+    # op test wint de eerste, op overleving de tweede
+    assert rows[0]["desc"] == "regime-afhankelijk"
+    beste_overleving = max(rows, key=lambda r: r["min_pct"])
+    assert beste_overleving["desc"] == "bescheiden maar stabiel"

@@ -72,7 +72,7 @@ def test_export_carries_the_config_and_the_gate_hashes(memory_db):
     assert meta["version"]
     assert meta["config"]["strategy"]["ema_slow"] == 50
     assert meta["config"]["fees"]["taker_pct"] == 0.25
-    assert set(meta["gate_hash"]) == {"veto", "regime", "breakeven", "chase"}
+    assert set(meta["gate_hash"]) == {"veto", "regime", "timestop", "breakeven", "chase"}
     assert meta["rows"]["trades"] == 2
 
 

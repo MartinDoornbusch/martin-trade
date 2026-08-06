@@ -260,7 +260,7 @@ volgende.
 | regime | nooit (shadow) | loopt | — |
 | breakeven-stop | nooit (shadow) | loopt sinds v0.20.0 | — |
 | chase-guard | nooit (shadow) | loopt sinds v0.20.0 | — |
-| **time-stop** | **v0.18.0** | **nee** | **terug naar shadow, of aantonen met `--vergelijk`** |
+| **time-stop** | v0.18.0 t/m 2026-08-06 | ja, sinds 2026-08-06: **netto negatief** | **teruggezet naar shadow** (`exits.time_stop_binding: false`) |
 
 ### Register van gate-flips (shadow <-> bindend)
 
@@ -268,7 +268,7 @@ Elke omzetting is een gedateerde gebeurtenis, geen knop: hij reset de meetcohort
 
 | Datum | Gate | Van | Naar | n bij besluit | Duur van het gat | Aanleiding |
 |-------|------|-----|------|---------------|------------------|------------|
-| — | — | — | — | — | — | nog geen enkele gate bindend gemaakt |
+| 2026-08-06 | time-stop | bindend (sinds v0.18.0) | shadow | 114 trades in de backtest, 0 in shadow | n.v.t. (eerste flip) | Eerste meting ooit voor deze gate: `calibrate --vergelijk` in portfolio-modus over 6 maanden en 5 markten gaf -15,7 procentpunt en een tekenwissel van +3,52% naar -12,17%, met 84 -> 114 trades. Ging in v0.18.0 bindend zonder meting, tegen regel 1 in |
 
 De kolom **duur van het gat** hoort erbij omdat een cohorte na terugzetten niet aaneengesloten is in de tijd: je poolt dan observaties van vóór en ná een periode waarin het marktregime volledig veranderd kan zijn, terwijl de drempel van 20 een homogene steekproef veronderstelt. Twee dingen om te weten bij een flip:
 

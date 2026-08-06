@@ -23,13 +23,13 @@ zijn verwaarloosbaar: enkele rijen per uur.
 """
 from __future__ import annotations
 
-from .shadow_gate import GateSpec, analyze_shadow_gate, breakeven_outcome
+from .shadow_gate import GateSpec, analyze_shadow_gate, exit_gate_outcome
 
 SPEC = GateSpec(
     name="breakeven",
     details_key="shadow_breakeven",
     label="Breakeven-stop (winst die er was mag geen verlies worden)",
-    outcome=breakeven_outcome,
+    outcome=exit_gate_outcome,
     match="during_position",
     dedup=True,
 )

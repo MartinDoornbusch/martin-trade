@@ -193,6 +193,15 @@ def evaluate(variant_list: list, train: dict, test: dict, fee_model: FeeModel,
             "win_pct": r_test["win_rate_pct"] or 0.0,
             "dd_pct": r_test["max_drawdown_pct"],
             "test_rar": return_over_dd(r_test["net_return_pct"], r_test["max_drawdown_pct"]),
+            # De 70/30-split is CHRONOLOGISCH: train is de oudere periode, test de
+            # recente. Een variant die alleen op test wint, wint dus alleen in het
+            # meest recente marktregime. `min_pct` is de uitkomst in het SLECHTSTE
+            # van de twee vensters en beantwoordt daarmee de vraag die telt: is er
+            # een configuratie die ook het ongunstige venster overleeft.
+            "min_pct": round(min(r_train["net_return_pct"] or 0,
+                                 r_test["net_return_pct"] or 0), 2),
+            "bh_train": r_train.get("buy_hold_pct"),
+            "bh_test": r_test.get("buy_hold_pct"),
             "mode": r_test["mode"],
             "regime": r_test.get("regime", "uit"),
         })
@@ -219,6 +228,30 @@ def print_table(title: str, rows: list[dict], top: int,
         print(f"  (op kaal testrendement zou '{beste_op_rendement['desc']}' winnen met "
               f"{beste_op_rendement['test_pct']:.2f}% bij dd {beste_op_rendement['dd_pct']:.1f}%; "
               f"de risicocorrectie kiest anders)")
+
+
+def print_overleving(rows: list[dict], top: int = 5) -> None:
+    """Tweede tabel: gesorteerd op het SLECHTSTE van de twee vensters.
+
+    De tabel hierboven rangschikt op test, en de split is chronologisch: test is de
+    recente periode. Een variant die daar wint kan dat volledig aan het marktregime
+    danken. Deze tabel beantwoordt de andere vraag: is er iets dat ook het
+    ongunstige venster overleeft. Staat hier alles diep negatief, dan is het antwoord
+    op de fase 2-vraag "geen edge", en verhuist het werk naar de instaplogica in
+    plaats van naar de gates.
+    """
+    beste = sorted(rows, key=lambda r: (r["reliable"], r["min_pct"]), reverse=True)
+    print("\nOVERLEVING - gesorteerd op het slechtste van beide vensters")
+    print(f"{'variant':44s} {'min%':>8s} {'train%':>8s} {'test%':>8s} {'trades':>7s}")
+    for r in beste[:top]:
+        print(f"{r['desc']:44s} {r['min_pct']:>8.2f} {(r['train_pct'] or 0):>8.2f} "
+              f"{(r['test_pct'] or 0):>8.2f} {r['trades']:>7d}")
+    if beste and beste[0]["min_pct"] < 0:
+        print(f"\nGEEN ENKELE variant is positief in beide vensters; de beste haalt "
+              f"{beste[0]['min_pct']:.2f}% in zijn slechtste periode.")
+    if rows and rows[0].get("bh_train") is not None:
+        print(f"IJkpunt kopen-en-vasthouden over dezelfde markten en vensters: "
+              f"train {rows[0]['bh_train']:+.2f}%, test {rows[0]['bh_test']:+.2f}%.")
 
 
 def split_data(data: dict[str, list[Candle]], ratio: float = 0.7):
@@ -274,6 +307,7 @@ def main() -> None:
                     proxy_train, proxy_test)
     print_table("PASS 1 - kernparameters (gesorteerd op risicogecorrigeerd TEST-rendement)",
                 rows, args.top, args.min_trades)
+    print_overleving(rows)
 
     if not args.skip_exit_pass and rows:
         winner = rows[0]["cfg"]
@@ -284,6 +318,7 @@ def main() -> None:
         rows2 = evaluate(exits, train, test, fee_model, max(warmup, warmup2),
                          args.portfolio, args.min_trades, proxy_train, proxy_test)
         print_table("PASS 2 - exit- en drempelparameters", rows2, args.top, args.min_trades)
+        print_overleving(rows2)
 
     print("\nLet op: kies op de test-kolom, niet op train. Een grote gap = overfit.")
     print(f"r/dd = netto testrendement per procentpunt max drawdown. Max drawdown is "

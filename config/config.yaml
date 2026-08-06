@@ -64,6 +64,7 @@ universe:                            # kandidaten-universum: gepinde markets + a
 exits:                               # mechanische exits bovenop SL/TP (geen AI). Trend-break-exit is in v0.19.0 geschrapt: vuurde nooit
   time_stop_candles: 12              # sluit een positie die na zoveel candles geen TP/SL raakte
   time_stop_min_net_pct: 0.0         # ... en per saldo op of onder deze netto % staat (incl. round-trip fees). 0 = break-even
+  time_stop_binding: false           # TERUG NAAR SHADOW op 2026-08-06. Deze gate ging in v0.18.0 bindend zonder meting; de eerste meting (calibrate --vergelijk, portfolio-modus, 6 mnd echte data, 5 markten) gaf -15,7 procentpunt en een tekenwissel van +3,52% naar -12,17%, met 36% meer trades en dus meer fees. Meet nu mee via analysis/timestop.py; bindend maken pas bij een positieve netto gate over >= 20 afgewikkelde trades
   breakeven_stop:                    # winst die er was mag geen verlies worden
     enabled: true
     binding: false                   # false = shadow: treffer wordt gelogd, positie blijft open (meet gate-waarde). true pas bij positieve netto gate op >= 20 afgewikkelde trades

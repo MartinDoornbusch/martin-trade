@@ -16,10 +16,15 @@ bewaken vooral dat die verschillen expliciet BLIJVEN.
 """
 from types import SimpleNamespace
 
-from tradebot.analysis import analyze_breakeven, analyze_chase, analyze_regime
+from tradebot.analysis import (
+    analyze_breakeven,
+    analyze_chase,
+    analyze_regime,
+    analyze_timestop,
+)
 from tradebot.analysis.shadow_gate import (
-    breakeven_outcome,
     entry_gate_outcome,
+    exit_gate_outcome,
     load_events_from_db,
 )
 from tradebot.analysis.veto import load_roundtrips_from_db, params_from_config
@@ -70,7 +75,7 @@ def test_breakeven_outcome_needs_no_candles():
     # Uitstappen op 100,55 tegen entry 100 = +0,55% bruto, min 0,60% kosten = -0,05%.
     # Werkelijk werd het -4%. Verschil -3,95: doorhouden was slechter, dus de gate
     # zou verlies hebben voorkomen (negatief teken).
-    uit = breakeven_outcome({"entry_price": 100.0, "price": 100.55}, rt, p)
+    uit = exit_gate_outcome({"entry_price": 100.0, "price": 100.55}, rt, p)
     assert uit < 0
     assert round(uit, 2) == -3.95
 
@@ -203,3 +208,36 @@ def test_chase_gate_reports_its_own_parameters(memory_db):
     assert d["max_chase_atr"] == 0.5
     assert d["binding"] is False
     assert d["summary"] is None
+
+
+# --- time-stop krijgt shadow-semantiek (v0.20.0) --------------------------------
+
+def test_timestop_gate_measures_hold_versus_exit(memory_db):
+    """De time-stop ging in v0.18.0 bindend zonder meting, tegen de eigen regel in.
+    Nu hij op shadow staat moet hij met dezelfde machinerie meetbaar zijn als de
+    andere drie: zelfde vraag als de breakeven-stop (de gate had hier geëxit, wat
+    deed de positie daarna?), dus dezelfde uitkomstfunctie en dezelfde dedup."""
+    from tradebot.analysis.timestop import SPEC
+
+    assert SPEC.dedup is True and SPEC.match == "during_position"
+
+    events = [{"ts": START + STEP_MS, "market": "A-EUR", "shadow_timestop": "treffer",
+               "entry_price": 100.0, "price": 99.5}]
+    d = analyze_timestop(make_cfg(exits={"time_stop_candles": 12,
+                                         "time_stop_binding": False}),
+                         events=events, trades=roundtrip(pnl=-6.0))
+
+    assert d["gate"] == "timestop"
+    assert d["binding"] is False
+    assert d["n_resolved"] == 1
+    assert d["summary"]["n_avoided"] == 1        # doorhouden was slechter dan uitstappen
+
+
+def test_timestop_deduplicates_like_the_breakeven_stop(memory_db):
+    """Ook deze gate vuurt elke cyclus opnieuw zolang de positie stil blijft hangen."""
+    events = [{"ts": START + i * STEP_MS // 4, "market": "A-EUR",
+               "shadow_timestop": "treffer", "entry_price": 100.0, "price": 99.5}
+              for i in range(1, 4)]
+    d = analyze_timestop(make_cfg(exits={"time_stop_binding": False}),
+                         events=events, trades=roundtrip(pnl=-6.0))
+    assert d["n_events"] == 3 and d["n_deduped"] == 2 and d["n_resolved"] == 1

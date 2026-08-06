@@ -72,9 +72,10 @@ def entry_gate_outcome(event: dict, rt: RoundTrip, p: VetoParams) -> float | Non
     return rt.net_pct
 
 
-def breakeven_outcome(event: dict, rt: RoundTrip, p: VetoParams) -> float | None:
+def exit_gate_outcome(event: dict, rt: RoundTrip, p: VetoParams) -> float | None:
     """Exit-gate: verschil tussen wat de positie DEED en wat ze had gedaan als de
-    breakeven-stop op zijn treffermoment had verkocht.
+    gate op zijn treffermoment had verkocht. Geldt voor elke exit-gate in shadow
+    (breakeven-stop, time-stop).
 
     Eenvoudiger dan bij de entry-gates: de prijs op signaalmoment en de werkelijke
     exitprijs zijn allebei bekend, dus er is geen counterfactual-reconstructie uit

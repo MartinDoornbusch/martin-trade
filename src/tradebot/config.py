@@ -132,6 +132,11 @@ SHADOW_GATES = {
         "binding": ("regime", "binding"),
         "params": [("regime", "enabled"), ("regime", "proxy_market")],
     },
+    "timestop": {
+        "section": "exits",
+        "binding": ("exits", "time_stop_binding"),
+        "params": [("exits", "time_stop_candles"), ("exits", "time_stop_min_net_pct")],
+    },
     "breakeven": {
         "section": "exits",                   # hele `exits`: de time-stop kan een
         "binding": ("exits", "breakeven_stop", "binding"),   # treffer vóór zijn

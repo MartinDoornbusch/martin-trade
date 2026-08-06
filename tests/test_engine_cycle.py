@@ -530,3 +530,41 @@ def test_shadow_breakeven_event_carries_the_prices_for_the_measurement():
     assert row.details["entry_price"] > 0
     assert row.mode == "paper"
     assert "breakeven" in row.details["gate_hash"]
+
+
+def test_time_stop_shadow_logs_but_keeps_position():
+    """De time-stop ging in v0.18.0 bindend zonder meting. Met
+    `exits.time_stop_binding: false` logt hij nu alleen, zoals elke andere gate in
+    shadow, en blijft de positie open."""
+    feed = FakeFeed({"A-EUR": flat()})
+    cfg = make_cfg(["A-EUR"], exits={"time_stop_candles": 12,
+                                     "time_stop_min_net_pct": 0.0,
+                                     "time_stop_binding": False})
+    cycle = make_cycle(cfg, feed)
+    cycle.broker.buy("A-EUR", 250.0, stop_loss=50.0, take_profit=500.0, reason="setup")
+    backdate_position("A-EUR", hours=4 * 20)
+
+    decisions = cycle.run_once()
+
+    assert open_markets() == {"A-EUR"}
+    assert not any(d.action == "sell" for d in decisions)
+    row = shadow_signals()[0]
+    assert "shadow_timestop" in row.details
+    assert row.details["price"] > 0 and row.details["entry_price"] > 0
+    assert "timestop" in row.details["gate_hash"]
+
+
+def test_time_stop_stays_binding_by_default():
+    """Zonder de nieuwe sleutel gedraagt hij zich als vóór v0.20.0, zodat een
+    bestaande config niet stil van gedrag verandert."""
+    feed = FakeFeed({"A-EUR": flat()})
+    cfg = make_cfg(["A-EUR"], exits={"time_stop_candles": 12,
+                                     "time_stop_min_net_pct": 0.0})
+    cycle = make_cycle(cfg, feed)
+    cycle.broker.buy("A-EUR", 250.0, stop_loss=50.0, take_profit=500.0, reason="setup")
+    backdate_position("A-EUR", hours=4 * 20)
+
+    decisions = cycle.run_once()
+
+    assert open_markets() == set()
+    assert any(d.action == "sell" and "time-stop" in d.reason for d in decisions)
