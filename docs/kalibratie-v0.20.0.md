@@ -3,6 +3,11 @@
 Status: **klaar om te draaien, cijfers nog in te vullen.** De bouwomgeving heeft geen
 netwerktoegang tot `api.bitvavo.com`, dus de runs gebeuren op de Pi of een laptop.
 
+> **Ruwe uitvoer: `docs/kalibratie-v0.20.0-uitvoer.txt`.** Dit document is de duiding; dat
+> bestand is het bewijs. Lopen ze uiteen, dan wint de ruwe uitvoer. Eén blok ontbreekt daar
+> nog (de ankerrun van de oude code, alleen in prozavorm overgenomen); het commando om hem
+> te herhalen staat erbij, en het venster is gepind dus de run is reproduceerbaar.
+
 ## 0. Eerst de referentierij valideren — anders is alles eronder betekenisloos
 
 Het v0.18.0-model wordt gereconstrueerd door correcties uit te zetten, niet door de oude
