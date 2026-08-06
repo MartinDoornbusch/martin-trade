@@ -147,11 +147,27 @@ Bij het lezen:
   close-exits werden intrabar-stops gemist, dus overleefden er méér posities tot aan die
   derde regel. Zou je de trend-break pas aanzetten nadat de intrabar-correctie erin zit, dan
   meet je zijn effect in een wereld die nooit heeft bestaan, en systematisch te laag.
-- Verwachting bij 3.2 (warmup), en dit is de scherpste toetsbare voorspelling van de hele
-  ronde: `docs/review-v0.19.0.md` stelt dat de te korte warmup juist tegen ema 20/50 werkte,
-  omdat die variant de minst geconvergeerde indicator kreeg. Als dat klopt, komt ema 20/50
-  er in stap 3 **beter** uit dan op 18 juli, niet slechter. Wordt hij juist zwakker, dan was
-  die redenering fout en verdient de keuze van 18 juli een tweede blik.
+- Verwachting bij 3.2 (warmup). **Deze stond hier eerst te sterk geformuleerd**, en zo
+  geformuleerd kun je een juiste redenering per ongeluk verwerpen. Wat er feitelijk gebeurt
+  bij warmup 60 met een EMA die op `arr[0]` seedt: `ema_fast` (20) convergeert sneller dan
+  `ema_slow` (50), dus vroeg in de reeks hangt de trage nog bij het startpunt terwijl de
+  snelle al is weggelopen. Dat produceert spookwaarden in de conditie `ema_fast > ema_slow`,
+  één van de drie scorepunten. Dat is **ruis, geen consistente straf in één richting**: of
+  die ruis ema 20/50 benadeelt of toevallig helpt, hangt af van de richting van de eerste
+  beweging in het datavenster.
+
+  Daaruit volgen twee dingen voor de toets:
+
+  1. **Kijk relatief, niet absoluut.** De warmup van 60 naar 150 schrapt ook 90 candles
+     handel aan het begin van elke periode, voor álle varianten. Het absolute rendement van
+     ema 20/50 kan dus alle kanten op simpelweg omdat er een ander stuk markt verhandeld
+     wordt. Kijk naar zijn positie ten opzichte van ema 9/21 en ema 12/26, niet naar zijn
+     eigen getal.
+  2. **De goede toets is stabiliteit, niet richting.** Houdt ema 20/50 zijn rang op train
+     én test, en is de gap kleiner dan op 18 juli? Komt hij zwakker uit, dan is de eerste
+     verklaring dat de ruis eerder toevallig gunstig uitviel, niet dat de keuze van juli
+     fout was. Pas als hij op beide periodes consistent zakt, verdient die keuze een tweede
+     blik.
 - Verwachting bij r1/1.2: delta ongeveer nul. **Let op: dat is een aanname, geen meting.**
   Het bewijs uit ronde 1 was tweeledig, coverage liet zien dat de TESTSUITE die regel nooit
   raakte en de twee condities zijn bijna disjunct, en geen van beide is een productiemeting.
