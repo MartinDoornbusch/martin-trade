@@ -68,7 +68,7 @@ exits:                               # mechanische exits bovenop SL/TP (geen AI)
     enabled: true
     binding: false                   # false = shadow: treffer wordt gelogd, positie blijft open (meet gate-waarde). true pas bij positieve netto gate op >= 20 afgewikkelde trades
     trigger_atr: 1.0                 # bewapenen zodra de piek sinds entry >= 1x ATR boven de entry lag
-    offset_pct: 0.55                 # vuren als de koers terugzakt tot <= entry +0,55% (dekt round-trip taker 0,50%)
+    offset_margin_pct: 0.05          # vuren als de koers terugzakt tot <= entry + (werkelijke round-trip fee + deze marge). Paper = taker+taker = 0,50% -> drempel 0,55%; live = maker+taker = 0,40% -> drempel 0,45%. Zet `offset_pct` om de afleiding te overrulen met een vast getal
 
 curation:                            # advies-only lijstbeheer (de bot verplaatst zelf niets)
   quiet_days: 30                     # gepinde coin met 0 koopsignalen in deze periode: dashboard-vlag "overweeg naar watchlist"

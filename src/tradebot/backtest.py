@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 
 from .config import get_config
 from .correlation import correlation_from_closes
-from .decision import FeeModel, Position, RiskManager
+from .decision import FeeModel, Position, RiskManager, breakeven_offset_pct
 from .exchange import BitvavoClient, Candle
 from .strategy import (
     MarketSnapshot,
@@ -94,7 +94,7 @@ def _interval_ms(candles: list[Candle]) -> int:
     return candles[-1].ts - candles[-2].ts if len(candles) >= 2 else 0
 
 
-def _exits_params(cfg) -> dict:
+def _exits_params(cfg, fee_model: FeeModel, entry_is_maker: bool = False) -> dict:
     exits = getattr(cfg, "exits", {}) or {}
     be = exits.get("breakeven_stop", {}) or {}
     return {
@@ -103,7 +103,7 @@ def _exits_params(cfg) -> dict:
         "be_enabled": bool(be.get("enabled", False)),
         "be_binding": bool(be.get("binding", False)),
         "be_trigger_atr": float(be.get("trigger_atr", 1.0)),
-        "be_offset_pct": float(be.get("offset_pct", 0.0)),
+        "be_offset_pct": breakeven_offset_pct(be, fee_model, entry_is_maker),
     }
 
 
@@ -149,7 +149,7 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
     strategy_cfg = cfg.strategy
     decision_cfg = cfg.decision
     risk_cfg = getattr(cfg, "risk", {}) or {}
-    ex = _exits_params(cfg)
+    ex = _exits_params(cfg, fee_model)
     min_edge = fee_model.min_edge_pct(float(decision_cfg["min_profit_pct"]))
     slip = leg_slippage_pct(fee_model)
     taker = fee_model.taker_pct

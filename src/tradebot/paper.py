@@ -26,6 +26,7 @@ class PaperBroker:
     """Implements order execution against live prices from a real data feed."""
 
     mode = MODE
+    entry_is_maker = False   # paper vult beide benen als taker (conservatief)
 
     def __init__(self, data_feed: ExchangeAdapter, fee_model: FeeModel, start_eur: float):
         self.feed = data_feed

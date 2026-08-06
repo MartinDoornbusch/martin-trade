@@ -14,7 +14,10 @@ wegsijpelen zonder dat er iets anders roodkleurt:
 Deze tests staan bewust apart, in de geest van `test_addon_config.py`: ze bewaken
 een afspraak, niet een implementatie.
 """
+from pathlib import Path
 from types import SimpleNamespace
+
+import yaml
 
 from tradebot.config import (
     CORE_SECTIONS,
@@ -138,3 +141,60 @@ def test_restoring_a_value_restores_the_cohort():
     meetcohorte terug in plaats van een derde."""
     assert gate_fingerprint(cfg(), "regime") == gate_fingerprint(cfg(), "regime")
     assert len(gate_fingerprint(cfg(), "regime")) == 12
+
+
+# --- borging: dedupe hangt aan de keten -----------------------------------------
+
+def echte_config() -> dict:
+    return yaml.safe_load(
+        (Path(__file__).resolve().parent.parent / "config" / "config.yaml")
+        .read_text(encoding="utf-8"))
+
+
+def binding_in(data: dict, gate: str) -> bool:
+    node = data
+    for key in SHADOW_GATES[gate]["binding"]:
+        node = (node or {}).get(key)
+    return bool(node)
+
+
+def test_no_dedup_gate_has_a_binding_gate_downstream():
+    """Bewaakt de aanname onder de deduplicatie-keuze.
+
+    Regime en chase dedupliceren niet omdát de shadow-buy doorgaat: vanaf cyclus 2
+    strandt de kandidaat al op "position already open". Zet je een gate die LATER
+    in de keten van `engine.run_once` staat bindend (de LLM-veto staat achter beide),
+    dan blijft de positie uit, komt de kandidaat elke cyclus opnieuw langs en gaan
+    regime en chase alsnog per cyclus loggen. De analyzer telt dan dubbel zonder dat
+    er iets omvalt.
+
+    Faalt deze test, dan is de keuze: dedup aanzetten voor de bovenliggende gates,
+    of de flip terugdraaien. Niet negeren.
+    """
+    from tradebot.analysis.chase import SPEC as CHASE
+    from tradebot.analysis.regime import SPEC as REGIME
+    from tradebot.analysis.shadow_gate import ENTRY_GATE_ORDER
+
+    dedup_per_gate = {"regime": REGIME.dedup, "chase": CHASE.dedup, "veto": True}
+    data = echte_config()
+    for i, gate in enumerate(ENTRY_GATE_ORDER):
+        if dedup_per_gate[gate]:
+            continue
+        for later in ENTRY_GATE_ORDER[i + 1:]:
+            assert not binding_in(data, later), (
+                f"{later} staat bindend terwijl {gate} niet dedupliceert: {gate} gaat "
+                f"dan per cyclus loggen en de meting telt dubbel")
+
+
+def test_the_entry_gate_order_matches_the_engine():
+    """De volgorde is uit `engine.run_once` overgenomen; loopt die uit de pas, dan
+    bewaakt de test hierboven de verkeerde relatie."""
+    from tradebot.analysis.shadow_gate import ENTRY_GATE_ORDER
+
+    bron = (Path(__file__).resolve().parent.parent / "src" / "tradebot" / "engine.py"
+            ).read_text(encoding="utf-8")
+    posities = [bron.index(anker) for anker in
+                ("apply_regime_filter(decision", "apply_chase_guard(", "second_opinion(")]
+    assert posities == sorted(posities), (
+        "de volgorde van de gates in run_once wijkt af van ENTRY_GATE_ORDER")
+    assert ENTRY_GATE_ORDER == ("regime", "chase", "veto")

@@ -44,11 +44,49 @@ class FeeModel:
     slippage_buffer_pct: float
 
     def round_trip_pct(self, use_taker: bool = True) -> float:
+        """SYMMETRISCHE round-trip: beide benen taker (of beide maker)."""
         fee = self.taker_pct if use_taker else self.maker_pct
         return 2 * fee  # buy + sell
 
+    def round_trip_asymmetric_pct(self, entry_is_maker: bool) -> float:
+        """Round-trip zoals de broker hem werkelijk maakt.
+
+        In paper zijn beide benen taker (0,50% bij het basistarief). `LiveBroker`
+        doet echter maker-entries (limit postOnly) en market-exits, dus live is de
+        werkelijke round-trip maker + taker (0,40%). De symmetrische variant kent
+        die combinatie niet: `round_trip_pct(use_taker=False)` geeft 2x maker, wat
+        geen van beide is.
+        """
+        entry = self.maker_pct if entry_is_maker else self.taker_pct
+        return entry + self.taker_pct
+
     def min_edge_pct(self, min_profit_pct: float, use_taker: bool = True) -> float:
         return self.round_trip_pct(use_taker) + self.slippage_buffer_pct + min_profit_pct
+
+
+def breakeven_offset_pct(be_cfg: dict, fee_model: FeeModel,
+                         entry_is_maker: bool = False) -> float:
+    """Drempel waarop de breakeven-stop vuurt, afgeleid uit het fee-model.
+
+    Stond als losse `offset_pct: 0.55` in config, los van het fee-model: bij een
+    andere Bitvavo-tier klopt die drempel niet meer en eindigt een "breakeven"-exit
+    stilletjes op een verlies na kosten. Nu is het de werkelijke round-trip plus
+    een configureerbare marge (`offset_margin_pct`).
+
+    De round-trip volgt de BROKERMODUS. Paper doet beide benen taker (0,50%), live
+    doet een maker-entry en een taker-exit (0,40%). Zou de offset de paper-aanname
+    vastbakken, dan vuurt de gate live 0,15 procentpunt te laat en verandert haar
+    gedrag stilzwijgend op het moment van omschakelen naar fase 3, wat het slechtst
+    denkbare moment is voor een verrassing.
+
+    `offset_pct` blijft als expliciete override werken, zodat een bestaande config
+    op de Pi niet stil van gedrag verandert.
+    """
+    expliciet = be_cfg.get("offset_pct")
+    if expliciet is not None:
+        return float(expliciet)
+    marge = float(be_cfg.get("offset_margin_pct", 0.05) or 0.0)
+    return round(fee_model.round_trip_asymmetric_pct(entry_is_maker) + marge, 4)
 
 
 @dataclass

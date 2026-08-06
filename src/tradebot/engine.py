@@ -14,6 +14,7 @@ from .decision import (
     apply_chase_guard,
     apply_regime_filter,
     apply_second_opinion,
+    breakeven_offset_pct,
     correlated_positions,
 )
 from .exchange import BitvavoClient
@@ -290,7 +291,9 @@ class TradingCycle:
             return False, ""
         hit, why = breakeven_stop_hit(
             candles, pos.opened_at, pos.entry_price, snap.price, snap.atr,
-            float(be_cfg.get("trigger_atr", 1.0)), float(be_cfg.get("offset_pct", 0.0)))
+            float(be_cfg.get("trigger_atr", 1.0)),
+            breakeven_offset_pct(be_cfg, self.fee_model,
+                                 getattr(self.broker, "entry_is_maker", False)))
         if not hit:
             return False, ""
         if bool(be_cfg.get("binding", False)):

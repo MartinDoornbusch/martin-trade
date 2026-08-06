@@ -258,3 +258,46 @@ def test_chase_guard_is_symmetric():
 def test_chase_guard_disabled_by_zero():
     hit, _ = chase_too_far(100.0, 200.0, atr_value=4.0, max_chase_atr=0.0)
     assert not hit
+
+
+# --- 5.1: breakeven-offset afgeleid uit het fee-model ---------------------------
+
+def test_breakeven_offset_follows_the_broker_mode():
+    """Regressie op punt 5.1: `offset_pct: 0.55` stond los van het fee-model, dus bij
+    een andere Bitvavo-tier klopt de drempel niet meer en eindigt een
+    "breakeven"-exit stilletjes op een verlies na kosten.
+
+    De round-trip volgt de BROKERMODUS: paper doet beide benen taker (0,50%), live
+    doet een maker-entry en een taker-exit (0,40%). Zou de offset de paper-aanname
+    vastbakken, dan vuurt de gate live 0,15 procentpunt te laat en verandert haar
+    gedrag stilzwijgend bij het omschakelen naar fase 3.
+    """
+    from tradebot.decision import FeeModel, breakeven_offset_pct
+
+    basis = FeeModel(0.15, 0.25, 0.10)
+    cfg = {"offset_margin_pct": 0.05}
+    assert breakeven_offset_pct(cfg, basis, entry_is_maker=False) == 0.55   # paper
+    assert breakeven_offset_pct(cfg, basis, entry_is_maker=True) == 0.45    # live
+
+    # Andere fee-tier: de drempel schuift mee in plaats van te blijven staan.
+    goedkoper = FeeModel(0.10, 0.15, 0.10)
+    assert breakeven_offset_pct(cfg, goedkoper, entry_is_maker=False) == 0.35
+
+
+def test_breakeven_offset_honours_an_explicit_override():
+    """Een bestaande config met een vast `offset_pct` mag niet stil van gedrag
+    veranderen."""
+    from tradebot.decision import FeeModel, breakeven_offset_pct
+
+    assert breakeven_offset_pct({"offset_pct": 0.80, "offset_margin_pct": 0.05},
+                                FeeModel(0.15, 0.25, 0.10)) == 0.80
+
+
+def test_brokers_declare_how_they_fill():
+    """De brokermodus is een eigenschap van de broker, niet iets dat de engine moet
+    raden: `LiveBroker` doet limit-postOnly-entries, `PaperBroker` rekent taker."""
+    from tradebot.live import LiveBroker
+    from tradebot.paper import PaperBroker
+
+    assert PaperBroker.entry_is_maker is False
+    assert LiveBroker.entry_is_maker is True

@@ -42,6 +42,16 @@ from .veto import (
     params_from_config,
 )
 
+# Volgorde waarin de entry-gates in `engine.run_once` langskomen. Load-bearing
+# voor de deduplicatie: regime en chase hoeven niet te dedupliceren omdát de
+# shadow-buy doorgaat, waardoor de kandidaat de volgende cyclus al op "position
+# already open" strandt. Zet je een gate die LATER in de keten staat bindend, dan
+# blijft de positie uit, komt de kandidaat elke cyclus opnieuw langs en gaan de
+# gates vóór hem alsnog per cyclus loggen. De analyzer telt dan dubbel zonder dat
+# er iets omvalt. `tests/test_meetscoping.py` laat de bouw falen zodra die
+# combinatie ontstaat.
+ENTRY_GATE_ORDER = ("regime", "chase", "veto")
+
 
 @dataclass(frozen=True)
 class GateSpec:

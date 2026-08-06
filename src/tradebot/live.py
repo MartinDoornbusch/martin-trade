@@ -26,6 +26,7 @@ MODE = "live"
 
 class LiveBroker:
     mode = MODE
+    entry_is_maker = True   # limit postOnly entry, market exit
 
     def __init__(self, client, fee_model: FeeModel, max_capital_eur: float,
                  entry_timeout_s: float = 90.0, poll_interval_s: float = 3.0):
