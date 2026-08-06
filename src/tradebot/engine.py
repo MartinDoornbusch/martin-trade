@@ -74,7 +74,34 @@ class TradingCycle:
                                            int(cfg.llm.get("timeout_seconds", 20)))
         self.notify = Notifier(secrets.telegram_bot_token, secrets.telegram_chat_id)
 
+    def _waarschuw_bij_verstreken_venster(self) -> None:
+        """Loop de einddatum van deze run na en waarschuw luid als hij voorbij is.
+
+        Bewust een waarschuwing en geen automatische stop: stilvallen ziet eruit als
+        een storing en verbergt de beslissing. Maar zonder deze regel is
+        "infrastructuurtest" in maand vier niet meer te onderscheiden van "hij draait
+        nog steeds", en dat is precies wat het label moest voorkomen. Verlengen hoort
+        een geschreven beslissing te zijn in het register in PROJECTPLAN.md.
+        """
+        tot = str((getattr(self.cfg, "meta", {}) or {}).get("run_until", "")).strip()
+        if not tot:
+            return
+        from datetime import date
+        try:
+            einde = date.fromisoformat(tot)
+        except ValueError:
+            log.warning("meta.run_until is geen geldige datum: %r", tot)
+            return
+        if date.today() > einde:
+            over = (date.today() - einde).days
+            log.warning(
+                "RUN-VENSTER VERSTREKEN: meta.run_until was %s, %d dagen geleden. "
+                "Doel van deze run: %s. Stoppen, of verlengen met een geschreven reden "
+                "in het register in PROJECTPLAN.md.", tot, over,
+                (getattr(self.cfg, "meta", {}) or {}).get("run_purpose", "onbekend"))
+
     def run_once(self) -> list[Decision]:
+        self._waarschuw_bij_verstreken_venster()
         decisions: list[Decision] = []
         interval = self.cfg.schedule["candle_interval"]
         limit = int(self.cfg.schedule["candle_limit"])
@@ -439,9 +466,13 @@ class TradingCycle:
             # gescopede cohortes op die later als strategievalidatie gelezen worden.
             # Dat is de spiegelbeeldige fout van de verdwenen julikalibratie: geen
             # bewijs dat weg is, maar bewijs dat betekenis krijgt die het nooit had.
-            doel = str((getattr(self.cfg, "meta", {}) or {}).get("run_purpose", "")).strip()
+            meta = getattr(self.cfg, "meta", {}) or {}
+            doel = str(meta.get("run_purpose", "")).strip()
             if doel:
                 details["run_purpose"] = doel
+            tot = str(meta.get("run_until", "")).strip()
+            if tot:
+                details["run_until"] = tot
         with session() as s:
             s.add(SignalRow(market=market, action=action, decision=decision,
                             score=score, reason=reason[:1000], details=details,

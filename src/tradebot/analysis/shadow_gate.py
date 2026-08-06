@@ -193,6 +193,8 @@ def analyze_shadow_gate(cfg, spec: GateSpec, *, events: list[dict] | None = None
         # de data ontstond is wat de meting duidt.
         "run_purpose": sorted({str(e.get("run_purpose", "")) for e in events
                                if e.get("run_purpose")}) or ["onbekend"],
+        "run_until": sorted({str(e.get("run_until", "")) for e in events
+                             if e.get("run_until")}),
         "summary": None,
         "per_market": [],
     }

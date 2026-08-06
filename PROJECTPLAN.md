@@ -312,6 +312,22 @@ volgende.
 | chase-guard | nooit (shadow) | loopt sinds v0.20.0 | — |
 | **time-stop** | v0.18.0 t/m 2026-08-06 | ja, sinds 2026-08-06: **netto negatief** | **teruggezet naar shadow** (`exits.time_stop_binding: false`) |
 
+### Register van run-vensters
+
+Elke run heeft een doel én een einddatum, en allebei reizen mee met het bewijs (`meta.run_purpose`, `meta.run_until` in elk shadow-event, het exportmanifest, elke analyzer-uitvoer en het dashboard). De engine waarschuwt luid zodra de datum verstreken is; hij stopt niet automatisch, want stilvallen ziet eruit als een storing en verbergt de beslissing.
+
+| Van | Tot | Doel | Scope | Verlengd? |
+|-----|-----|------|-------|-----------|
+| 2026-08-06 | **2026-09-15** | infrastructuurtest | paper-handel aan, **LLM uit** | — |
+
+**Waarom een datum en niet "tot L1-L5 gesloten zijn".** Die blockers zijn fase 3-werk, en fase 3 is met het "geen edge"-verdict van de kaart. Er is nu geen reden om ze te sluiten, dus die voorwaarde zou nooit vuren en in de praktijk blijft dan alleen de kalender over met een ontsnappingsluik ernaast. Precies het mechanisme waardoor "infrastructuurtest" in maand vier niet meer te onderscheiden is van "hij draait nog steeds".
+
+**Waarom zes weken.** Van de vier redenen om door te draaien zijn er drie binnen weken afgerond: de restore-verificatie heeft aangroeiende data nodig maar geen kwartaal, en WAL plus de warme back-upkopie hebben een handvol back-upcycli met gelijktijdige schrijvers nodig, dus dagen. Alleen "continu het live-pad oefenen" blijft open, en dat is alleen waardevol zolang die code nog wordt aangeraakt: een draaiend proces dat correct werkt levert geen informatie meer op zodra het sleutelen stopt.
+
+**Verlengen mag, maar als geschreven beslissing in dit register**, met de reden erbij. Dan is de verlenging een besluit en geen verzuim.
+
+**Scope-versmalling: `use_llm_second_opinion: false`.** De LLM zit niet in het pad dat getest wordt (niet in de guard, niet in de scheduler, niet in het DB- of exportpad), hij staat op shadow dus zijn oordeel verandert geen enkele koop, en hij verbrandt ondertussen de gratis tier en vult `llm_calls` met rijen die niemand meer leest. Handelen in paper blijft wél aan: zonder open posities oefent de guard niets en zonder trades groeit de exportset niet. Geverifieerd wat dit met de meetcohortes doet: **alleen de veto-cohorte reset, de andere vier blijven staan** — precies wat de per-gate scoping moest opleveren.
+
 ### Register van gate-flips (shadow <-> bindend)
 
 Elke omzetting is een gedateerde gebeurtenis, geen knop: hij reset de meetcohorte van alle gates en is daarmee de verklaring voor elke sprong in de meetdata. Leeg laten betekent "alle vier staan sinds v0.20.0 in shadow".
@@ -368,6 +384,7 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 
 | Datum | Wijziging | Getest |
 |-------|-----------|--------|
+| 2026-08-06 | Run-venster vastgelegd: infrastructuurtest tot 2026-09-15, met `meta.run_until` mee in elk bewijsstuk en een luide waarschuwing zodra de datum verstreken is (geen automatische stop; stilvallen verbergt de beslissing). Bewust een datum en geen koppeling aan L1-L5, want die blockers zijn fase 3-werk en fase 3 is met het 'geen edge'-verdict van de kaart, dus die voorwaarde zou nooit vuren. Scope versmald: `use_llm_second_opinion: false`, want de LLM zit niet in het geteste pad; geverifieerd dat alleen de veto-cohorte daardoor reset | 285 tests (3 nieuw), ruff, bandit exit 0, node --check op de dashboard-JS |
 | 2026-08-06 | `p*` per variant uit haar EIGEN geometrie: de backtester rapporteert de mediane gerealiseerde ATR op de entrymomenten, berekent de vereiste trefkans met de stop-afstand en reward/risk van die variant, en zet het verschil met de gemeten trefkans ernaast (`edge_pp`, als kolom in elke optimizer-tabel). Aanleiding: de conclusie 'gemeten 48,2% tegen p* 48,0%, dus break-even' gebruikte de referentiegeometrie (stop 2x ATR) terwijl die variant op 1,5x ATR draaide; haar eigen lat was 50,7%, dus 2,5 punt tekort. De fout staat bewust in het kalibratiedoc, want het is hetzelfde patroon als de verdwenen julikalibratie in een andere vorm | 282 tests (2 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Drie aanscherpingen op de eindsamenvatting. (1) Correctie: niet de gates sloten de oude faalwijze af maar de ARCHITECTUUR; de gates zijn de meetlaag erbovenop. Dat onderscheid bepaalt of de les werkt bij een volgend signaal. (2) Grens van het meetapparaat vastgelegd: 'in dagen' geldt alleen voor backtestbare signalen; iets dat live validatie vraagt valt terug op 40-80 trades per jaar. (3) De horizonhefboom heeft een bodem: `p*` gaat naar 1/(1+r), dus 40% bij r=1,5. Onder dagelijks zit nog 4,9 punt in de hele as | 280 tests (1 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Afsluiting fase 2-meting: `meta.run_purpose` reist mee met elk bewijsstuk (meetexport, elk shadow-event, elke analyzer-uitvoer en het dashboard), zodat een infrastructuurtest over een half jaar niet als strategievalidatie gelezen wordt. Richtingen na 'geen edge' vastgelegd met de horizonwissel gekwantificeerd (-7 procentpunt op `p*`, code-gedekt) en cross-sectioneel als enige richting die het correlatieprobleem structureel raakt. Wat de vier gates wel en niet konden expliciet opgeschreven | 279 tests (2 nieuw), ruff, bandit exit 0 |

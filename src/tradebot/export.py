@@ -88,6 +88,7 @@ def build_export(cfg, mode: str | None = None) -> dict:
             # dataset over een half jaar niet te onderscheiden van strategiebewijs.
             "run_purpose": str((getattr(cfg, "meta", {}) or {}).get(
                 "run_purpose", "onbekend")),
+            "run_until": str((getattr(cfg, "meta", {}) or {}).get("run_until", "")),
             "rows": {naam: len(rijen) for naam, rijen in data.items()},
             # Zonder deze twee is de export data zonder context: je weet dan wel
             # wat er gebeurde, maar niet onder welke configuratie.

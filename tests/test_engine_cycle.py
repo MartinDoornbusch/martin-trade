@@ -131,6 +131,7 @@ def make_cfg(markets: list[str], **over) -> SimpleNamespace:
         universe={"auto_fill": False},
         exits=over.pop("exits", {}),
         curation={},
+        meta=over.pop("meta", {}),
         regime={"enabled": False, "proxy_market": "BTC-EUR", "binding": False},
         llm={"timeout_seconds": 20},
         llm_providers=[],
@@ -568,3 +569,53 @@ def test_time_stop_stays_binding_by_default():
 
     assert open_markets() == set()
     assert any(d.action == "sell" and "time-stop" in d.reason for d in decisions)
+
+
+def test_expired_run_window_warns_loudly(caplog):
+    """Zonder einddatum is "infrastructuurtest" in maand vier niet meer te
+    onderscheiden van "hij draait nog steeds", en dat is precies wat het label moest
+    voorkomen. Bewust een waarschuwing en geen automatische stop: stilvallen ziet
+    eruit als een storing en verbergt de beslissing."""
+    import logging
+
+    feed = FakeFeed({"A-EUR": rising()})
+    cfg = make_cfg(["A-EUR"], meta={"run_purpose": "infrastructuurtest",
+                                    "run_until": "2020-01-01"})
+    cycle = make_cycle(cfg, feed)
+
+    with caplog.at_level(logging.WARNING):
+        cycle.run_once()
+
+    meldingen = [r.getMessage() for r in caplog.records]
+    assert any("RUN-VENSTER VERSTREKEN" in m for m in meldingen)
+    assert any("infrastructuurtest" in m for m in meldingen)
+
+
+def test_future_run_window_is_silent(caplog):
+    import logging
+
+    feed = FakeFeed({"A-EUR": rising()})
+    cfg = make_cfg(["A-EUR"], meta={"run_until": "2099-01-01"})
+    with caplog.at_level(logging.WARNING):
+        make_cycle(cfg, feed).run_once()
+    assert not any("RUN-VENSTER" in r.getMessage() for r in caplog.records)
+
+
+def test_run_window_travels_with_the_shadow_events():
+    """De einddatum hoort in het bewijsstuk, niet alleen in de config van vandaag:
+    anders is achteraf niet te zien onder welk venster een meting is ontstaan."""
+    closes = [100.0] * 40 + [110.0] * 20 + [100.2] * 20
+    feed = FakeFeed({"A-EUR": closes}, prices={"A-EUR": 100.2})
+    cfg = make_cfg(["A-EUR"],
+                   meta={"run_purpose": "infrastructuurtest", "run_until": "2026-09-15"},
+                   exits={"breakeven_stop": {"enabled": True, "binding": False,
+                                             "trigger_atr": 1.0, "offset_pct": 0.55}})
+    cycle = make_cycle(cfg, feed)
+    cycle.broker.buy("A-EUR", 250.0, stop_loss=50.0, take_profit=500.0, reason="setup")
+    backdate_position("A-EUR", hours=4 * 30)
+
+    cycle.run_once()
+
+    row = shadow_signals()[0]
+    assert row.details["run_until"] == "2026-09-15"
+    assert row.details["run_purpose"] == "infrastructuurtest"

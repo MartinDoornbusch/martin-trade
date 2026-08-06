@@ -41,7 +41,7 @@ decision:
   max_breakeven_win_rate: 0.50       # DE fee-gate sinds v0.20.0: weiger een setup die meer dan deze trefkans nodig heeft om quitte te spelen. p* = (m*a + c) / (m*a * (1+r)) uit docs/ontwerp-ev-gate.md; bij ATR 1% van de prijs is dat 52%, bij ATR 3% 44%. 0 = uit
   atr_stop_multiplier: 2.0           # stop loss = entry - 2*ATR
   reward_risk_ratio: 1.5             # take profit = entry + 1.5*(2*ATR)
-  use_llm_second_opinion: true
+  use_llm_second_opinion: false      # UIT tijdens de infrastructuurtest (2026-08-06). De LLM zit niet in het pad dat getest wordt: niet in de guard, niet in de scheduler, niet in het DB- of exportpad. Hij staat op shadow, dus zijn oordeel verandert geen enkele koop, en hij verbrandt ondertussen de gratis tier en vult llm_calls met rijen die niemand meer leest. Een infrastructuurtest draait de onderdelen die je test, niet de rest. Handelen in paper blijft wél aan: zonder open posities oefent de guard niets en zonder trades groeit de exportset niet
   llm_min_confidence: 0.6            # LLM moet >= 0.6 confident zijn, anders veto
   llm_veto_binding: false            # false = shadow-mode: veto wordt gelogd maar blokkeert de koop niet (meet gate-waarde zonder trades te kosten)
 
@@ -81,6 +81,7 @@ regime:                              # markt-brede regime-gate (gecodeerd, geen 
   binding: false                     # false = shadow: gelogd maar blokkeert de koop niet (meet gate-waarde). true pas na bewijs (fase 2 go)
 
 meta:                                # reist mee met elk bewijsstuk (meetexport en elk shadow-event)
+  run_until: "2026-09-15"              # HARDE einddatum van deze run (zes weken). Bewust een datum en niet "tot L1-L5 gesloten zijn": die blockers zijn fase 3-werk en fase 3 is met het "geen edge"-verdict van de kaart, dus die voorwaarde zou nooit vuren en dan blijft alleen de kalender met een ontsnappingsluik ernaast. Zes weken volgt uit het doel: de restore-verificatie heeft aangroeiende data nodig maar geen kwartaal, WAL en de warme back-upkopie hebben een handvol back-upcycli nodig, en "het live-pad oefenen" is alleen waardevol zolang je die code nog aanraakt. Verlengen mag, maar als geschreven beslissing in het register in PROJECTPLAN.md, niet door hem te laten doorlopen
   run_purpose: "infrastructuurtest"    # WAAROM deze run draait. Sinds 2026-08-06 is de fase 2-vraag beantwoord met "geen edge" (tweejarige backtest, stijgend en dalend venster, blootstelling uitgerekend). De paper-run valideert dus geen strategie meer. Zonder dit label bouwt het meetapparaat maandenlang keurig gescopede cohortes op die over een half jaar als strategievalidatie gelezen worden. Zet terug op "strategievalidatie" zodra er een signaal draait waarvan dat wel geldt
 
 export:                              # lichte meetexport naast de HA-image-back-up (ander herstelpad: honderden kB gzip i.p.v. een versleuteld image, terugzetten in seconden)
