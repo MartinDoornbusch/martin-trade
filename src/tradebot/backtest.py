@@ -23,12 +23,19 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import statistics
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .config import get_config
 from .correlation import correlation_from_closes
-from .decision import FeeModel, Position, RiskManager, breakeven_offset_pct
+from .decision import (
+    FeeModel,
+    Position,
+    RiskManager,
+    breakeven_offset_pct,
+    breakeven_win_rate,
+)
 from .exchange import BitvavoClient, Candle, candle_window, parse_end_ms
 from .strategy import (
     MarketSnapshot,
@@ -260,6 +267,12 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
     # post-mortem en dan wil je weten of hij daadwerkelijk iets tegenhoudt.
     fee_gate_blocks = 0
     signalen = 0
+    # ATR als fractie van de prijs op ELK entrymoment. Nodig om `p*` per variant uit
+    # haar EIGEN geometrie te berekenen in plaats van uit een aangenomen ATR. Zonder
+    # dit vergelijk je een gemeten trefkans met een drempel die bij een andere
+    # stop-afstand hoort, en dat levert een cijfer op dat toevallig klopt of
+    # toevallig niet.
+    atr_pcts: list[float] = []
     exit_reasons: dict[str, int] = {}
     equity_curve: list[float] = []
     # Kapitaalgewogen tijd-in-markt: gemiddelde van (belegd / totaal vermogen) over de
@@ -355,6 +368,7 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
             amount = (spend - fee) / fill
             total_fees += fee
             cash -= spend
+            atr_pcts.append(snap.atr / snap.price * 100)
             positions[market] = _Pos(
                 market=market, amount=amount, entry=fill,
                 stop=fill - stop_dist, target=fill + stop_dist * rr,
@@ -366,6 +380,11 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
         equity_curve.append(eq)
 
     final = equity_curve[-1] if equity_curve else start_eur
+    mediane_atr = round(statistics.median(atr_pcts), 3) if atr_pcts else None
+    p_ster = (breakeven_win_rate(mediane_atr, atr_mult, rr,
+                                 round_trip + fee_model.slippage_buffer_pct)
+              if mediane_atr else None)
+    win_pct = round(wins / trades * 100, 1) if trades else None
     return {
         "mode": mode,
         "markets": len(markets),
@@ -374,7 +393,14 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
         "warmup": warmup,
         "closed_trades": trades,
         "open_at_end": len(positions),
-        "win_rate_pct": round(wins / trades * 100, 1) if trades else None,
+        "win_rate_pct": win_pct,
+        # Diagnose per variant: gemeten trefkans tegen de drempel die HAAR eigen
+        # geometrie vraagt (p* uit de mediane gerealiseerde ATR, haar stop-afstand en
+        # haar reward/risk). Positief = de setup verdient zijn kosten terug.
+        "median_atr_pct": mediane_atr,
+        "p_star_pct": None if p_ster is None else round(p_ster * 100, 1),
+        "edge_pp": (None if (p_ster is None or win_pct is None)
+                    else round(win_pct - p_ster * 100, 1)),
         "net_return_pct": round((final / start_eur - 1) * 100, 2),
         "total_fees_eur": round(total_fees, 2),
         "max_drawdown_pct": max_drawdown_pct(equity_curve),

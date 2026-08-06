@@ -517,3 +517,52 @@ def test_exposure_is_capital_weighted_not_time_weighted():
     # deel van de reeks open. Tijdgewogen zou hier tegen de 40% liggen; kapitaalgewogen
     # hoort daar ruim onder te zitten.
     assert 0.0 < r["exposure_pct"] <= 25.0, r["exposure_pct"]
+
+
+def test_p_star_uses_the_variant_own_geometry_not_a_reference():
+    """Regressie op een redeneerfout die bijna als feit in de documentatie belandde.
+
+    De conclusie "48,2% gemeten tegen p* 48,0%, dus precies break-even" gebruikte de
+    referentiegeometrie uit het ontwerpdocument (stop = 2 x ATR), terwijl de variant
+    in kwestie `atr*1.5` draaide. Met haar eigen stop-afstand vraagt ze
+    0,40 + 0,60 / (1,5 x 1,5 x 2,5) = 50,7%, dus ze kwam 2,5 punt tekort. Dat past
+    ook bij haar uitkomst; een strategie die exact op break-even zit levert geen -54%.
+
+    De backtester rekent `p*` daarom uit de MEDIANE GEREALISEERDE ATR van die run en
+    uit de stop-afstand en reward/risk van die variant zelf.
+    """
+    data = candles([100.0] * (WARMUP + 40))
+    krap = make_cfg()
+    krap.decision = {**krap.decision, "atr_stop_multiplier": 1.5}
+    ruim = make_cfg()
+    ruim.decision = {**ruim.decision, "atr_stop_multiplier": 3.0}
+
+    r_krap = run_portfolio_backtest(data if isinstance(data, dict) else {"A-EUR": data},
+                                    krap, fees(), warmup=WARMUP)
+    r_ruim = run_portfolio_backtest({"A-EUR": data}, ruim, fees(), warmup=WARMUP)
+
+    assert r_krap["median_atr_pct"] is not None
+    # Dezelfde data en dezelfde ATR, maar een krappere stop vraagt een HOGERE
+    # trefkans: de kosten wegen zwaarder ten opzichte van een kleinere beweging.
+    assert r_krap["p_star_pct"] > r_ruim["p_star_pct"]
+
+    # en de diagnose is het verschil met de gemeten trefkans, niet met een aanname
+    if r_krap["win_rate_pct"] is not None:
+        assert r_krap["edge_pp"] == pytest.approx(
+            r_krap["win_rate_pct"] - r_krap["p_star_pct"], abs=0.05)
+
+
+def test_p_star_matches_the_hand_calculation_for_the_documented_variant():
+    """De variant uit de kalibratie: stop = 1,5 x ATR, r = 1,5, c = 0,60%.
+
+        p* = 1/(1+r) + c / (s * a * (1+r)) = 0,40 + 0,60 / (1,5 * a * 2,5)
+
+    Bij a = 1,5% geeft dat 50,7% en niet de 48,0% van de referentiegeometrie.
+    """
+    from tradebot.decision import breakeven_win_rate
+
+    eigen = breakeven_win_rate(1.5, 1.5, 1.5, 0.60)
+    referentie = breakeven_win_rate(1.5, 2.0, 1.5, 0.60)
+    assert eigen == pytest.approx(0.507, abs=0.001)
+    assert referentie == pytest.approx(0.480, abs=0.001)
+    assert (eigen - 0.482) * 100 == pytest.approx(2.5, abs=0.1)   # 2,5 punt tekort

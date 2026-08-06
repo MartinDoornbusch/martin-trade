@@ -211,6 +211,9 @@ def evaluate(variant_list: list, train: dict, test: dict, fee_model: FeeModel,
             "rel_test": round((r_test["net_return_pct"] or 0)
                               - (r_test.get("buy_hold_pct") or 0), 2),
             "fee_gate_block_pct": r_test.get("fee_gate_block_pct"),
+            "p_star": r_test.get("p_star_pct"),
+            "edge_pp": r_test.get("edge_pp"),
+            "atr_pct": r_test.get("median_atr_pct"),
             "expo_train": r_train.get("exposure_pct", 0.0),
             "expo_test": r_test.get("exposure_pct", 0.0),
             # Alpha = rendement min wat je met dezelfde blootstelling passief had
@@ -240,12 +243,14 @@ def print_table(title: str, rows: list[dict], top: int,
     ziet op hoeveel trades de drawdown in de noemer geschat is."""
     print(f"\n{title}")
     print(f"{'variant':44s} {'test%':>8s} {'r/dd':>6s} {'trades':>7s} {'dd%':>6s} "
-          f"{'train%':>8s} {'gap':>7s} {'win%':>6s}")
+          f"{'train%':>8s} {'gap':>7s} {'win%':>6s} {'p*':>6s} {'delta':>7s}")
     for r in rows[:top]:
         vlag = "" if r["reliable"] else f"  <- n<{min_trades}, dd onbetrouwbaar"
+        p_ster = "    —" if r["p_star"] is None else f"{r['p_star']:>6.1f}"
+        delta = "      —" if r["edge_pp"] is None else f"{r['edge_pp']:>+7.1f}"
         print(f"{r['desc']:44s} {(r['test_pct'] or 0):>8.2f} {r['test_rar']:>6.2f} "
               f"{r['trades']:>7d} {r['dd_pct']:>6.1f} {(r['train_pct'] or 0):>8.2f} "
-              f"{r['gap_pct']:>7.2f} {r['win_pct']:>6.1f}{vlag}")
+              f"{r['gap_pct']:>7.2f} {r['win_pct']:>6.1f} {p_ster} {delta}{vlag}")
     beste_op_rendement = max(rows, key=lambda r: (r["reliable"], r["test_pct"] or -999))
     if beste_op_rendement["desc"] != rows[0]["desc"]:
         print(f"  (op kaal testrendement zou '{beste_op_rendement['desc']}' winnen met "
@@ -440,6 +445,9 @@ def main() -> None:
             print_alfa(rows2)
 
     print("\nLet op: kies op de test-kolom, niet op train. Een grote gap = overfit.")
+    print("p* = trefkans die deze variant nodig heeft, uit HAAR eigen stop-afstand, "
+          "reward/risk en mediane gerealiseerde ATR. delta = gemeten win% min p*: "
+          "positief betekent dat de setup zijn kosten terugverdient.")
     print(f"r/dd = netto testrendement per procentpunt max drawdown. Max drawdown is "
           f"één extreme orderstatistiek: onder {args.min_trades} trades wordt hij bepaald "
           f"door één ongelukkige reeks, dus zulke varianten staan onderaan en zijn "

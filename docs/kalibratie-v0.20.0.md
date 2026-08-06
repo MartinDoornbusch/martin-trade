@@ -583,12 +583,41 @@ Elke sport faalt, en de marge wordt niet kleiner naarmate je r verhoogt. Dat maa
 horizonwissel niet alleen de goedkoopste maar de enige van de twee assen die daadwerkelijk
 iets oplevert.
 
-### 11. Eén cijfer dat het hele verhaal samenvat
+### 11. Een cijfer dat NIET standhield, en wat ervoor in de plaats komt
 
-De best presterende exit-variant op de test-helft (`rsi25-45 ts0 be:uit`, r = 1,5) haalt
-**48,2%** trefkans. Bij een ATR van circa 1,5% van de prijs is `p*` precies **48,0%**.
+Hier stond: "de best presterende exit-variant haalt 48,2% trefkans en `p*` is 48,0%, dus de
+strategie zit op de komma op haar eigen break-even." **Dat klopt niet, en de fout is
+leerzaam genoeg om te laten staan in plaats van te vervangen.**
 
-De strategie zit dus op de komma op haar eigen break-even. Geen bloeding, ook geen edge: een
-munt opgooien tegen kostprijs. Dat is tegelijk de schoonste bevestiging dat `p*` de juiste
-lens is — de gemeten trefkans landt op de berekende drempel — en het duidelijkste antwoord op
-de fase 2-vraag.
+De 48,0% kwam uit de referentiegeometrie van het ontwerpdocument (stop = 2 x ATR). De
+variant in kwestie, `rsi25-45 ts0 be:uit` op basis `ema20/50 score>=3 atr*1.5 rr1.5`, draait
+op `atr*1.5`. Met haar eigen stop-afstand:
+
+    p* = 1/(1+r) + c / (s * a * (1+r)) = 0,40 + 0,60 / (1,5 * 1,5 * 2,5) = 50,7%
+
+Gemeten 48,2%, gevraagd 50,7%: **2,5 procentpunt tekort.** Dat past ook bij de uitkomst, want
+die variant staat op -1,47% test en -54,29% train, en een strategie die exact op break-even
+zit levert geen -54%.
+
+De lens was goed, de bevestiging was toeval. En dit is precies het type cijfer dat in een
+document belandt en er een half jaar later als vaststaand feit uit wordt geciteerd, door mij
+of door iemand anders. Dezelfde faalwijze als de verdwenen julikalibratie, in een andere
+vorm.
+
+### 12. De echte versie: `p*` per variant uit haar eigen geometrie
+
+De backtester rapporteert sinds v0.20.0 per run de **mediane gerealiseerde ATR** op de
+entrymomenten, berekent `p*` uit die ATR met de stop-afstand en reward/risk van die variant
+zelf, en zet het verschil met de gemeten trefkans ernaast:
+
+| Kolom | Betekenis |
+|-------|-----------|
+| `median_atr_pct` | mediane ATR als % van de prijs op de entrymomenten van deze run |
+| `p_star_pct` | trefkans die deze geometrie bij die ATR nodig heeft |
+| `edge_pp` | gemeten win% min `p*`; positief = de setup verdient zijn kosten terug |
+
+De optimizer toont `p*` en `delta` als kolommen in elke pass-tabel. Daarmee is de vraag per
+rij te beantwoorden in plaats van met een aangenomen ATR, en verdwijnt de mogelijkheid om een
+variant met een krappe stop te vergelijken tegen een drempel die bij een ruime hoort. Dat is
+de natuurlijke afronding van het `p*`-werk: niet één cijfer dat het verhaal samenvat, maar een
+diagnose die voor elke rij geldt.
