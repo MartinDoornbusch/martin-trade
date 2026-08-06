@@ -276,3 +276,36 @@ def test_horizon_switch_lowers_the_bar_by_seven_points():
     # horizon raakt de noemer, de kosten alleen de teller.
     goedkoper = breakeven_win_rate(1.0, 2.0, 1.5, 0.50)
     assert (vier_uur - goedkoper) * 100 == pytest.approx(2.0, abs=0.1)
+
+
+def test_the_horizon_lever_has_a_floor():
+    """De hefboom is echt, goedkoop en EENMALIG, en dat volgt uit de formule zelf.
+
+    `p* = (m*a + c) / (m*a * (1+r))` gaat naar `1 / (1+r)` als a groeit: de
+    kostenloze asymptoot. Bij r = 1,5 is dat 40%. Van 4h naar dagelijks pak je 7,1
+    punt, van dagelijks naar wekelijks nog 3,0, en daaronder kom je nooit zonder de
+    stop/target-GEOMETRIE te veranderen. Nuttig om te weten vóór je in de horizon
+    investeert: er zit onder dagelijks nog maar 4,9 punt in.
+    """
+    from math import sqrt
+
+    from tradebot.decision import breakeven_win_rate
+
+    c, m, r = 0.60, 2.0, 1.5
+    ladder = {
+        "4h": breakeven_win_rate(1.0, m, r, c),
+        "1d": breakeven_win_rate(1.0 * sqrt(6), m, r, c),      # 6 bars van 4h
+        "1w": breakeven_win_rate(1.0 * sqrt(42), m, r, c),     # 42 bars van 4h
+    }
+    assert ladder["4h"] == pytest.approx(0.520, abs=0.001)
+    assert ladder["1d"] == pytest.approx(0.449, abs=0.001)
+    assert ladder["1w"] == pytest.approx(0.419, abs=0.001)
+
+    # De bodem is 1/(1+r) en hangt NIET van de kosten of van de ATR af.
+    for alfa in (10.0, 100.0, 1000.0):
+        assert breakeven_win_rate(alfa, m, r, c) > 1 / (1 + r)
+    assert breakeven_win_rate(1e9, m, r, c) == pytest.approx(1 / (1 + r), abs=1e-6)
+
+    # Onder die 40% kom je alleen via de geometrie: een hogere reward/risk-ratio.
+    assert breakeven_win_rate(1e9, m, 2.0, c) == pytest.approx(1 / 3, abs=1e-6)
+    assert breakeven_win_rate(1e9, m, 3.0, c) == pytest.approx(0.25, abs=1e-6)

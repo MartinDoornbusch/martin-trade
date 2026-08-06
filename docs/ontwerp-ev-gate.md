@@ -254,12 +254,22 @@ De formule beantwoordt meer dan de gate-vraag. ATR schaalt met de wortel van de 
 van 4h naar 1d is zes bars en wordt alfa ongeveer 2,45 keer groter, terwijl `c` gelijk
 blijft:
 
-| Horizon | alfa (ATR/prijs) | `p*` bij c = 0,60% |
-|---------|------------------|--------------------|
-| 4h | 1,00% | 52,0% |
-| 1d | 2,45% | 44,9% |
+| Horizon | alfa (ATR/prijs) | `p*` bij c = 0,60% | winst t.o.v. 4h |
+|---------|------------------|--------------------|------------------|
+| 4h | 1,00% | 52,0% | — |
+| 1d | 2,45% | 44,9% | -7,1 pp |
+| 1w | 6,48% | 41,9% | -10,1 pp |
+| asymptoot (alfa -> oneindig) | — | **40,0%** | -12,0 pp |
 
-**Zeven procentpunt lager, zonder één regel signaallogica te veranderen.** Ter vergelijking:
+**Zeven procentpunt lager, zonder één regel signaallogica te veranderen.**
+
+**Maar de hefboom heeft een bodem, en die volgt uit de formule zelf.** `p*` gaat naar
+`1 / (1 + r)` als alfa groeit: de kostenloze asymptoot, 40% bij r = 1,5, onafhankelijk van
+de kosten en van de ATR. Onder dagelijks zit er dus nog maar 4,9 procentpunt in de hele
+horizon-as, en onder de 40% kom je nooit zonder de stop/target-GEOMETRIE te veranderen. Een
+hogere reward/risk-ratio verlaagt de bodem wel: 33,3% bij r = 2,0, 25% bij r = 3,0 — maar
+dan moet je die grotere beweging ook halen. De hefboom is echt, hij is de goedkoopste die je
+hebt, en hij is eenmalig. Ter vergelijking:
 maker-entry met taker-exit (0,40% in plaats van 0,50%) levert ongeveer 2 procentpunt. De
 horizon raakt de noemer van `p*`, de kosten alleen de teller.
 
@@ -268,5 +278,6 @@ doet market-exits omdat een gemiste exit kapitaal kost. Een maker-stop vult moge
 een snelle beweging, dus precies wanneer je hem nodig hebt. Dat ruilt 0,10 procentpunt fee
 tegen staartrisico.
 
-Vastgepind in `tests/test_decision.py::test_horizon_switch_lowers_the_bar_by_seven_points`,
-zodat de getallen in dit document niet van de code kunnen afdrijven.
+Vastgepind in `tests/test_decision.py::test_horizon_switch_lowers_the_bar_by_seven_points`
+en `::test_the_horizon_lever_has_a_floor`, zodat de getallen in dit document niet van de
+code kunnen afdrijven.
