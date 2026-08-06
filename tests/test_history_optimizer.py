@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from tradebot import optimizer
 from tradebot.backtest import max_drawdown_pct
 from tradebot.config import AppConfig
@@ -330,3 +332,36 @@ def test_min_pct_reports_the_worst_of_both_windows(monkeypatch):
     assert rows[0]["desc"] == "regime-afhankelijk"
     beste_overleving = max(rows, key=lambda r: r["min_pct"])
     assert beste_overleving["desc"] == "bescheiden maar stabiel"
+
+
+def test_relative_to_buy_and_hold_is_reported(monkeypatch):
+    """Beslissend gebleken in de run van 6 augustus: de markt daalde in BEIDE
+    vensters (-20,99% en -9,17%), dus "negatief rendement" is voor een long-only
+    strategie de normale uitkomst en zegt niets. Alleen het verschil met vasthouden
+    zegt iets over de strategie zelf."""
+    def fake(data, cfg, fee_model, warmup, portfolio, proxy=None):
+        train = next(iter(data)) == "TRAIN"
+        return {"net_return_pct": -14.55 if train else -12.84,
+                "closed_trades": 43, "win_rate_pct": 30.0, "max_drawdown_pct": 10.0,
+                "mode": "portfolio", "buy_hold_pct": -20.99 if train else -9.17}
+    monkeypatch.setattr(optimizer, "_run_period", fake)
+    rows = evaluate([("regime-variant", SimpleNamespace(marker=0))],
+                    {"TRAIN": []}, {"TEST": []}, None, 150, True, min_trades=20)
+
+    r = rows[0]
+    assert r["rel_train"] == pytest.approx(6.44)    # beter dan vasthouden
+    assert r["rel_test"] == pytest.approx(-3.67)    # slechter dan vasthouden
+    assert r["min_pct"] == -14.55
+
+
+def test_second_pass_also_seeds_from_the_survivor():
+    """De test-winnaar is gekozen op de recente periode. Erft pass 2 alleen die
+    config, dan kan hij de tak die het ONGUNSTIGE venster het beste overleeft nooit
+    verkennen. Dat gebeurde bij de eerste run: de test-winnaar had regime uit, dus
+    alle 81 exit-varianten hadden regime uit en de overlevingstabel van pass 2 was
+    slechter dan die van pass 1."""
+    import inspect
+
+    bron = inspect.getsource(optimizer.main)
+    assert "beste overlever" in bron
+    assert bron.count("for label, zaad in zaadjes") == 1

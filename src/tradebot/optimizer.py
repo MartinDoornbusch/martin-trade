@@ -202,6 +202,14 @@ def evaluate(variant_list: list, train: dict, test: dict, fee_model: FeeModel,
                                  r_test["net_return_pct"] or 0), 2),
             "bh_train": r_train.get("buy_hold_pct"),
             "bh_test": r_test.get("buy_hold_pct"),
+            # Relatief t.o.v. kopen-en-vasthouden. Beslissend gebleken: bij een
+            # long-only strategie in een DALENDE markt is "negatief rendement" de
+            # normale uitkomst, en zegt alleen het verschil met vasthouden iets over
+            # de strategie zelf.
+            "rel_train": round((r_train["net_return_pct"] or 0)
+                               - (r_train.get("buy_hold_pct") or 0), 2),
+            "rel_test": round((r_test["net_return_pct"] or 0)
+                              - (r_test.get("buy_hold_pct") or 0), 2),
             "mode": r_test["mode"],
             "regime": r_test.get("regime", "uit"),
         })
@@ -242,16 +250,24 @@ def print_overleving(rows: list[dict], top: int = 5) -> None:
     """
     beste = sorted(rows, key=lambda r: (r["reliable"], r["min_pct"]), reverse=True)
     print("\nOVERLEVING - gesorteerd op het slechtste van beide vensters")
-    print(f"{'variant':44s} {'min%':>8s} {'train%':>8s} {'test%':>8s} {'trades':>7s}")
+    print(f"{'variant':44s} {'min%':>8s} {'train%':>8s} {'test%':>8s} "
+          f"{'vs bh tr':>9s} {'vs bh te':>9s} {'trades':>7s}")
     for r in beste[:top]:
         print(f"{r['desc']:44s} {r['min_pct']:>8.2f} {(r['train_pct'] or 0):>8.2f} "
-              f"{(r['test_pct'] or 0):>8.2f} {r['trades']:>7d}")
+              f"{(r['test_pct'] or 0):>8.2f} {r['rel_train']:>+9.2f} "
+              f"{r['rel_test']:>+9.2f} {r['trades']:>7d}")
     if beste and beste[0]["min_pct"] < 0:
         print(f"\nGEEN ENKELE variant is positief in beide vensters; de beste haalt "
               f"{beste[0]['min_pct']:.2f}% in zijn slechtste periode.")
     if rows and rows[0].get("bh_train") is not None:
         print(f"IJkpunt kopen-en-vasthouden over dezelfde markten en vensters: "
               f"train {rows[0]['bh_train']:+.2f}%, test {rows[0]['bh_test']:+.2f}%.")
+        beste_rel = max(rows, key=lambda r: min(r["rel_train"], r["rel_test"]))
+        print(f"Beste variant RELATIEF (slechtste van beide vensters t.o.v. vasthouden): "
+              f"{beste_rel['desc']} met {min(beste_rel['rel_train'], beste_rel['rel_test']):+.2f} "
+              f"procentpunt. Daalt de markt in beide vensters, dan is een negatief "
+              f"rendement de normale uitkomst voor een long-only strategie; alleen dit "
+              f"verschil zegt iets over de strategie zelf.")
 
 
 def split_data(data: dict[str, list[Candle]], ratio: float = 0.7):
@@ -310,15 +326,26 @@ def main() -> None:
     print_overleving(rows)
 
     if not args.skip_exit_pass and rows:
-        winner = rows[0]["cfg"]
-        exits = list(exit_variants(winner))
-        warmup2 = grid_warmup([c for _, c in exits])
-        print(f"\nPASS 2 op de winnaar van pass 1: {rows[0]['desc']} "
-              f"({len(exits)} varianten x 2 perioden)")
-        rows2 = evaluate(exits, train, test, fee_model, max(warmup, warmup2),
-                         args.portfolio, args.min_trades, proxy_train, proxy_test)
-        print_table("PASS 2 - exit- en drempelparameters", rows2, args.top, args.min_trades)
-        print_overleving(rows2)
+        # Pass 2 draait op TWEE zaadjes, niet op één. De test-winnaar is gekozen op de
+        # recente periode; erft pass 2 alleen die config, dan kan hij de tak die het
+        # ONGUNSTIGE venster het beste overleeft nooit verkennen. Dat is precies wat
+        # er gebeurde bij de eerste run: de test-winnaar had regime uit, dus alle 81
+        # exit-varianten hadden regime uit en de overlevingstabel van pass 2 was
+        # slechter dan die van pass 1.
+        zaadjes = [("test-winnaar", rows[0])]
+        overlever = max(rows, key=lambda r: (r["reliable"], r["min_pct"]))
+        if overlever["desc"] != rows[0]["desc"]:
+            zaadjes.append(("beste overlever", overlever))
+        for label, zaad in zaadjes:
+            exits = list(exit_variants(zaad["cfg"]))
+            warmup2 = grid_warmup([c for _, c in exits])
+            print(f"\nPASS 2 op de {label} van pass 1: {zaad['desc']} "
+                  f"({len(exits)} varianten x 2 perioden)")
+            rows2 = evaluate(exits, train, test, fee_model, max(warmup, warmup2),
+                             args.portfolio, args.min_trades, proxy_train, proxy_test)
+            print_table(f"PASS 2 ({label}) - exit- en drempelparameters",
+                        rows2, args.top, args.min_trades)
+            print_overleving(rows2)
 
     print("\nLet op: kies op de test-kolom, niet op train. Een grote gap = overfit.")
     print(f"r/dd = netto testrendement per procentpunt max drawdown. Max drawdown is "

@@ -355,3 +355,65 @@ net als een gate-flip.
 | Datum | Wijziging | Reden | Cohorte-reset? |
 |-------|-----------|-------|----------------|
 | | | | |
+
+---
+
+## Uitkomst van de hermeting (6 augustus 2026)
+
+Venster: 2025-03-23 t/m 2026-08-06, 3000 4h-candles per markt, vijf markten, portfolio-modus.
+Train 2100 / test 900 candles, chronologisch gesplitst.
+
+### 1. Geen enkele configuratie overleeft beide vensters
+
+162 varianten in pass 1, 81 in pass 2. De beste `min%` (uitkomst in het slechtste van de
+twee vensters) is **-14,55%**. Positief in beide vensters: nul varianten.
+
+De top van de test-tabel is misleidend zonder die tweede tabel: `ema12/26 score>=3 atr*2.5
+rr1.5` haalt +6,92% op test, maar -38,01% op train. Een gap van 45 punten. Dat is geen
+edge, dat is één venster.
+
+### 2. De markt daalde in BEIDE vensters, en dat kantelt de lezing
+
+IJkpunt kopen-en-vasthouden, gelijkgewogen over dezelfde vijf markten: **train -20,99%, test
+-9,17%**. De aanname dat het testvenster een stijgende markt was, die eerder in dit document
+en in de reviewgesprekken werd gebruikt, is dus onjuist.
+
+Dat verandert wat "negatief rendement" betekent. Voor een long-only strategie in een dalende
+markt is verlies de normale uitkomst; alleen het verschil met vasthouden zegt iets over de
+strategie. Daarom staat dat verschil nu als kolom in de overlevingstabel.
+
+| Variant | train% | vs vasthouden | test% | vs vasthouden |
+|---------|--------|---------------|-------|---------------|
+| beste overlever (`ema9/21 score>=3 atr*2.5 rr2.0 regime:aan`) | -14,55 | **+6,44** | -12,84 | -3,67 |
+| beste op test (`ema12/26 score>=3 atr*2.5 rr1.5 regime:uit`) | -38,01 | -17,02 | +6,92 | **+16,09** |
+
+### 3. Het regime-filter helpt wél, maar in het andere venster
+
+Alle vijf de beste overlevers hebben `regime:aan`; alle tien de besten op test hebben
+`regime:uit`. Het filter verlaagt het verlies in het ongunstige venster van circa -34% naar
+-14,55% en kost rendement in het gunstige. Dat is precies wat een trendfilter hoort te doen,
+en het is de tegenovergestelde conclusie van wat de losse zesmaands-vergelijking
+(`--vergelijk`) suggereerde. Eén venster is geen meting.
+
+### 4. Wat dit betekent voor fase 2
+
+- **Absoluut: geen edge.** Geen configuratie is positief in beide vensters over 17 maanden.
+  Het go/no-go-criterium (win-rate > 45% én netto positief na fees) wordt door geen enkele
+  variant gehaald.
+- **Relatief: gemengd.** Met regime bindend verslaat de strategie vasthouden in het slechte
+  venster met 6,44 punt en verliest ze 3,67 punt in het goede. Dat is geen edge maar het is
+  ook geen ruis.
+- **Gates zijn niet de oplossing.** Een gate die een kansloze instap filtert maakt van een
+  verlies een kleiner verlies. Het werk verhuist naar de instaplogica; het EV-gate-ontwerp in
+  `docs/ontwerp-ev-gate.md` gaat precies over dat gat, want de huidige fee-gate toetst of het
+  koersdoel ver genoeg weg ligt en niet of de trade positieve verwachtingswaarde heeft.
+- **Config niet wijzigen op deze uitkomst.** De drie voorwaarden hierboven zijn niet gehaald:
+  geen variant wint op test én overleeft train, en de gaps zijn overal 25 tot 50 punten.
+
+### 5. Methodische fout in de tweede pass, gerepareerd
+
+Pass 2 draaide alleen op de test-winnaar van pass 1. Die had `regime:uit`, dus alle 81
+exit-varianten hadden regime uit en de overlevingstabel van pass 2 (-22,09%) was slechter dan
+die van pass 1 (-14,55%). De pass kon de tak die het ongunstige venster het beste overleeft
+per constructie niet verkennen. Pass 2 draait nu op twee zaadjes: de test-winnaar én de beste
+overlever.
