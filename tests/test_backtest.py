@@ -483,3 +483,37 @@ def test_fee_gate_blocks_are_counted():
     assert r["fee_gate_blocks"] == r["signals"]
     assert r["fee_gate_block_pct"] == 100.0
     assert r["closed_trades"] == 0 and r["open_at_end"] == 0
+
+
+def test_exposure_separates_skill_from_absence():
+    """In een dalende markt verslaat elke long-only variant die minder in de markt
+    zit het vasthouden bijna per definitie: een variant die niets doet "wint" met
+    precies het marktverlies. Zonder kapitaalgewogen tijd-in-markt is outperformance
+    dus niet te onderscheiden van afwezigheid."""
+    data = {"A-EUR": candles([100.0] * (WARMUP + 40))}
+    cfg = make_cfg()
+
+    handelend = run_portfolio_backtest(data, cfg, fees(), warmup=WARMUP)
+    assert handelend["exposure_pct"] > 0
+
+    # Een variant die nooit koopt (onhaalbare signaaldrempel) staat 0% in de markt.
+    stil = make_cfg()
+    stil.strategy = {**stil.strategy, "min_signal_score": 99}
+    niets = run_portfolio_backtest(data, stil, fees(), warmup=WARMUP)
+    assert niets["exposure_pct"] == 0.0
+    assert niets["closed_trades"] == 0
+    assert niets["net_return_pct"] == 0.0
+
+
+def test_exposure_is_capital_weighted_not_time_weighted():
+    """Eén positie van EUR250 op EUR1000 is 25% blootstelling, niet 100%, ook al
+    staat er de hele tijd iets open. Anders overschat je de exposure van een
+    bucket-strategie en onderschat je haar alfa."""
+    data = {"A-EUR": candles([100.0] * (WARMUP + 40))}
+    cfg = make_cfg(risk={"max_open_positions": 1})
+    r = run_portfolio_backtest(data, cfg, fees(), warmup=WARMUP)
+    assert r["open_at_end"] == 1
+    # Eén bucket van 250 op 1000 is 25% van het vermogen, en de positie staat maar een
+    # deel van de reeks open. Tijdgewogen zou hier tegen de 40% liggen; kapitaalgewogen
+    # hoort daar ruim onder te zitten.
+    assert 0.0 < r["exposure_pct"] <= 25.0, r["exposure_pct"]

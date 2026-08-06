@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import itertools
 
-from .backtest import run_backtest, run_portfolio_backtest
+from .backtest import buy_hold_pct, run_backtest, run_portfolio_backtest
 from .config import get_config
 from .decision import FeeModel
 from .exchange import BitvavoClient, Candle, candle_window, parse_end_ms
@@ -211,6 +211,20 @@ def evaluate(variant_list: list, train: dict, test: dict, fee_model: FeeModel,
             "rel_test": round((r_test["net_return_pct"] or 0)
                               - (r_test.get("buy_hold_pct") or 0), 2),
             "fee_gate_block_pct": r_test.get("fee_gate_block_pct"),
+            "expo_train": r_train.get("exposure_pct", 0.0),
+            "expo_test": r_test.get("exposure_pct", 0.0),
+            # Alpha = rendement min wat je met dezelfde blootstelling passief had
+            # gehaald. Scheidt vaardigheid van afwezigheid: een variant die de helft
+            # van de tijd in een markt zit die 20% daalt, "verdient" 10 punt door
+            # niets te doen. Eerste-orde-benadering (ze veronderstelt dat de
+            # blootstelling niet systematisch samenvalt met de beweging), maar precies
+            # dat samenvallen is wat een regime-filter claimt en dus wat je wilt meten.
+            "alpha_train": round((r_train["net_return_pct"] or 0)
+                                 - r_train.get("exposure_pct", 0.0) / 100
+                                 * (r_train.get("buy_hold_pct") or 0), 2),
+            "alpha_test": round((r_test["net_return_pct"] or 0)
+                                - r_test.get("exposure_pct", 0.0) / 100
+                                * (r_test.get("buy_hold_pct") or 0), 2),
             "mode": r_test["mode"],
             "regime": r_test.get("regime", "uit"),
         })
@@ -251,12 +265,12 @@ def print_overleving(rows: list[dict], top: int = 5) -> None:
     """
     beste = sorted(rows, key=lambda r: (r["reliable"], r["min_pct"]), reverse=True)
     print("\nOVERLEVING - gesorteerd op het slechtste van beide vensters")
-    print(f"{'variant':44s} {'min%':>8s} {'train%':>8s} {'test%':>8s} "
-          f"{'vs bh tr':>9s} {'vs bh te':>9s} {'trades':>7s}")
+    print(f"{'variant':44s} {'min%':>8s} {'vs bh tr':>9s} {'vs bh te':>9s} "
+          f"{'expo tr':>8s} {'expo te':>8s} {'alfa tr':>8s} {'alfa te':>8s} {'trades':>7s}")
     for r in beste[:top]:
-        print(f"{r['desc']:44s} {r['min_pct']:>8.2f} {(r['train_pct'] or 0):>8.2f} "
-              f"{(r['test_pct'] or 0):>8.2f} {r['rel_train']:>+9.2f} "
-              f"{r['rel_test']:>+9.2f} {r['trades']:>7d}")
+        print(f"{r['desc']:44s} {r['min_pct']:>8.2f} {r['rel_train']:>+9.2f} "
+              f"{r['rel_test']:>+9.2f} {r['expo_train']:>7.1f}% {r['expo_test']:>7.1f}% "
+              f"{r['alpha_train']:>+8.2f} {r['alpha_test']:>+8.2f} {r['trades']:>7d}")
     if beste and beste[0]["min_pct"] < 0:
         print(f"\nGEEN ENKELE variant is positief in beide vensters; de beste haalt "
               f"{beste[0]['min_pct']:.2f}% in zijn slechtste periode.")
@@ -272,11 +286,38 @@ def print_overleving(rows: list[dict], top: int = 5) -> None:
         print(f"IJkpunt kopen-en-vasthouden over dezelfde markten en vensters: "
               f"train {rows[0]['bh_train']:+.2f}%, test {rows[0]['bh_test']:+.2f}%.")
         beste_rel = max(rows, key=lambda r: min(r["rel_train"], r["rel_test"]))
-        print(f"Beste variant RELATIEF (slechtste van beide vensters t.o.v. vasthouden): "
-              f"{beste_rel['desc']} met {min(beste_rel['rel_train'], beste_rel['rel_test']):+.2f} "
-              f"procentpunt. Daalt de markt in beide vensters, dan is een negatief "
-              f"rendement de normale uitkomst voor een long-only strategie; alleen dit "
-              f"verschil zegt iets over de strategie zelf.")
+        print(f"Beste RELATIEF t.o.v. vasthouden (slechtste venster): {beste_rel['desc']} "
+              f"met {min(beste_rel['rel_train'], beste_rel['rel_test']):+.2f} punt.")
+        beste_alfa = max(rows, key=lambda r: min(r["alpha_train"], r["alpha_test"]))
+        alfa = min(beste_alfa["alpha_train"], beste_alfa["alpha_test"])
+        print(f"Beste op ALFA (rendement min exposure x marktrendement, slechtste venster): "
+              f"{beste_alfa['desc']} met {alfa:+.2f} punt.")
+        niets_tr, niets_te = -(rows[0]["bh_train"] or 0), -(rows[0]["bh_test"] or 0)
+        print(f"Referentie 'niets doen' (0% blootstelling): {niets_tr:+.2f} punt op train, "
+              f"{niets_te:+.2f} op test.")
+        print("Lees die twee samen. In een DALEND venster verslaat elke long-only variant "
+              "die minder in de markt zit het vasthouden bijna per definitie; in een "
+              "stijgend venster kost diezelfde afwezigheid geld. Alfa haalt de "
+              "blootstelling eruit: blijft daar niets over, dan meet je afwezigheid en "
+              "geen vaardigheid.")
+
+
+def kwartalen(data: dict[str, list[Candle]], warmup: int, n: int = 4) -> list[tuple]:
+    """Kopen-en-vasthouden per gelijk deel van de reeks.
+
+    Bestaat om één vraag meteen zichtbaar te maken: zit er wel een STIJGEND venster
+    in de steekproef? Zonder dat is "voegt het regime-filter waarde toe" niet te
+    beantwoorden, alleen "beperkt het de schade". Een trendfilter kost geld in een
+    stijgende markt, en dat deel van de rekening zie je niet als je alleen dalende
+    vensters meet.
+    """
+    lengte = min(len(v) for v in data.values())
+    stap = lengte // n
+    uit = []
+    for i in range(n):
+        segment = {m: v[i * stap:(i + 1) * stap] for m, v in data.items()}
+        uit.append((f"Q{i + 1}", buy_hold_pct(segment, min(warmup, stap // 4))))
+    return uit
 
 
 def split_data(data: dict[str, list[Candle]], ratio: float = 0.7):
@@ -316,10 +357,16 @@ def main() -> None:
 
     core = list(variants(cfg))
     warmup = grid_warmup([c for _, c in core])
+    warmup_kop = warmup
     n_bars = min(len(v) for v in data.values())
     print(f"\nOptimizer {', '.join(args.markets)} ({args.interval}): {n_bars} candles per "
           f"markt, train {int(n_bars * 0.7)} / test {n_bars - int(n_bars * 0.7)}")
     print(f"venster: {candle_window(next(iter(data.values())))}")
+    print(f"ijkpunt kopen-en-vasthouden: train {buy_hold_pct(train, warmup_kop):+.2f}%, "
+          f"test {buy_hold_pct(test, warmup_kop):+.2f}%")
+    print("markt per kwartaal (kopen-en-vasthouden): "
+          + ", ".join(f"{label} {waarde:+.1f}%"
+                      for label, waarde in kwartalen(data, warmup_kop)))
     print(f"warmup {warmup} candles (geschaald met de traagste EMA in de grid, "
           f"gelijk voor alle varianten), {len(core)} varianten x 2 perioden")
 

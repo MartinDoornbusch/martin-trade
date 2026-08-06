@@ -462,3 +462,39 @@ Precies het gat waarvoor `docs/ontwerp-ev-gate.md` is geschreven.
 Sinds v0.20.0 telt de backtester dit expliciet (`fee_gate_blocks`, `fee_gate_block_pct`) en
 waarschuwt de optimizer als de gate onder 1% van de signalen tegenhoudt. Meten in plaats van
 afleiden.
+
+### 8. De grens onder alle relatieve cijfers: blootstelling
+
+De kandidaat doet 31 trades waar de regime:uit-varianten er 82 doen. Dat is een fractie van
+de blootstelling, en in twee dalende vensters is +14,73 en +6,36 procentpunt dan mogelijk
+volledig verklaard door "minder in de markt zitten" en niet door betere instapkeuzes. Een
+variant die niets doet scoort in deze twee vensters +20,99 en +9,17 punt ten opzichte van
+vasthouden.
+
+Daarom rapporteert de optimizer sinds v0.20.0 twee dingen extra:
+
+- `expo tr` / `expo te`: kapitaalgewogen tijd-in-markt, dus het gemiddelde van (belegd /
+  totaal vermogen). Tijdgewogen zou de blootstelling van een bucket-strategie overschatten;
+- `alfa tr` / `alfa te`: rendement min (blootstelling x marktrendement). Eerste-orde-
+  benadering, want ze veronderstelt dat de blootstelling niet systematisch samenvalt met de
+  beweging — maar precies dát samenvallen is wat een regime-filter claimt, dus het is de
+  juiste maat om die claim te toetsen.
+
+**Toets:** ligt de outperformance in lijn met de exposurereductie, dan meet je afwezigheid.
+Blijft er alfa over, dan zit er timing in.
+
+### 9. De steekproef mist een stijgend venster
+
+Zeventien maanden, twee vensters, allebei dalend. Over stijgende markten zegt deze meting
+niets, en juist daar kost een regime-filter geld: hij houdt je uit de markt terwijl die
+oploopt. De conclusie "het regime-filter verbetert de overleving" is daarmee half gemeten.
+
+De optimizer toont nu het ijkpunt per venster én per kwartaal in de kop, zodat in één blik te
+zien is of er een stijgend deel in de steekproef zit. Volgende run met een langer venster:
+
+```powershell
+python -m tradebot.optimizer BTC-EUR ETH-EUR SOL-EUR XRP-EUR LINK-EUR --interval 4h --limit 4400 --end $eind --portfolio
+```
+
+4400 4h-candles is ongeveer twee jaar. `get_candles_history` pagineert, dus dat gaat in
+stappen van 1440 per markt.

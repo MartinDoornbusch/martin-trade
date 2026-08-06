@@ -240,6 +240,26 @@ Deze vier zijn in v0.20.0 **expliciet buiten scope gehouden** en staan nog steed
 - [ ] **L4. Geen reconciliatie bij opstart.** Na een herstart wordt de eigen administratie niet tegen de werkelijke exchange-posities gelegd, dus een verschil blijft onopgemerkt
 - [ ] **L5 (uit fase 3 hierboven).** Een achtergebleven open **paper**-positie blokkeert door `PositionRow.market unique=True` een live-positie in dezelfde markt op dezelfde DB. Sluiten of archiveren vóór de omschakeling
 
+### Stand van zaken na de hermeting (2026-08-06)
+
+| Bevinding | Zekerheid | Grond |
+|-----------|-----------|-------|
+| **Fee-gate is inert**, blokkeert nooit | Hoog | Bit-identieke uitkomsten over een viervoudige verschuiving van `min_profit_pct`, in élke pass 2-tabel; `min_edge` max ~1,60% tegen een verwachte beweging van 10-15% |
+| **Regime-filter verbetert overleving** | Middel | Systematisch patroon: 10/10 besten op testrendement hebben regime UIT, 5/5 besten op overleving hebben regime AAN. Geen toevalstreffer, maar alleen in DALENDE vensters getest |
+| **Time-stop en breakeven-stop schaden** | Middel | De best overlevende configuratie heeft beide uit; time-stop kostte 15,7 punt in de losse productievergelijking. Eén parameterset |
+| **Geen absolute edge** | Hoog | Geen van 324 varianten positief in beide vensters |
+| **Relatieve edge t.o.v. vasthouden** | **Laag** | Mogelijk volledig verklaard door lagere blootstelling: de kandidaat doet 31 trades tegen 82 voor de regime:uit-varianten. Pas te beoordelen met tijd-in-markt én een stijgend venster |
+
+Twee correcties op eerdere lezingen in dit document, allebei van dezelfde soort (een conclusie getrokken uit één venster):
+
+- "Het testvenster is een stijgende markt" was onjuist. Kopen-en-vasthouden deed -20,99% op train en -9,17% op test: **beide vensters dalen.** De eerdere lezing kwam uit de per-markt-ankerrun (+6% tot +26%), maar dat is all-in per markt en niet vergelijkbaar met vasthouden;
+- "Het regime-filter helpt niet" kwam uit de losse zesmaands-vergelijking en is door de 17-maands-grid weerlegd.
+
+**Wat de volgende meting moet toevoegen, en waarom het zonder die twee dingen niet te beoordelen is:**
+
+1. **Tijd-in-markt** (gebouwd: `exposure_pct`, kapitaalgewogen). In een dalend venster verslaat elke long-only variant die minder in de markt zit het vasthouden bijna per definitie; een variant die niets doet "wint" met precies het marktverlies. De kolom `alfa` (rendement min blootstelling x marktrendement) haalt dat eruit. Blijft daar niets over, dan is de gemeten outperformance afwezigheid en geen vaardigheid.
+2. **Minstens één stijgend venster.** Zeventien maanden, twee vensters, allebei dalend. Over stijgende markten zegt deze meting niets, en juist daar kost een regime-filter geld. `get_candles_history` pagineert, dus het venster kan naar twee jaar of meer; de optimizer toont nu het ijkpunt per venster én per kwartaal in de kop, zodat meteen zichtbaar is of er een stijgend deel in de steekproef zit.
+
 ### Voorwaarde: geen bindende gate zonder meting
 
 Dit stond als gewoonte in de tekst en is één keer overgeslagen: de time-stop is in v0.18.0
@@ -321,6 +341,7 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 
 | Datum | Wijziging | Getest |
 |-------|-----------|--------|
+| 2026-08-06 | Tijd-in-markt (kapitaalgewogen `exposure_pct`) en alfa-kolommen in de optimizer, plus kopen-en-vasthouden per venster én per kwartaal in de kop. Reden: in een dalend venster verslaat elke long-only variant die minder in de markt zit het vasthouden bijna per definitie, dus zonder blootstelling eruit te rekenen is outperformance niet te onderscheiden van afwezigheid. Stand van zaken met zekerheidsniveau per bevinding vastgelegd | 272 tests (3 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Pass 2 op de overlevende tak gedraaid: één configuratie verslaat vasthouden in beide vensters (+14,73 / +6,36) met de kleinste train/test-gap van alle 324 varianten, maar blijft absoluut negatief en rust op 31 testtrades. Tweede vondst: de fee-gate bindt NOOIT (min_profit_pct 0,25/0,50/1,00 geven bit-identieke uitkomsten), dus de kernles uit de post-mortem filtert in de praktijk niets. Backtester telt dat nu expliciet | 270 tests (1 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Hermeting afgerond: geen configuratie positief in beide vensters over 17 maanden. Twee correcties op eerdere aannames: de markt daalde in BEIDE vensters (vasthouden train -20,99%, test -9,17%), en het regime-filter helpt wél maar in het ongunstige venster. Optimizer kreeg daarom relatieve kolommen t.o.v. vasthouden, en pass 2 draait nu op twee zaadjes (test-winnaar én beste overlever) omdat hij anders de overlevende tak per constructie niet kan verkennen | 269 tests (2 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Regime-filter in de backtester (ontbrak volledig, terwijl het het enige gebouwde mechanisme is om een verliesregime te vermijden) en als extra as in pass 1 van de optimizer; `calibrate --vergelijk` draait de productieconfig in portfolio-modus met time-stop en regime als assen, zodat de time-stop-vraag beantwoord wordt in de modus waarin de bot draait. No-op-bewaking in twee lagen: harde fout als een stap niets aan de invoer verandert, markering als het resultaat identiek is (dat laatste kan geen exception zijn, want een correctie die echt niets doet ziet er identiek uit). Gate-regel als voorwaarde in plaats van gewoonte, met de time-stop als openstaand geval | 261 tests (9 nieuw), ruff, bandit exit 0 |

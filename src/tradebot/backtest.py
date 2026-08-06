@@ -262,6 +262,12 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
     signalen = 0
     exit_reasons: dict[str, int] = {}
     equity_curve: list[float] = []
+    # Kapitaalgewogen tijd-in-markt: gemiddelde van (belegd / totaal vermogen) over de
+    # hele reeks. Nodig om vaardigheid van AFWEZIGHEID te scheiden. In een dalende
+    # markt verslaat elke long-only strategie die minder in de markt zit het
+    # vasthouden bijna per definitie; een variant die niets doet "wint" met precies
+    # het marktverlies. Pas afgezet tegen exposure zegt outperformance iets.
+    exposure_som = 0.0
 
     def equity() -> float:
         return cash + sum(p.amount * last_close.get(p.market, p.entry)
@@ -353,7 +359,11 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
                 market=market, amount=amount, entry=fill,
                 stop=fill - stop_dist, target=fill + stop_dist * rr,
                 fees_paid=fee, entry_index=i, opened_ms=ts)
-        equity_curve.append(equity())
+        eq = equity()
+        belegd = sum(p.amount * last_close.get(p.market, p.entry)
+                     for p in positions.values())
+        exposure_som += (belegd / eq) if eq > 0 else 0.0
+        equity_curve.append(eq)
 
     final = equity_curve[-1] if equity_curve else start_eur
     return {
@@ -370,6 +380,8 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
         "max_drawdown_pct": max_drawdown_pct(equity_curve),
         "exit_reasons": exit_reasons,
         "buy_hold_pct": buy_hold_pct(candles_by_market, warmup),
+        "exposure_pct": (round(exposure_som / len(equity_curve) * 100, 1)
+                         if equity_curve else 0.0),
         "signals": signalen,
         "fee_gate_blocks": fee_gate_blocks,
         "fee_gate_block_pct": round(fee_gate_blocks / signalen * 100, 1) if signalen else None,
