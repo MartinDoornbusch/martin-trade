@@ -11,6 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from .config import get_config, get_secrets
 from .db import EquityRow, init_db, session
 from .engine import TradingCycle
+from .export import geplande_export
 from .mqtt import MqttPublisher
 from .web import app
 
@@ -73,6 +74,11 @@ def create_app():
                       args=[cycle, publisher], max_instances=1, coalesce=True,
                       next_run_time=datetime.now(timezone.utc))  # eerste run direct bij start
     scheduler.add_job(snapshot_equity, "interval", hours=6, args=[cycle], id="equity")
+    # Meetexport: klein, en met een ander herstelpad dan de HA-image-back-up.
+    export_uren = int((cfg.export or {}).get("interval_hours", 24) or 24)
+    scheduler.add_job(geplande_export, "interval", hours=export_uren, id="export",
+                      args=[cfg, secrets.database_url, cycle.broker.mode],
+                      max_instances=1, coalesce=True)
     guard_s = int(cfg.schedule.get("guard_interval_seconds", 60))
     scheduler.add_job(cycle.check_exits_fast, "interval", seconds=guard_s, id="guard",
                       max_instances=1, coalesce=True)

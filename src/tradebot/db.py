@@ -4,7 +4,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import JSON, DateTime, Float, Integer, String, create_engine
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    create_engine,
+    event,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -96,11 +104,36 @@ _engine = None
 _Session: sessionmaker | None = None
 
 
+# Drie schrijvers delen deze DB: de analysecyclus (elk uur), de position guard (elke
+# 60s) en het dashboard. Zonder WAL serialiseert SQLite lezers en schrijvers op één
+# lock en krijg je "database is locked" zodra de guard schrijft terwijl de cyclus
+# loopt. Tweede reden sinds v0.20.0: de dagelijkse HA-back-up maakt een WARME kopie
+# van /data terwijl de bot doordraait. Met het klassieke rollback-journal kan die
+# kopie een half afgeronde schrijfactie vastleggen; met WAL is een warme kopie
+# beduidend veiliger.
+#
+# `synchronous` blijft bewust op de default FULL. NORMAL is de gebruikelijke
+# WAL-metgezel en sneller, maar kan bij stroomverlies de laatste transacties
+# verliezen. Deze DB is het verslag van wat de bot met echt geld deed, en het
+# schrijfvolume is één transactie per minuut; duurzaamheid wint hier van doorvoer.
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
+def _sqlite_pragmas(dbapi_connection, _record) -> None:
+    cur = dbapi_connection.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    cur.close()
+
+
 def init_db(database_url: str) -> None:
     global _engine, _Session
     if database_url.startswith("sqlite:///"):
         Path(database_url.replace("sqlite:///", "")).parent.mkdir(parents=True, exist_ok=True)
     _engine = create_engine(database_url, future=True)
+    if _engine.dialect.name == "sqlite":
+        # Vóór create_all registreren, zodat ook de eerste verbinding de pragma's krijgt.
+        event.listen(_engine, "connect", _sqlite_pragmas)
     _Session = sessionmaker(_engine, expire_on_commit=False)
     Base.metadata.create_all(_engine)
     # Mini-migraties: create_all voegt geen kolommen toe aan bestaande sqlite-tabellen.

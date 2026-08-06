@@ -78,6 +78,12 @@ regime:                              # markt-brede regime-gate (gecodeerd, geen 
   proxy_market: "BTC-EUR"            # BTC als markt-proxy: down-trend = risk-off
   binding: false                     # false = shadow: gelogd maar blokkeert de koop niet (meet gate-waarde). true pas na bewijs (fase 2 go)
 
+export:                              # lichte meetexport naast de HA-image-back-up (ander herstelpad: honderden kB gzip i.p.v. een versleuteld image, terugzetten in seconden)
+  enabled: true
+  dir: ""                            # leeg = naast de database (in de add-on /data/exports)
+  keep: 30                           # aantal exports dat bewaard blijft; 3 dagen image-retentie is te kort voor een meting van 4-8 weken
+  interval_hours: 24
+
 llm:
   providers:                          # volgorde = voorkeursvolgorde
     - name: groq

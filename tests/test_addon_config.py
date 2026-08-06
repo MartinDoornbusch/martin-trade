@@ -41,6 +41,17 @@ def entrypoint_env_map() -> dict[str, str]:
 
 # --- 3.3 versiekoppeling --------------------------------------------------------
 
+def test_package_version_matches_pyproject():
+    """Derde versielocatie, gevonden in ronde 2: `src/tradebot/__init__.py` stond nog
+    op 0.18.0 terwijl pyproject en de add-on op 0.20.0 stonden. Die waarde komt in
+    elke meetexport terecht, dus drift maakt een bewijsartefact onbetrouwbaar."""
+    from tradebot import __version__
+
+    version = re.search(r'^version = "([^"]+)"', PYPROJECT.read_text(encoding="utf-8"),
+                        re.MULTILINE).group(1)
+    assert __version__ == version
+
+
 def test_addon_version_matches_pyproject():
     version = re.search(r'^version = "([^"]+)"', PYPROJECT.read_text(encoding="utf-8"),
                         re.MULTILINE).group(1)
