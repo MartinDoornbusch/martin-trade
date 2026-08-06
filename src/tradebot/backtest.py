@@ -252,6 +252,14 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
     daily_pnl: dict[str, float] = {}
     trades = wins = 0
     total_fees = 0.0
+    # Hoe vaak weigerde de FEE-GATE een kandidaat die verder alle andere gates haalde.
+    # Aanleiding: in de grid van 6 augustus gaven `min_profit_pct` 0,25, 0,50 en 1,00
+    # in ELKE variant bit-identieke uitkomsten. Een drempel die je met 0,75 procentpunt
+    # kunt verschuiven zonder dat er iets verandert, bindt nooit. Deze teller maakt dat
+    # meetbaar in plaats van afleidbaar, want de fee-gate is de kernles uit de
+    # post-mortem en dan wil je weten of hij daadwerkelijk iets tegenhoudt.
+    fee_gate_blocks = 0
+    signalen = 0
     exit_reasons: dict[str, int] = {}
     equity_curve: list[float] = []
 
@@ -303,9 +311,11 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
                 continue
             if evaluate_buy(snap, strategy_cfg).action != "buy":
                 continue
+            signalen += 1
             stop_dist = snap.atr * atr_mult
             expected_pct = stop_dist * rr / snap.price * 100
             if expected_pct < min_edge:
+                fee_gate_blocks += 1
                 continue
 
             if portfolio_mode:
@@ -360,6 +370,9 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
         "max_drawdown_pct": max_drawdown_pct(equity_curve),
         "exit_reasons": exit_reasons,
         "buy_hold_pct": buy_hold_pct(candles_by_market, warmup),
+        "signals": signalen,
+        "fee_gate_blocks": fee_gate_blocks,
+        "fee_gate_block_pct": round(fee_gate_blocks / signalen * 100, 1) if signalen else None,
         "final_eur": round(final, 2),
     }
 

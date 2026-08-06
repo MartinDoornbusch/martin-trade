@@ -417,3 +417,48 @@ exit-varianten hadden regime uit en de overlevingstabel van pass 2 (-22,09%) was
 die van pass 1 (-14,55%). De pass kon de tak die het ongunstige venster het beste overleeft
 per constructie niet verkennen. Pass 2 draait nu op twee zaadjes: de test-winnaar én de beste
 overlever.
+
+### 6. De onverkende tak: de eerste configuratie die vasthouden in beide vensters verslaat
+
+Pass 2 op de beste overlever (`ema9/21 score>=3 atr*2.5 rr2.0 regime:aan`) levert:
+
+| Variant | train% | vs vasthouden | test% | vs vasthouden | trades (test) |
+|---------|--------|---------------|-------|---------------|---------------|
+| `rsi25-45 ts0 be:uit` | -6,26 | **+14,73** | -2,81 | **+6,36** | 31 |
+
+Dat is de enige configuratie uit 324 die vasthouden in **beide** vensters verslaat, en de gap
+tussen train en test is met 3,45 punt veruit de kleinste van alle geteste varianten (elders
+25 tot 50). Absoluut blijft ze negatief in beide vensters.
+
+Drie dingen die de lezing begrenzen, en het derde is het zwaarste:
+
+1. **31 trades in de testperiode.** Boven de drempel van 20, maar dun. Eén ongelukkige reeks
+   verschuift de drawdown en daarmee de rangschikking.
+2. **Geen gates.** `ts0 be:uit` betekent geen time-stop en geen breakeven-stop; het
+   regime-filter staat wél aan. De best overlevende configuratie is dus de configuratie met
+   de minste exit-gates plus de enige entry-gate die iets doet.
+3. **Selectie uit 324 varianten op twee vensters.** Bij dat aantal trekkingen is één variant
+   vinden die een benchmark in beide vensters verslaat, niet verrassend. De kleine gap is een
+   gunstig teken maar geen bewijs. Deze variant hoort behandeld te worden als hypothese voor
+   een volgende meting op ándere data, niet als uitkomst.
+
+### 7. De fee-gate bindt nooit
+
+In elke pass 2-tabel geven `profit0.25`, `profit0.5` en `profit1.0` **bit-identieke**
+uitkomsten. Een drempel die je met 0,75 procentpunt kunt verschuiven zonder dat er ook maar
+één trade verandert, houdt niets tegen.
+
+Dat is te verwachten uit de rekensom: `min_edge` is 0,50% round-trip plus 0,10% slippage plus
+`min_profit_pct`, dus maximaal circa 1,60%. De verwachte beweging is ATR x
+`atr_stop_multiplier` x `reward_risk_ratio`, en bij een ATR van 2 tot 3% van de prijs op
+4h-crypto levert dat 10 tot 15% op. De gate ligt een orde van grootte te laag om ooit te
+binden.
+
+**Dat is de kernles uit de post-mortem die in de praktijk niet werkt.** Niet omdat fees niet
+worden gerekend, want dat gebeurt wel, maar omdat de gate de verkeerde vraag stelt: hij toetst
+of het koersdoel ver genoeg weg ligt, niet of de trade positieve verwachtingswaarde heeft.
+Precies het gat waarvoor `docs/ontwerp-ev-gate.md` is geschreven.
+
+Sinds v0.20.0 telt de backtester dit expliciet (`fee_gate_blocks`, `fee_gate_block_pct`) en
+waarschuwt de optimizer als de gate onder 1% van de signalen tegenhoudt. Meten in plaats van
+afleiden.

@@ -210,6 +210,7 @@ def evaluate(variant_list: list, train: dict, test: dict, fee_model: FeeModel,
                                - (r_train.get("buy_hold_pct") or 0), 2),
             "rel_test": round((r_test["net_return_pct"] or 0)
                               - (r_test.get("buy_hold_pct") or 0), 2),
+            "fee_gate_block_pct": r_test.get("fee_gate_block_pct"),
             "mode": r_test["mode"],
             "regime": r_test.get("regime", "uit"),
         })
@@ -259,6 +260,14 @@ def print_overleving(rows: list[dict], top: int = 5) -> None:
     if beste and beste[0]["min_pct"] < 0:
         print(f"\nGEEN ENKELE variant is positief in beide vensters; de beste haalt "
               f"{beste[0]['min_pct']:.2f}% in zijn slechtste periode.")
+    geblokkeerd = [r["fee_gate_block_pct"] for r in rows
+                   if r.get("fee_gate_block_pct") is not None]
+    if geblokkeerd:
+        gem = sum(geblokkeerd) / len(geblokkeerd)
+        print(f"Fee-gate hield gemiddeld {gem:.1f}% van de signalen tegen"
+              + ("  <- de gate bindt nooit; hij toetst of het koersdoel ver genoeg weg "
+                 "ligt, niet of de trade positieve verwachtingswaarde heeft"
+                 if gem < 1.0 else ""))
     if rows and rows[0].get("bh_train") is not None:
         print(f"IJkpunt kopen-en-vasthouden over dezelfde markten en vensters: "
               f"train {rows[0]['bh_train']:+.2f}%, test {rows[0]['bh_test']:+.2f}%.")

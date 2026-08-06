@@ -459,3 +459,27 @@ def test_buy_and_hold_benchmark_uses_the_same_window():
 
     r = run_portfolio_backtest({"A-EUR": stijgend}, make_cfg(), fees(), warmup=WARMUP)
     assert r["buy_hold_pct"] == pytest.approx(verwacht, abs=0.01)
+
+
+def test_fee_gate_blocks_are_counted():
+    """Aanleiding: in de grid van 6 augustus gaven `min_profit_pct` 0,25, 0,50 en 1,00
+    in ELKE variant bit-identieke uitkomsten. Een drempel die je met 0,75 procentpunt
+    kunt verschuiven zonder dat er iets verandert, bindt nooit. De fee-gate is de
+    kernles uit de post-mortem, dus of hij daadwerkelijk iets tegenhoudt hoort
+    gemeten te worden en niet afgeleid."""
+    data = candles([100.0] * (WARMUP + 5))
+    cfg = make_cfg()
+
+    ruim = run_backtest(data, cfg, fees(), warmup=WARMUP)
+    assert ruim["signals"] > 0
+    assert ruim["fee_gate_blocks"] == 0          # ATR 4% x 2 x 1,5 = 12% >> 1,10%
+    assert ruim["fee_gate_block_pct"] == 0.0
+
+    # Een absurde winstdrempel laat de gate wél binden; dan telt hij ook.
+    streng = make_cfg()
+    streng.decision = {**streng.decision, "min_profit_pct": 50.0}
+    r = run_backtest(data, streng, fees(), warmup=WARMUP)
+    assert r["signals"] > 0
+    assert r["fee_gate_blocks"] == r["signals"]
+    assert r["fee_gate_block_pct"] == 100.0
+    assert r["closed_trades"] == 0 and r["open_at_end"] == 0
