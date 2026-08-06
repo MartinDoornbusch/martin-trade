@@ -58,21 +58,69 @@ rsi_period, rsi_oversold, atr_period, min_signal_score), `decision` (min_profit_
 atr_stop_multiplier, reward_risk_ratio) en `fees` (maker, taker, slippage). De secties
 `exits`, `regime`, `universe` en `blocklist` kende hij nog niet en worden genegeerd.
 
-| Markt | Juli-code: rendement % / trades / win % | Rij 1 van de attributie | Gelijk? |
-|-------|------------------------------------------|--------------------------|---------|
-| BTC-EUR | | | |
-| ETH-EUR | | | |
-| SOL-EUR | | | |
-| XRP-EUR | | | |
-| LINK-EUR | | | |
+Gedraaid op 2026-08-06, worktree `56d9e55`, eigen config, 1100 candles per markt:
 
-Let op twee dingen bij die vergelijking:
+| Markt | Juli-code: rendement % / trades / win % | Fees EUR | Max DD % | Rij 1 van de attributie | Gelijk? |
+|-------|------------------------------------------|----------|----------|--------------------------|---------|
+| BTC-EUR | 14,46 / 20 / 55,0 | 104,42 | 13,7 | | |
+| ETH-EUR | 18,14 / 15 / 53,3 | 82,73 | 16,6 | | |
+| SOL-EUR | 18,27 / 17 / 47,1 | 106,03 | 16,3 | | |
+| XRP-EUR | 6,25 / 16 / 43,8 | 81,97 | 12,4 | | |
+| LINK-EUR | 25,67 / 18 / 55,6 | 103,40 | 18,3 | | |
+| **gemiddeld** | **16,56 / 17,2 / 50,9** | **95,71** | **15,5** | | |
 
+Twee waarnemingen die met de bevindingen van 18 juli overeenkomen, wat het vertrouwen in de
+reconstructie steunt: 15 tot 20 trades per markt over circa een half jaar (juli noteerde
+11-24), en fees van 82 tot 106 EUR op een inleg van 1000, oftewel 8,2 tot 10,6% van het
+kapitaal (juli noteerde 7-9% als dominant lek).
+
+Let op drie dingen bij die vergelijking:
+
+- **Dit is niet het juli-venster.** `--limit 1100` telt terug vanaf vandaag, dus dit beslaat
+  ruwweg februari tot augustus 2026, waar de juli-run januari tot juli besloeg. Een exacte
+  match met de juli-uitvoer was sowieso onmogelijk, en die uitvoer is bovendien nooit
+  vastgelegd. Wat deze tabel wél valideert is de enige vergelijking die telt: oude code
+  versus nieuwe code met de correcties uit, op **dezelfde** 1100 candles.
 - de oude `main()` neemt één markt tegelijk en print per markt; de attributie middelt over
-  de vijf markten. Vergelijk dus per markt, of middel de vijf oude uitkomsten;
-- controleer dat `CONFIG_PATH` daadwerkelijk is opgepikt. Draait hij op de worktree-config,
-  dan zie je dezelfde ema en rr (18 juli had die al), maar wel andere fees- of
-  exit-parameters als die sindsdien zijn gewijzigd.
+  de vijf markten. Vergelijk dus per markt, of gebruik de gemiddelde-regel hierboven;
+- draai de worktree op zijn **eigen** config (`Remove-Item Env:\CONFIG_PATH`), niet op een
+  gepatchte kopie van de huidige. De oude `AppConfig` declareert `risk: dict[str, float]` en
+  valt af op `sizing: "bucket"`. De worktree-config bevat al ema 20/50, rr 1,5, score 3,
+  atr 2,0, `rsi_oversold: 35` (zone 25-45) en fees 0,15/0,25/0,10, dus het configverschil met
+  vandaag is op elk veld dat de oude code leest exact nul.
+
+### Wat de eerste ankerrun opleverde (6 augustus 2026)
+
+Rij 1 reproduceerde het anker **niet** volledig, en dat is precies waarvoor deze stap
+bestaat:
+
+| | rend % | trades | win % | dd % |
+|---|--------|--------|-------|------|
+| Anker (oude code, `56d9e55`) | 16,56 | 86 | 51,2 | 15,5 |
+| Rij 1 attributie (vóór de fix) | 13,62 | 86 | 51,2 | 13,3 |
+
+Identieke trades en identieke win-rate, andere P&L. Dat sluit een verschil in
+signaalgeneratie uit en wijst naar de kostenboekhouding. Twee defecten gevonden, allebei in
+de reconstructie:
+
+1. **De legacy-tak vulde op het NIVEAU in plaats van op de slotkoers.** De oude
+   `run_backtest` deed `gross = amount * price` met `price = snap.price`, dus de close van
+   de bar die de exit triggerde. Mijn legacy-tak triggerde wel op de close maar vulde op
+   `stop` of `target`. Per trade klein, systematisch van richting: winnaars schoten door het
+   target heen en verliezers door de stop, en op 4h-crypto is die doorschot fors. Dit
+   verklaart zowel het rendementsverschil als de afwijkende drawdown.
+2. **"Geen slippage" was gemodelleerd door de buffer op nul te zetten**, wat óók `min_edge`
+   verlaagde van 1,10% naar 1,00% terwijl de oude code die 1,10% wél hanteerde. In dit
+   venster veranderde dat geen enkele entry (de trades zijn identiek), maar rij 1 was
+   daarmee op één as geen reconstructie meer. Nu twee losse vlaggen.
+
+Beide gerepareerd en vastgepind in `tests/test_backtest.py`
+(`test_legacy_exit_fills_on_the_close_not_on_the_level`,
+`test_reference_row_keeps_the_real_fee_gate`), elk geverifieerd door het defect terug te
+zetten. **Draai de ankerrun opnieuw voordat je de tabellen invult.** `calibrate` print de
+referentierij nu ook per markt, zodat je de vijf naast de vijf ankeruitkomsten kunt leggen:
+wijken ze alle vijf een beetje af, dan zit het in de kostenboekhouding; wijkt er één sterk
+af, dan in een specifieke trade.
 
 **Wijkt rij 1 af, stop dan.** Dan is er onderweg nog iets anders veranderd en is elke delta
 eronder betekenisloos.

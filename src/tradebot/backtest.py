@@ -128,16 +128,24 @@ def _check_exit_at_bar(pos: _Pos, candles: list[Candle], i: int, snap: MarketSna
     """
     if intrabar:
         what = intrabar_exit(candles[i], pos.stop, pos.target)
+        if what == "stop":
+            return pos.stop, "stop loss"
+        if what == "target":
+            return pos.target, "take profit"
     else:
-        # Alleen voor attributie (zie `tradebot.calibrate`): het oude, foute model
-        # dat de SLOTKOERS met stop en target vergeleek. Nooit voor een echte meting.
+        # Alleen voor attributie (zie `tradebot.calibrate`): het oude, foute model.
+        # Twee dingen horen daarbij, en de tweede is bij de anker-check van 6 aug
+        # boven water gekomen doordat rij 1 dezelfde TRADES gaf als de oude code maar
+        # een andere P&L. De oude `check_exit` toetste de SLOTKOERS tegen de niveaus,
+        # en de oude `run_backtest` vulde ook OP die slotkoers (`gross = amount *
+        # price`), niet op het niveau zelf. Dat verschil is per trade klein maar
+        # systematisch: winnaars schoten door het target heen en verliezers door de
+        # stop, en op 4h-crypto is die doorschot fors.
         close_ = candles[i].close
-        what = ("stop" if close_ <= pos.stop
-                else "target" if close_ >= pos.target else None)
-    if what == "stop":
-        return pos.stop, "stop loss"
-    if what == "target":
-        return pos.target, "take profit"
+        if close_ <= pos.stop:
+            return close_, "stop loss"
+        if close_ >= pos.target:
+            return close_, "take profit"
 
     close = candles[i].close
     opened_at = datetime.fromtimestamp(pos.opened_ms / 1000, tz=timezone.utc)
@@ -164,7 +172,7 @@ def _check_exit_at_bar(pos: _Pos, candles: list[Candle], i: int, snap: MarketSna
 
 def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
          start_eur: float, warmup: int, mode: str, intrabar: bool = True,
-         trend_break: bool = False) -> dict:
+         trend_break: bool = False, slippage_on_fill: bool = True) -> dict:
     """Gedeelde kern voor beide modi: identieke entry- en exitlogica, alleen de
     sizing- en limietregels verschillen."""
     strategy_cfg = cfg.strategy
@@ -172,7 +180,11 @@ def _run(candles_by_market: dict[str, list[Candle]], cfg, fee_model: FeeModel,
     risk_cfg = getattr(cfg, "risk", {}) or {}
     ex = _exits_params(cfg, fee_model)
     min_edge = fee_model.min_edge_pct(float(decision_cfg["min_profit_pct"]))
-    slip = leg_slippage_pct(fee_model)
+    # Twee losse dingen, en dat moet ook. De oude backtester had GEEN slippage op de
+    # fill maar rekende in `min_edge` wél met de volle buffer. Zet je die twee met
+    # één vlag uit, dan draait de referentierij op een fee-gate van 1,00% terwijl het
+    # origineel op 1,10% stond: dan is rij 1 op een as géén reconstructie meer.
+    slip = leg_slippage_pct(fee_model) if slippage_on_fill else 0.0
     taker = fee_model.taker_pct
     round_trip = fee_model.round_trip_pct()
     atr_mult = float(decision_cfg["atr_stop_multiplier"])
@@ -340,19 +352,21 @@ def _cluster_blocked(candles_by_market: dict[str, list[Candle]], positions: dict
 
 def run_backtest(candles: list[Candle], cfg, fee_model: FeeModel,
                  start_eur: float = 1000.0, warmup: int = DEFAULT_WARMUP,
-                 intrabar: bool = True, trend_break: bool = False) -> dict:
+                 intrabar: bool = True, trend_break: bool = False,
+                 slippage_on_fill: bool = True) -> dict:
     """Enkelvoudige markt, all-in per positie: modus "single" (signaalonderzoek)."""
     return _run({"BT": candles}, cfg, fee_model, start_eur, warmup, "single", intrabar,
-                trend_break)
+                trend_break, slippage_on_fill)
 
 
 def run_portfolio_backtest(candles_by_market: dict[str, list[Candle]], cfg,
                            fee_model: FeeModel, start_eur: float = 1000.0,
                            warmup: int = DEFAULT_WARMUP,
-                           intrabar: bool = True, trend_break: bool = False) -> dict:
+                           intrabar: bool = True, trend_break: bool = False,
+                           slippage_on_fill: bool = True) -> dict:
     """Meerdere markten met gedeelde cash en alle risk-gates: modus "portfolio"."""
     return _run(candles_by_market, cfg, fee_model, start_eur, warmup, "portfolio",
-                intrabar, trend_break)
+                intrabar, trend_break, slippage_on_fill)
 
 
 def main() -> None:

@@ -310,3 +310,68 @@ def test_calibration_steps_stack_cumulatively():
     assert all(aan.values()), "de laatste stap moet alle correcties aan hebben"
     assert not any(getattr(STAPPEN[0], veld) for veld in velden), (
         "de eerste stap moet het v0.18.0-model zijn, dus alles uit")
+
+
+# --- anker-check 6 aug: twee defecten in de referentierij ------------------------
+
+def test_legacy_exit_fills_on_the_close_not_on_the_level():
+    """Regressie op het defect dat de anker-check blootlegde.
+
+    Rij 1 van de attributie gaf exact dezelfde TRADES als de oude code (86, win-rate
+    51,2%) maar een ander rendement. Oorzaak: de oude `run_backtest` vulde op
+    `snap.price`, de SLOTKOERS van de bar die de exit triggerde (`gross = amount *
+    price`), terwijl mijn legacy-tak op het NIVEAU vulde. Dat verschil is per trade
+    klein maar systematisch: winnaars schoten door het target heen en verliezers
+    door de stop, en op 4h-crypto is die doorschot fors.
+
+    Hier sluit de bar ruim boven het target: legacy hoort op 120 te vullen, de
+    correcte intrabar-logica op 112.
+    """
+    closes = [100.0] * (WARMUP + 1) + [120.0]
+    highs = [c * 1.02 for c in closes]
+    lows = [c * 0.98 for c in closes]
+    highs[-1], lows[-1] = 121.0, 119.0
+    data = candles(closes, highs=highs, lows=lows)
+    cfg = make_cfg()
+    geen_slippage = FeeModel(0.15, 0.25, 0.0)
+
+    correct = run_backtest(data, cfg, geen_slippage, warmup=WARMUP)
+    legacy = run_backtest(data, cfg, geen_slippage, warmup=WARMUP, intrabar=False)
+
+    assert correct["closed_trades"] == legacy["closed_trades"] == 1
+    assert correct["exit_reasons"] == legacy["exit_reasons"] == {"take profit": 1}
+    # zelfde trade, andere fill: 112 (niveau) tegen 120 (slotkoers)
+    assert correct["net_return_pct"] == pytest.approx(11.44, abs=0.05)
+    assert legacy["net_return_pct"] == pytest.approx(19.40, abs=0.05)
+
+
+def test_reference_row_keeps_the_real_fee_gate():
+    """Tweede defect uit dezelfde check: "geen slippage" werd gemodelleerd door de
+    buffer op nul te zetten, wat óók `min_edge` verlaagde van 1,10% naar 1,00%.
+    De oude code hanteerde die 1,10% wél. Zonder deze scheiding is rij 1 op één as
+    geen reconstructie meer, ook al veranderde het in dit venster geen entry."""
+    from types import SimpleNamespace
+
+    from tradebot.calibrate import STAPPEN, fee_model_voor
+
+    cfg = SimpleNamespace(fees={"maker_pct": 0.15, "taker_pct": 0.25,
+                                "slippage_buffer_pct": 0.10})
+    referentie = STAPPEN[0]
+    assert referentie.slippage is False              # geen slippage op de fill
+    assert fee_model_voor(cfg, referentie).min_edge_pct(0.50) == pytest.approx(1.10)
+    assert fee_model_voor(cfg, STAPPEN[-1]).min_edge_pct(0.50) == pytest.approx(1.10)
+
+
+def test_slippage_flag_only_touches_the_fill():
+    """De vlag mag de fill raken en niets anders; anders verschuift hij stilletjes
+    ook de fee-gate en daarmee welke entries er zijn."""
+    data = candles([100.0] * 73)
+    cfg = make_cfg(exits={"time_stop_candles": 12, "time_stop_min_net_pct": 0.0})
+
+    met = run_backtest(data, cfg, fees(slippage=0.20), warmup=WARMUP)
+    zonder = run_backtest(data, cfg, fees(slippage=0.20), warmup=WARMUP,
+                          slippage_on_fill=False)
+
+    assert met["closed_trades"] == zonder["closed_trades"] == 1
+    verschil = zonder["net_return_pct"] - met["net_return_pct"]
+    assert 0.15 < verschil < 0.25

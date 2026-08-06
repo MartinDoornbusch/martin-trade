@@ -114,7 +114,7 @@ def config_voor(cfg, stap: Stap):
 
 def fee_model_voor(cfg, stap: Stap) -> FeeModel:
     return FeeModel(cfg.fees["maker_pct"], cfg.fees["taker_pct"],
-                    cfg.fees["slippage_buffer_pct"] if stap.slippage else 0.0)
+                    cfg.fees["slippage_buffer_pct"])
 
 
 def run_stap(data: dict[str, list[Candle]], cfg, stap: Stap) -> dict:
