@@ -563,3 +563,32 @@ is precies wat 45% blootstelling hoort te doen. Geen edge, wel een net risicopro
 **Fase 2-vraag beantwoord: geen edge.** Niet "nog niet aangetoond" maar gemeten, over twee
 jaar, met een stijgend en een dalend venster, met blootstelling uitgerekend en tegen een
 passief ijkpunt. Het werk verhuist naar de instaplogica.
+
+### 10. De geometrie-as is niet onbenut maar afgelopen
+
+`p*` zakt naar `1/(1+r)` als alfa groeit, dus een hogere reward/risk-ratio verlaagt de lat:
+40% bij r = 1,5, 33,3% bij r = 2,0, 25% bij r = 3,0. Dat lijkt een onbenutte as. De grid heeft
+hem echter al getest, en hij is afgelopen: **je haalt het verder weg liggende doel navenant
+minder vaak, en in deze data harder dan de lat zakt.**
+
+Bij een ATR van 1,5% van de prijs (m = 2, c = 0,60%) is de werkelijke lat per ratio:
+
+| r | bodem `1/(1+r)` | `p*` bij ATR 1,5% | gemeten trefkans in de grid |
+|---|-----------------|-------------------|------------------------------|
+| 1,5 | 40,0% | 48,0% | 34 tot 48% |
+| 2,0 | 33,3% | 40,0% | 15 tot 25% |
+| 3,0 | 25,0% | 30,0% | 18 tot 22% |
+
+Elke sport faalt, en de marge wordt niet kleiner naarmate je r verhoogt. Dat maakt de
+horizonwissel niet alleen de goedkoopste maar de enige van de twee assen die daadwerkelijk
+iets oplevert.
+
+### 11. Eén cijfer dat het hele verhaal samenvat
+
+De best presterende exit-variant op de test-helft (`rsi25-45 ts0 be:uit`, r = 1,5) haalt
+**48,2%** trefkans. Bij een ATR van circa 1,5% van de prijs is `p*` precies **48,0%**.
+
+De strategie zit dus op de komma op haar eigen break-even. Geen bloeding, ook geen edge: een
+munt opgooien tegen kostprijs. Dat is tegelijk de schoonste bevestiging dat `p*` de juiste
+lens is — de gemeten trefkans landt op de berekende drempel — en het duidelijkste antwoord op
+de fase 2-vraag.
