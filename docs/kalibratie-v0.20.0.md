@@ -498,3 +498,68 @@ python -m tradebot.optimizer BTC-EUR ETH-EUR SOL-EUR XRP-EUR LINK-EUR --interval
 
 4400 4h-candles is ongeveer twee jaar. `get_candles_history` pagineert, dus dat gaat in
 stappen van 1440 per markt.
+
+---
+
+## Eindverdict: tweejaarsrun met een stijgend venster (6 augustus 2026)
+
+Venster 2024-08-02 t/m 2026-08-06, 4400 4h-candles per markt. **Train +46,94%, test -35,51%**;
+per kwartaal +144,1%, +18,6%, -47,5%, -10,3%. Nu zit er dus wél een fors stijgend venster in
+de steekproef, en dat kantelt twee conclusies.
+
+### 1. De relatieve outperformance was blootstelling, niet vaardigheid
+
+Dat was de toets die openstond, en hij is beantwoord. In de vorige run (twee dalende
+vensters) sloegen de regime-varianten vasthouden met +14,73 en +6,36 punt. Met een stijgend
+venster erbij:
+
+| Variant (pass 1, beste overlevers) | train% | expo | alfa train | test% | expo | alfa test |
+|---|---|---|---|---|---|---|
+| `ema20/50 s2 atr2.5 rr3.0 regime:aan` | -16,62 | 39,9% | **-35,35** | -12,84 | 31,3% | -2,92 |
+| `ema9/21 s3 atr2.5 rr2.0 regime:aan` | -18,x | 18,2% | **-20,14** | -10,x | 16,9% | -10,75 |
+
+Bij 39,9% blootstelling in een markt die 46,94% steeg, was de passieve verwachting +18,7%.
+De variant haalde -16,6%. Alfa -35,35: de strategie stond niet alleen te weinig in de markt,
+ze stond er ook op de verkeerde momenten in. Dat is geen ontbrekende edge, dat is negatieve
+edge.
+
+Beste alfa in de hele run, over 324 varianten en twee vensters: **+1,17 punt** (pass 1) en
+**-1,82 punt** (pass 2 op de overlever). Rond nul. Er is geen timing.
+
+### 2. Het regime-filter: bewijs uit de vorige run ingetrokken
+
+De vorige stand van zaken noteerde "regime-filter verbetert overleving systematisch,
+zekerheid middel" op grond van een schone scheiding over twee tabellen. Die scheiding was
+echt, maar de verklaring niet: **beide vensters daalden, dus alles wat minder in de markt zat
+kwam er beter uit.** Met een stijgend venster erbij houden de regime-varianten nog steeds de
+overlevingstabel bezet, maar met alfa -20 tot -37 op dat stijgende venster. Ze overleven door
+afwezigheid en betalen daar de volle prijs voor zodra de markt oploopt.
+
+De beste variant op alfa in pass 1 heeft `regime:uit`. Op de maat die blootstelling
+uitrekent, wint het filter dus niet.
+
+**Conclusie: het regime-filter is een blootstellingsknop, geen timinginstrument.** Bindend
+maken zou de drawdown verlagen en het rendement met minstens evenveel verlagen.
+
+### 3. De minst slechte configuratie, en waarom ze niet genoeg is
+
+`ema20/50 s2 atr2.5 rr3.0 regime:aan` plus `rsi35-55 ts0 be:uit`: train **+20,05%**, test
+-9,41%, expo 46,6% / 41,7%, alfa **-1,82 / +5,40**, 32 trades. De enige variant die positief
+is in het stijgende venster, met alfa rond nul in beide.
+
+Ze vangt ongeveer 43% van de stijging en 26% van de daling bij circa 45% blootstelling. Dat
+is precies wat 45% blootstelling hoort te doen. Geen edge, wel een net risicoprofiel.
+
+### 4. Wat er nu vaststaat
+
+| Bevinding | Zekerheid | Grond |
+|-----------|-----------|-------|
+| Fee-gate is inert | **Hoog** | 0,0% geblokkeerd over twee jaar, in elke tabel; bit-identiek over viervoudige drempelverschuiving |
+| Geen absolute edge | **Hoog** | Geen van 324 varianten positief in beide vensters, in twee onafhankelijke runs |
+| Geen timing (alfa ~ 0) | **Hoog** | Beste alfa over de hele grid: +1,17 en -1,82 punt |
+| Regime-filter = blootstellingsknop | **Middel-hoog** | Domineert overleving, alfa -20 tot -37 in het stijgende venster; beste alfa-variant heeft regime uit |
+| Time-stop en breakeven schaden | Middel | Winnende configuraties hebben beide uit, in beide runs |
+
+**Fase 2-vraag beantwoord: geen edge.** Niet "nog niet aangetoond" maar gemeten, over twee
+jaar, met een stijgend en een dalend venster, met blootstelling uitgerekend en tegen een
+passief ijkpunt. Het werk verhuist naar de instaplogica.

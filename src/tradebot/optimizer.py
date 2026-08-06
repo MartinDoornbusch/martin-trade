@@ -253,6 +253,40 @@ def print_table(title: str, rows: list[dict], top: int,
               f"de risicocorrectie kiest anders)")
 
 
+def print_alfa(rows: list[dict], top: int = 5) -> None:
+    """Derde tabel: gesorteerd op het SLECHTSTE alfa van beide vensters.
+
+    Beslissend gebleken in de tweejaarsrun van 6 augustus. `min%` rangschikt op
+    absoluut rendement, en dat wordt in een stijgend venster gedomineerd door
+    blootstelling: een variant die weinig in de markt zit "overleeft" een daling en
+    mist een stijging, zonder dat er vaardigheid in zit. Alfa haalt die
+    blootstelling eruit.
+
+    Lezen: een POSITIEVE alfa is bewijs van timing, want ze betekent dat de
+    blootstelling samenviel met de gunstige beweging. Een NEGATIEVE alfa betekent
+    dat de timing actief verkeerd was: de strategie stond buiten de markt juist toen
+    die opliep, of binnen toen die daalde. Rond nul betekent dat je exposure meet en
+    verder niets.
+    """
+    beste = sorted(rows, key=lambda r: (r["reliable"],
+                                        min(r["alpha_train"], r["alpha_test"])),
+                   reverse=True)
+    print("\nALFA - gesorteerd op het slechtste alfa van beide vensters")
+    print(f"{'variant':44s} {'min alfa':>9s} {'alfa tr':>8s} {'alfa te':>8s} "
+          f"{'expo tr':>8s} {'expo te':>8s} {'trades':>7s}")
+    for r in beste[:top]:
+        print(f"{r['desc']:44s} "
+              f"{min(r['alpha_train'], r['alpha_test']):>+9.2f} "
+              f"{r['alpha_train']:>+8.2f} {r['alpha_test']:>+8.2f} "
+              f"{r['expo_train']:>7.1f}% {r['expo_test']:>7.1f}% {r['trades']:>7d}")
+    if beste:
+        top_alfa = min(beste[0]["alpha_train"], beste[0]["alpha_test"])
+        if top_alfa < 1.0:
+            print(f"\nGeen enkele variant houdt noemenswaardige alfa over in beide "
+                  f"vensters (beste: {top_alfa:+.2f} punt). De gemeten outperformance "
+                  f"is dan blootstelling en geen timing.")
+
+
 def print_overleving(rows: list[dict], top: int = 5) -> None:
     """Tweede tabel: gesorteerd op het SLECHTSTE van de twee vensters.
 
@@ -380,6 +414,7 @@ def main() -> None:
     print_table("PASS 1 - kernparameters (gesorteerd op risicogecorrigeerd TEST-rendement)",
                 rows, args.top, args.min_trades)
     print_overleving(rows)
+    print_alfa(rows)
 
     if not args.skip_exit_pass and rows:
         # Pass 2 draait op TWEE zaadjes, niet op één. De test-winnaar is gekozen op de
@@ -402,6 +437,7 @@ def main() -> None:
             print_table(f"PASS 2 ({label}) - exit- en drempelparameters",
                         rows2, args.top, args.min_trades)
             print_overleving(rows2)
+            print_alfa(rows2)
 
     print("\nLet op: kies op de test-kolom, niet op train. Een grote gap = overfit.")
     print(f"r/dd = netto testrendement per procentpunt max drawdown. Max drawdown is "

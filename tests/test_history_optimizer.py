@@ -365,3 +365,37 @@ def test_second_pass_also_seeds_from_the_survivor():
     bron = inspect.getsource(optimizer.main)
     assert "beste overlever" in bron
     assert bron.count("for label, zaad in zaadjes") == 1
+
+
+def test_alpha_ranking_separates_timing_from_exposure(monkeypatch):
+    """Beslissend gebleken in de tweejaarsrun: `min%` rangschikt op absoluut
+    rendement, en dat wordt in een stijgend venster gedomineerd door blootstelling.
+    Een variant die weinig in de markt zit overleeft een daling en mist een stijging,
+    zonder dat daar vaardigheid in zit.
+
+    Hier: variant 0 overleeft beter in absolute zin maar stond buiten de markt toen
+    die opliep (alfa diep negatief); variant 1 heeft meer blootstelling en houdt
+    alfa over. Op `min%` wint de eerste, op alfa de tweede."""
+    def fake(data, cfg, fee_model, warmup, portfolio, proxy=None):
+        train = next(iter(data)) == "TRAIN"
+        markt = 46.94 if train else -35.51
+        if cfg.marker == 0:          # weinig blootstelling, slechte timing
+            rendement, expo = (-16.62 if train else -8.0), 39.9
+        else:                        # meer blootstelling, timing voegt toe
+            rendement, expo = (25.0 if train else -20.0), 45.0
+        return {"net_return_pct": rendement, "closed_trades": 40,
+                "win_rate_pct": 30.0, "max_drawdown_pct": 15.0, "mode": "portfolio",
+                "buy_hold_pct": markt, "exposure_pct": expo}
+    monkeypatch.setattr(optimizer, "_run_period", fake)
+    rows = evaluate([("weinig in de markt", SimpleNamespace(marker=0)),
+                     ("timing", SimpleNamespace(marker=1))],
+                    {"TRAIN": []}, {"TEST": []}, None, 150, True, min_trades=20)
+
+    op_naam = {r["desc"]: r for r in rows}
+    assert op_naam["weinig in de markt"]["alpha_train"] < -30    # miste de stijging
+    assert op_naam["timing"]["alpha_train"] > 0
+
+    beste_min = max(rows, key=lambda r: r["min_pct"])
+    beste_alfa = max(rows, key=lambda r: min(r["alpha_train"], r["alpha_test"]))
+    assert beste_min["desc"] == "weinig in de markt"
+    assert beste_alfa["desc"] == "timing"

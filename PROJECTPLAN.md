@@ -245,17 +245,17 @@ Deze vier zijn in v0.20.0 **expliciet buiten scope gehouden** en staan nog steed
 | Bevinding | Zekerheid | Grond |
 |-----------|-----------|-------|
 | **Fee-gate is inert**, blokkeert nooit | Hoog | Bit-identieke uitkomsten over een viervoudige verschuiving van `min_profit_pct`, in élke pass 2-tabel; `min_edge` max ~1,60% tegen een verwachte beweging van 10-15% |
-| **Regime-filter verbetert overleving** | Middel | Systematisch patroon: 10/10 besten op testrendement hebben regime UIT, 5/5 besten op overleving hebben regime AAN. Geen toevalstreffer, maar alleen in DALENDE vensters getest |
+| **Regime-filter is een blootstellingsknop, geen timinginstrument** | Middel-hoog | INGETROKKEN t.o.v. de vorige lezing. Het patroon (5/5 overlevers met regime aan) was echt, de verklaring niet: beide vensters daalden, dus alles wat minder in de markt zat kwam er beter uit. Met een stijgend venster erbij (2024-2026) houden de regime-varianten de overlevingstabel bezet met alfa -20 tot -37 op dat venster, en de beste alfa-variant heeft regime UIT |
 | **Time-stop en breakeven-stop schaden** | Middel | De best overlevende configuratie heeft beide uit; time-stop kostte 15,7 punt in de losse productievergelijking. Eén parameterset |
 | **Geen absolute edge** | Hoog | Geen van 324 varianten positief in beide vensters |
-| **Relatieve edge t.o.v. vasthouden** | **Laag** | Mogelijk volledig verklaard door lagere blootstelling: de kandidaat doet 31 trades tegen 82 voor de regime:uit-varianten. Pas te beoordelen met tijd-in-markt én een stijgend venster |
+| **Geen timing: alfa is nul** | **Hoog** | Beantwoord met de tweejaarsrun. Beste alfa over 324 varianten en twee vensters: +1,17 en -1,82 punt. De outperformance uit de eerste run was blootstellingsreductie; met een stijgend venster erbij is de alfa van de regime-varianten -20 tot -37 |
 
 Twee correcties op eerdere lezingen in dit document, allebei van dezelfde soort (een conclusie getrokken uit één venster):
 
 - "Het testvenster is een stijgende markt" was onjuist. Kopen-en-vasthouden deed -20,99% op train en -9,17% op test: **beide vensters dalen.** De eerdere lezing kwam uit de per-markt-ankerrun (+6% tot +26%), maar dat is all-in per markt en niet vergelijkbaar met vasthouden;
 - "Het regime-filter helpt niet" kwam uit de losse zesmaands-vergelijking en is door de 17-maands-grid weerlegd.
 
-**Wat de volgende meting moet toevoegen, en waarom het zonder die twee dingen niet te beoordelen is:**
+**Beide punten hieronder zijn inmiddels gebouwd én gedraaid (tweejaarsrun 2024-08 t/m 2026-08, train +46,94% / test -35,51%). Uitkomst: geen timing, alfa rond nul. Zie `docs/kalibratie-v0.20.0.md` sectie "Eindverdict".**
 
 1. **Tijd-in-markt** (gebouwd: `exposure_pct`, kapitaalgewogen). In een dalend venster verslaat elke long-only variant die minder in de markt zit het vasthouden bijna per definitie; een variant die niets doet "wint" met precies het marktverlies. De kolom `alfa` (rendement min blootstelling x marktrendement) haalt dat eruit. Blijft daar niets over, dan is de gemeten outperformance afwezigheid en geen vaardigheid.
 2. **Minstens één stijgend venster.** Zeventien maanden, twee vensters, allebei dalend. Over stijgende markten zegt deze meting niets, en juist daar kost een regime-filter geld. `get_candles_history` pagineert, dus het venster kan naar twee jaar of meer; de optimizer toont nu het ijkpunt per venster én per kwartaal in de kop, zodat meteen zichtbaar is of er een stijgend deel in de steekproef zit.
@@ -341,6 +341,7 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 
 | Datum | Wijziging | Getest |
 |-------|-----------|--------|
+| 2026-08-06 | Eindverdict fase 2: **geen edge**, gemeten over twee jaar met een stijgend (+46,94%) én een dalend (-35,51%) venster, met blootstelling uitgerekend. Beste alfa over 324 varianten: +1,17 punt. De relatieve outperformance uit de eerste run was blootstellingsreductie; het regime-filter blijkt een blootstellingsknop met alfa -20 tot -37 in het stijgende venster, waarmee het 'bewijs' uit de vorige stand van zaken is ingetrokken. Derde optimizertabel op alfa toegevoegd | 273 tests (1 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Tijd-in-markt (kapitaalgewogen `exposure_pct`) en alfa-kolommen in de optimizer, plus kopen-en-vasthouden per venster én per kwartaal in de kop. Reden: in een dalend venster verslaat elke long-only variant die minder in de markt zit het vasthouden bijna per definitie, dus zonder blootstelling eruit te rekenen is outperformance niet te onderscheiden van afwezigheid. Stand van zaken met zekerheidsniveau per bevinding vastgelegd | 272 tests (3 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Pass 2 op de overlevende tak gedraaid: één configuratie verslaat vasthouden in beide vensters (+14,73 / +6,36) met de kleinste train/test-gap van alle 324 varianten, maar blijft absoluut negatief en rust op 31 testtrades. Tweede vondst: de fee-gate bindt NOOIT (min_profit_pct 0,25/0,50/1,00 geven bit-identieke uitkomsten), dus de kernles uit de post-mortem filtert in de praktijk niets. Backtester telt dat nu expliciet | 270 tests (1 nieuw), ruff, bandit exit 0 |
 | 2026-08-06 | Hermeting afgerond: geen configuratie positief in beide vensters over 17 maanden. Twee correcties op eerdere aannames: de markt daalde in BEIDE vensters (vasthouden train -20,99%, test -9,17%), en het regime-filter helpt wél maar in het ongunstige venster. Optimizer kreeg daarom relatieve kolommen t.o.v. vasthouden, en pass 2 draait nu op twee zaadjes (test-winnaar én beste overlever) omdat hij anders de overlevende tak per constructie niet kan verkennen | 269 tests (2 nieuw), ruff, bandit exit 0 |
