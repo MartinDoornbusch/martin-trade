@@ -10,8 +10,15 @@ Exits zijn 100% mechanisch en bestaan uit precies drie regels:
   heeft gestaan mag niet meer als verlies eindigen.
 
 Er is bewust géén trend-break-exit meer. De oude regel (EMA-cross-down samen met
-een overbought RSI) eiste twee vrijwel disjuncte condities en heeft in productie
-nooit gevuurd; hij is in v0.19.0 geschrapt in plaats van herschreven.
+een overbought RSI) eiste twee vrijwel disjuncte condities en is in v0.19.0
+geschrapt in plaats van herschreven.
+
+Correctie op v0.19.0: daar stond "heeft in productie nooit gevuurd". Dat was een
+overclaim. Het bewijs was tweeledig — coverage liet zien dat de TESTSUITE die
+regel nooit raakte, en de twee condities zijn bijna disjunct — en geen van beide
+is een productiemeting. Er is nooit geteld hoe vaak hij live vuurde. De
+attributierun (`tradebot.calibrate`, stap "- trend-break-exit") meet het effect
+alsnog op historische data; tot die uitkomst er is, blijft dit een aanname.
 
 Asymmetrie sinds v0.20.0: ENTRIES worden beoordeeld op afgesloten candles
 (`drop_unclosed`), EXITS op de live prijs. Zie de docstring van `drop_unclosed`

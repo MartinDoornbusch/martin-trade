@@ -42,6 +42,12 @@ from .strategy import (
 DEFAULT_WARMUP = 60
 MIN_ORDER_EUR = 10.0   # zelfde ondergrens als DecisionEngine.evaluate_buy
 
+# De geschrapte trend-break-exit toetste tot v0.19.0 tegen een HARDCODED 70, niet
+# tegen `strategy.rsi_overbought`. Voor een getrouwe reconstructie staat die waarde
+# hier ook vast: leest de legacy-tak de config, dan verandert de referentierij van
+# de attributie zodra iemand aan `rsi_overbought` draait.
+LEGACY_TREND_BREAK_RSI = 70.0
+
 
 def max_drawdown_pct(equity: list[float]) -> float:
     """Grootste piek-naar-dal terugval in procenten."""
@@ -104,8 +110,6 @@ def _exits_params(cfg, fee_model: FeeModel, entry_is_maker: bool = False) -> dic
         "be_binding": bool(be.get("binding", False)),
         "be_trigger_atr": float(be.get("trigger_atr", 1.0)),
         "be_offset_pct": breakeven_offset_pct(be, fee_model, entry_is_maker),
-        "rsi_overbought": float((getattr(cfg, "strategy", {}) or {}).get(
-            "rsi_overbought", 70)),
     }
 
 
@@ -150,7 +154,7 @@ def _check_exit_at_bar(pos: _Pos, candles: list[Candle], i: int, snap: MarketSna
                                       ex["be_trigger_atr"], ex["be_offset_pct"])
         if hit:
             return close, why
-    if trend_break and snap.ema_fast < snap.ema_slow and snap.rsi > ex["rsi_overbought"]:
+    if trend_break and snap.ema_fast < snap.ema_slow and snap.rsi > LEGACY_TREND_BREAK_RSI:
         # Alleen voor attributie: de trend-break-exit die tot v0.19.0 in `check_exit`
         # zat en daar geschrapt is omdat hij twee vrijwel disjuncte condities eiste.
         # Hoort in de referentierij van `tradebot.calibrate`, nergens anders.

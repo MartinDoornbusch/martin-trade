@@ -24,16 +24,39 @@ alleen de conclusie.** Voor deze ronde is dat opgelost door dit document als vas
 gebruiken.
 
 Omdat er niets is om tegenaan te leggen, is de enige echte anker-check de oude code zelf
-draaien:
+draaien.
+
+**Wijs beide runs naar hetzelfde configbestand.** De worktree brengt zijn eigen
+`config/config.yaml` van 18 juli mee, en de optimizer overschrijft alleen ema, score, atr en
+rr uit de grid, niet `min_profit_pct`, de fees of de exit-parameters. Zonder dat te pinnen
+lees je een configverschil als een codeverschil.
+
+Dat vraagt één ingreep, want de oude code leest een sleutel die niet meer bestaat: regel 71
+van de toenmalige `strategy.py` doet `cfg["rsi_oversold"]`, en die is in v0.19.0 vervangen
+door `rsi_buy_zone_min/max`. Wijs je de oude code zonder meer naar de huidige config, dan
+crasht hij op een `KeyError`. Voeg die ene sleutel toe aan een kopie:
 
 ```bash
-# Oude code in een aparte worktree, zonder je huidige checkout aan te raken
+# Ankerconfig = de huidige config plus de ene sleutel die de oude code nodig heeft.
+# rsi_oversold 35 geeft in de oude regel (rsi > 25 and rsi < rsi_oversold + 10)
+# exact de zone 25-45 die nu expliciet in de config staat: gedrag identiek.
+cp config/config.yaml /tmp/anker-config.yaml
+#  -> voeg met de hand `rsi_oversold: 35` toe ONDER de bestaande strategy-sectie
+
+# Oude code in een aparte worktree, zonder de huidige checkout aan te raken
 git worktree add /tmp/juli18 56d9e55
 cd /tmp/juli18
 for M in BTC-EUR ETH-EUR SOL-EUR XRP-EUR LINK-EUR; do
-    PYTHONPATH=src python -m tradebot.backtest "$M" --interval 4h --limit 1100
+    CONFIG_PATH=/tmp/anker-config.yaml PYTHONPATH=src python -m tradebot.backtest \
+        "$M" --interval 4h --limit 1100
 done
 ```
+
+De attributierun draait op de repo-config, dus de vergelijking gaat dan zuiver over code.
+Welke velden de oude code leest en dus moeten kloppen: `strategy` (ema_fast, ema_slow,
+rsi_period, rsi_oversold, atr_period, min_signal_score), `decision` (min_profit_pct,
+atr_stop_multiplier, reward_risk_ratio) en `fees` (maker, taker, slippage). De secties
+`exits`, `regime`, `universe` en `blocklist` kende hij nog niet en worden genegeerd.
 
 | Markt | Juli-code: rendement % / trades / win % | Rij 1 van de attributie | Gelijk? |
 |-------|------------------------------------------|--------------------------|---------|
@@ -47,8 +70,9 @@ Let op twee dingen bij die vergelijking:
 
 - de oude `main()` neemt één markt tegelijk en print per markt; de attributie middelt over
   de vijf markten. Vergelijk dus per markt, of middel de vijf oude uitkomsten;
-- de config in `/tmp/juli18` is die van 18 juli. Dat is precies de bedoeling, maar
-  controleer wel dat `ema_fast/ema_slow` daar 20/50 is en `reward_risk_ratio` 1,5.
+- controleer dat `CONFIG_PATH` daadwerkelijk is opgepikt. Draait hij op de worktree-config,
+  dan zie je dezelfde ema en rr (18 juli had die al), maar wel andere fees- of
+  exit-parameters als die sindsdien zijn gewijzigd.
 
 **Wijkt rij 1 af, stop dan.** Dan is er onderweg nog iets anders veranderd en is elke delta
 eronder betekenisloos.
@@ -59,7 +83,7 @@ De backtester van 18 juli was op **zeven** punten anders dan de huidige:
 
 | # | Punt | Wat er anders was |
 |---|------|-------------------|
-| r1/1.2 | trend-break-exit | `check_exit` had een derde regel (EMA-cross-down + RSI > 70), geschrapt in v0.19.0 |
+| r1/1.2 | trend-break-exit | `check_exit` had een derde regel (EMA-cross-down + RSI > 70, hardcoded), geschrapt in v0.19.0 |
 | 2.1 | time-stop | ontbrak volledig in de backtest |
 | 2.1 | breakeven-stop | ontbrak volledig in de backtest |
 | 2.2 | exits | slotkoers in plaats van intrabar high/low |
@@ -117,9 +141,17 @@ Bij het lezen:
 - Verwachting bij 2.2: de win-rate zakt. Het oude model hield een positie open als een
   candle met zijn low door de stop ging maar erboven sloot, terwijl de position guard live
   binnen de minuut uitstopt. Zakt hij niet, dan speelt er iets anders.
-- Verwachting bij r1/1.2: delta ongeveer nul. De trend-break-exit eiste twee vrijwel
-  disjuncte condities en heeft in productie nooit gevuurd. Is de delta hier wél groot, dan
-  is de conclusie uit ronde 1 ("hij vuurde nooit") op een te kleine steekproef getrokken.
+- **De trend-break-exit zit in rij 1 zelf en de eerste delta is het weghalen ervan**, niet
+  andersom. Dat is geen cosmetische volgorde. `check_exit` toetste SL en TP eerst, dus de
+  trend-break kwam alleen aan bod als geen van beide raakte. In het oude model met
+  close-exits werden intrabar-stops gemist, dus overleefden er méér posities tot aan die
+  derde regel. Zou je de trend-break pas aanzetten nadat de intrabar-correctie erin zit, dan
+  meet je zijn effect in een wereld die nooit heeft bestaan, en systematisch te laag.
+- Verwachting bij r1/1.2: delta ongeveer nul. **Let op: dat is een aanname, geen meting.**
+  Het bewijs uit ronde 1 was tweeledig, coverage liet zien dat de TESTSUITE die regel nooit
+  raakte en de twee condities zijn bijna disjunct, en geen van beide is een productiemeting.
+  Er is nooit geteld hoe vaak hij live vuurde. Deze stap is de eerste keer dat het echt
+  gemeten wordt. Is de delta groot, dan was de conclusie van ronde 1 fout.
 
 ## 3. Volledige grid, één keer, met alles aan
 
