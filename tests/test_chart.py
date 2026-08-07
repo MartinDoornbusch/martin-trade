@@ -32,3 +32,24 @@ def test_ema_fast_tracks_price_closer_than_slow():
     d = build_chart_payload("BTC-EUR", make_candles(), make_cfg())
     last_close = d["close"][-1]
     assert abs(d["ema_fast"][-1] - last_close) < abs(d["ema_slow"][-1] - last_close)
+
+
+# --- versie in de dashboard-header ------------------------------------------------
+
+def test_mode_endpoint_reports_the_running_version(memory_db):
+    """De Pi loopt achter tot de HA-add-on is bijgewerkt, en dan wijkt het gedrag af
+    van wat in git staat. Zonder dit veld is dat verschil op het dashboard onzichtbaar,
+    en dat is precies de deploy-richting van de configdrift uit review-blok 3."""
+    from tradebot import __version__
+    from tradebot.web import mode
+
+    assert mode()["version"] == __version__
+
+
+def test_dashboard_header_renders_the_version():
+    """Het API-veld alleen is niet genoeg: verdwijnt de span uit de header, dan staat
+    de versie er wel in de response maar niet op het scherm."""
+    from tradebot.web import DASHBOARD_HTML
+
+    assert 'id="ver"' in DASHBOARD_HTML
+    assert "botVersion" in DASHBOARD_HTML

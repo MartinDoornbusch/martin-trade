@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from . import __version__
 from .analysis import (
     analyze_breakeven,
     analyze_chase,
@@ -273,8 +274,12 @@ def chart(market: str):
 @app.get("/api/mode", dependencies=[Depends(check_token)])
 def mode():
     secrets = get_secrets()
+    # `version` erbij zodat je op het dashboard ziet welke build er draait. De Pi
+    # loopt achter tot de HA-add-on is bijgewerkt, en dan wijkt het gedrag af van
+    # wat in git staat; zonder dit getal zie je dat verschil niet.
     return {"mode": secrets.trading_mode, "paused": is_paused(),
-            "live_max_capital_eur": secrets.live_max_capital_eur}
+            "live_max_capital_eur": secrets.live_max_capital_eur,
+            "version": __version__}
 
 
 class PauseEdit(BaseModel):
@@ -510,7 +515,7 @@ section{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 #addmarket{width:130px}
 #listmsg{font-size:12px;margin-left:8px}
 </style></head><body>
-<header><h1>AI Trade Platform <span id="modebadge" class="chip"></span></h1><span id="upd"></span></header>
+<header><h1>AI Trade Platform <span id="ver" class="chip"></span><span id="modebadge" class="chip"></span></h1><span id="upd"></span></header>
 <main>
 <div class="cards" id="cards"></div>
 <section><h2>Instellingen — markten</h2>
@@ -602,7 +607,11 @@ async function togglePause(){
   botPaused = r.paused; renderMode();
 }
 let botMode = 'paper';
+let botVersion = '?';
 function renderMode(){
+  const v = document.getElementById('ver');
+  v.textContent = 'v' + botVersion;
+  v.style.color = '#8ea0b8';
   const b = document.getElementById('modebadge');
   b.textContent = botMode + (botPaused ? ' — GEPAUZEERD' : '');
   b.style.color = botMode === 'live' ? '#f87171' : (botPaused ? '#f59e0b' : '#4ade80');
@@ -758,7 +767,7 @@ function renderChaseGate(d){
 async function load(){
   const [s, pf, bal, mkts, adv, lst, md] = await Promise.all([
     q('api/stats'), q('api/portfolio'), q('api/balance'), q('api/markets'), q('api/advice'), q('api/lists'), q('api/mode')]);
-  botMode = md.mode; botPaused = md.paused; renderMode();
+  botMode = md.mode; botPaused = md.paused; botVersion = md.version || '?'; renderMode();
   renderLists(lst);
   document.getElementById('cards').innerHTML = [
     ['Paper portfolio', '€ '+fmt(pf.total_eur)],
