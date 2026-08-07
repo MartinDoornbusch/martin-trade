@@ -79,7 +79,8 @@ src/tradebot/
   llm.py         Groq/Gemini/Mistral router, second opinion met veto
   paper.py       paper broker met echte fees
   engine.py      orchestratie van één analysecyclus
-  web.py         FastAPI dashboard + JSON API
+  web.py         JSON API + serveert de front-end
+  static/        front-end: index.html, app.css, app.js, charts.js, vendor/uPlot
   backtest.py    backtester met zelfde strategie + fee-model
   main.py        scheduler + webserver
 ```

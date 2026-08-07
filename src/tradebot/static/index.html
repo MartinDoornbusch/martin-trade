@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<title>AI Trade Platform</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="static/vendor/uPlot.min.css">
+<link rel="stylesheet" href="static/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◆</span>
+    <div>
+      <h1>AI Trade Platform</h1>
+      <span class="sub" id="runsub">laden…</span>
+    </div>
+  </div>
+  <div class="topmeta">
+    <span class="pill" id="ver">v?</span>
+    <span class="pill" id="modebadge">…</span>
+    <span class="upd" id="upd"></span>
+    <button class="btn" id="refreshbtn" title="nu verversen">↻</button>
+    <button class="btn warn" id="pausebtn">…</button>
+  </div>
+</header>
+
+<div class="banner" id="runbanner"></div>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="overzicht" class="on">Overzicht</button>
+  <button data-tab="markten">Markten &amp; scanner</button>
+  <button data-tab="handel">Posities &amp; handel</button>
+  <button data-tab="gates">Meetgates <span class="cnt" id="gatecnt"></span></button>
+  <button data-tab="uitleg">Uitleg</button>
+</nav>
+
+<main>
+
+<!-- ================= OVERZICHT ================= -->
+<section class="tab grid on" id="tab-overzicht">
+
+  <div class="panel span-12">
+    <div class="panel-h"><h2>Kerncijfers</h2><span class="tag" id="kpitag">paper</span>
+      <span class="spacer"></span><span class="tag" id="kpiscope"></span></div>
+    <p class="hint">Resultaat van de <b>lopende modus</b>, na fees. Deze cijfers zeggen iets over
+      de uitvoering, niet over de strategie: het edge-oordeel komt uit de backtest over twee jaar
+      met een stijgend én een dalend venster, niet uit een paar weken paper.</p>
+    <div class="kpis" id="kpis"></div>
+  </div>
+
+  <div class="panel span-8">
+    <div class="panel-h"><h2>Equity-verloop</h2><span class="tag">elke 6 uur een punt</span></div>
+    <p class="hint">Totale waarde (cash + posities tegen actuele koers). Vlakke stukken zijn normaal:
+      de bot handelt alleen als een setup door alle gates komt.</p>
+    <div class="chart-legend" id="eqleg"></div>
+    <div class="chart-host"><div class="chart" id="eqchart"></div></div>
+    <div class="empty" id="eqempty" style="display:none">nog te weinig equity-snapshots</div>
+  </div>
+
+  <div class="panel span-4">
+    <div class="panel-h"><h2>Kostenlek</h2><span class="tag warn">kernrisico</span></div>
+    <p class="hint">Cumulatieve fees tegenover cumulatief netto resultaat. De vorige bot ging hieraan
+      kapot: 27% correcte keuzes, maar de fees aten het kapitaal op. Loopt de rode lijn weg van de
+      groene, dan handelt de bot te vaak.</p>
+    <div class="chart-legend" id="feeleg"></div>
+    <div class="chart-host"><div class="chart" id="feechart"></div></div>
+    <div class="empty" id="feeempty" style="display:none">nog geen historie</div>
+  </div>
+
+  <div class="panel span-7">
+    <div class="panel-h"><h2>Open posities</h2><span class="tag" id="posmax"></span></div>
+    <p class="hint">SL en TP staan mechanisch vast op ATR-afstand en worden elke 60 seconden
+      bewaakt, los van de analysecyclus van een uur.</p>
+    <div class="scroll"><table id="positions"></table></div>
+  </div>
+
+  <div class="panel span-5">
+    <div class="panel-h"><h2>Echte Bitvavo-balans</h2><span class="tag">informatief</span></div>
+    <p class="hint">Je werkelijke bezit inclusief openstaande orders. De bot handelt hier
+      <b>niet</b> op: in paper-modus raakt hij je echte saldo niet aan.</p>
+    <div class="scroll"><table id="balance"></table></div>
+  </div>
+
+  <div class="panel span-12">
+    <div class="panel-h"><h2>Gate-status</h2><span class="tag">go/no-go op 20 afgewikkelde trades</span></div>
+    <p class="hint">Elke gate wordt apart gemeten met een eigen config-hash. <b>Shadow</b> = wordt
+      gelogd maar blokkeert niets. Bindend maken mag pas bij een positieve netto gate over minstens
+      20 afgewikkelde trades, en is eenrichtingsverkeer: daarna levert de gate zelf geen meetbare
+      shadow-uitkomsten meer op.</p>
+    <div class="scroll"><table id="gatesum"></table></div>
+  </div>
+
+</section>
+
+<!-- ================= MARKTEN ================= -->
+<section class="tab grid" id="tab-markten">
+
+  <div class="panel span-12">
+    <div class="panel-h"><h2>Marktbeheer</h2><span class="spacer"></span>
+      <input type="text" id="addmarket" placeholder="bijv. SOL-EUR" size="12">
+      <button class="btn small" id="addwatch">+ watchlist</button>
+      <button class="btn small" id="addtrade">+ trading</button>
+      <span id="listmsg" class="muted"></span>
+    </div>
+    <p class="hint">Wijzigingen gelden vanaf de volgende analysecyclus, zonder herstart.
+      Frequentie, candle-interval, positiegrootte, cooldown en API-keys beheer je in Home Assistant
+      onder Add-on → Configuratie.</p>
+    <div id="listbox"></div>
+  </div>
+
+  <div class="panel span-8">
+    <div class="panel-h"><h2>Koersgrafiek</h2>
+      <select id="chartsel"></select>
+      <span class="spacer"></span><span class="tag" id="chartinfo"></span></div>
+    <p class="hint">Candles tonen de intrabar-uitslag; daar gaan SL en TP op af, en die zie je in
+      een lijn van slotkoersen niet. Beweeg over de grafiek voor OHLC en beide EMA's.</p>
+    <div class="chart-legend" id="chartleg"></div>
+    <div class="chart-host"><div class="chart" id="pricechart"></div></div>
+  </div>
+
+  <div class="panel span-4">
+    <div class="panel-h"><h2>Signaalopbouw</h2><span class="tag" id="scoretag"></span></div>
+    <p class="hint">Waarom deze markt wel of geen kandidaat is. Elke bevestigde conditie telt één
+      punt; pas bij de drempel ontstaat een kandidaat-koop, waarna de risk- en shadow-gates volgen.</p>
+    <div id="scorebox"></div>
+  </div>
+
+  <div class="panel span-12">
+    <div class="panel-h"><h2>Wat de bot ziet</h2><span class="tag">indicator-snapshot per markt</span></div>
+    <p class="hint">De ruwe indicatorstand per gepinde markt op dit moment. Kolomkoppen hebben een
+      toelichting; de volledige uitleg staat onder het tabblad Uitleg.</p>
+    <div class="scroll"><table id="markets"></table></div>
+  </div>
+
+  <div class="panel span-12">
+    <div class="panel-h"><h2>Instap-advies</h2><span class="tag">advies aan jou, geen bot-trigger</span></div>
+    <p class="hint">De watchlist wordt door de bot niet verhandeld. <b>p*</b> is de trefkans die deze
+      setup nodig heeft om na kosten quitte te spelen; ligt die boven 50%, dan vraagt de setup meer
+      dan een muntje opgooien.</p>
+    <div class="scroll"><table id="advice"></table></div>
+  </div>
+
+  <div class="panel span-12">
+    <div class="panel-h"><h2>Scanner</h2><span class="tag">alle Bitvavo EUR-markten, elk half uur</span>
+      <span class="spacer"></span><button class="btn small" id="scanrefresh">nu scannen</button></div>
+    <p class="hint">Kandidaten uit de volledige markt. Met auto-fill aan mag de bot vrije slots hiermee
+      vullen, maar uitsluitend met markten die zelfstandig door score, kosten- en liquiditeitsfilter
+      komen. De scanner verlaagt geen enkele drempel.</p>
+    <div class="scroll"><table id="scanner"></table></div>
+  </div>
+
+</section>
+
+<!-- ================= HANDEL ================= -->
+<section class="tab grid" id="tab-handel">
+
+  <div class="panel span-8">
+    <div class="panel-h"><h2>Resultaat per gesloten trade</h2><span class="tag">na fees</span></div>
+    <p class="hint">Groen boven nul, rood eronder. Let op de verhouding tussen de hoogte van de
+      groene en rode staven: bij R/R 1,5 mag de gemiddelde winnaar niet kleiner zijn dan de
+      gemiddelde verliezer, anders klopt de uitvoering niet met het ontwerp.</p>
+    <div class="chart-host"><div class="chart" id="pnlchart"></div></div>
+    <div class="empty" id="pnlempty" style="display:none">nog geen gesloten trades</div>
+  </div>
+
+  <div class="panel span-4">
+    <div class="panel-h"><h2>Uitvoering</h2></div>
+    <p class="hint">Hoe de gesloten trades zich verhouden tot het ontwerp.</p>
+    <div class="kpis" id="execkpis"></div>
+  </div>
+
+  <div class="panel span-6">
+    <div class="panel-h"><h2>Trades</h2><span class="tag">laatste 40</span></div>
+    <p class="hint">Elke koop en verkoop met de betaalde fee. P&amp;L staat alleen bij de verkoop:
+      dat is het moment waarop het resultaat van de round-trip vastligt.</p>
+    <div class="scroll"><table id="trades"></table></div>
+  </div>
+
+  <div class="panel span-6">
+    <div class="panel-h"><h2>Beslissingen</h2><span class="tag">laatste 40</span></div>
+    <p class="hint">Elke analysecyclus legt vast wat er is besloten en waarom, ook als er niets
+      gebeurde. Hier zie je of stilstand komt door een vlakke markt of door een gate.</p>
+    <div class="scroll"><table id="signals"></table></div>
+  </div>
+
+  <div class="panel span-12">
+    <div class="panel-h"><h2>LLM second opinions</h2><span class="tag" id="llmtag"></span></div>
+    <p class="hint">De LLM mag alleen nee zeggen tegen een kandidaat die alle mechanische gates al
+      doorstond, nooit zelf kopen. Gemeten waarde tot nu toe: netto negatief, met de meeste veto's
+      op een conditie die de strategie juist als koopreden telt. Staat daarom op shadow.</p>
+    <div class="scroll"><table id="llm"></table></div>
+  </div>
+
+</section>
+
+<!-- ================= GATES ================= -->
+<section class="tab grid" id="tab-gates">
+
+  <div class="panel span-12">
+    <div class="panel-h"><h2>Meetontwerp</h2></div>
+    <p class="hint">Een gate in <b>shadow</b> wordt gelogd maar blokkeert niets, dus de populatie
+      koopsignalen verandert er niet door. Daardoor kan de echte uitkomst van elke geblokkeerde
+      kandidaat alsnog gemeten worden. Positief netto = de gate voorkwam per saldo verlies, negatief
+      = hij sneed winst weg. Elke gate heeft een eigen config-hash: aan één gate draaien reset de
+      meetklok van de andere niet. De marge is 95% Wilson.</p>
+  </div>
+
+  <div class="panel span-6">
+    <div class="panel-h"><h2>LLM-veto</h2><span class="tag" id="vetomode"></span></div>
+    <p class="hint">Counterfactual (uit gereconstrueerde candles) én echte shadow-uitkomst naast
+      elkaar. Een bindend veto laat geen trade na, daarom heeft deze gate als enige de
+      reconstructie nodig.</p>
+    <div id="vetoanalysis"></div>
+  </div>
+
+  <div class="panel span-6">
+    <div class="panel-h"><h2>Regime-filter</h2><span class="tag" id="regimemode"></span></div>
+    <p class="hint">Gecodeerde markt-brede risk-on/off op basis van de BTC-trend, als vervanger van
+      de LLM op de technische as. Let op: uit de tweejarige kalibratie bleek dit vooral een
+      blootstellingsknop, geen timinginstrument.</p>
+    <div id="regimeanalysis"></div>
+  </div>
+
+  <div class="panel span-6">
+    <div class="panel-h"><h2>Breakeven-stop</h2><span class="tag" id="bemode"></span></div>
+    <p class="hint">Winst die er was mag geen verlies worden. Uitkomst is werkelijke exit min
+      hypothetische exit, gededupliceerd op de eerste treffer per positie.</p>
+    <div id="breakevenanalysis"></div>
+  </div>
+
+  <div class="panel span-6">
+    <div class="panel-h"><h2>Chase-guard</h2><span class="tag" id="chasemode"></span></div>
+    <p class="hint">Sinds entries op afgesloten candles worden beoordeeld, kan de live prijs zijn
+      weggelopen van de signaalclose. Het risico klopt dan nog (SL/TP ankeren op de live prijs),
+      de edge niet. Deze gate slaat zulke entries over.</p>
+    <div id="chaseanalysis"></div>
+  </div>
+
+</section>
+
+<!-- ================= UITLEG ================= -->
+<section class="tab grid" id="tab-uitleg">
+
+  <div class="panel span-12">
+    <div class="panel-h"><h2>Hoe de bot beslist</h2><span class="tag">elk uur, per markt</span></div>
+    <p class="hint">Elke stap kan de kandidaat laten afvallen. Groen = harde regel, geel = gate die
+      nu in shadow staat en dus alleen meet.</p>
+    <div class="flow">
+      <div class="step"><div class="n">stap 1</div><div class="t">Candles ophalen</div>
+        <div class="d">4h-candles per markt. Entries worden beoordeeld op de laatst <b>afgesloten</b>
+          candle, want de lopende bar beweegt nog en liet signalen heen en weer flippen.</div></div>
+      <span class="arrow">→</span>
+      <div class="step hard"><div class="n">stap 2</div><div class="t">Score ≥ drempel</div>
+        <div class="d">Bevestigende condities tellen: uptrend, RSI in de herstelzone, MACD-omslag,
+          koers bij de onderste band. Onder de drempel gebeurt er niets.</div></div>
+      <span class="arrow">→</span>
+      <div class="step hard"><div class="n">stap 3</div><div class="t">Kostengate p*</div>
+        <div class="d">Weiger een setup die meer dan 50% trefkans nodig heeft om na kosten quitte te
+          spelen. Vervangt de oude optelgate, die in twee jaar backtest nul kandidaten blokkeerde.</div></div>
+      <span class="arrow">→</span>
+      <div class="step hard"><div class="n">stap 4</div><div class="t">Risk &amp; spreiding</div>
+        <div class="d">Vrij slot, cooldown, dagverlies-cap, cluster-cap op correlatie en de
+          blocklist. Slots worden nooit gevuld door een gate los te laten.</div></div>
+      <span class="arrow">→</span>
+      <div class="step gate"><div class="n">stap 5</div><div class="t">Shadow-gates</div>
+        <div class="d">Regime, chase, LLM-veto: loggen hun oordeel, blokkeren niets tot ze bewezen
+          waarde hebben over minstens 20 afgewikkelde trades.</div></div>
+      <span class="arrow">→</span>
+      <div class="step hard"><div class="n">stap 6</div><div class="t">Order &amp; exits</div>
+        <div class="d">Koop, daarna volledig mechanische exits: SL op 2×ATR, TP op R/R, time-stop en
+          breakeven-stop. Geen AI in het exit-pad.</div></div>
+    </div>
+  </div>
+
+  <div class="panel span-12">
+    <div class="panel-h"><h2>Begrippen</h2></div>
+    <p class="hint">Alles wat op dit dashboard staat, in gewone taal.</p>
+    <dl class="terms">
+
+      <h3>Koers en indicatoren</h3>
+      <div class="term"><dt>Candle (4h)</dt><dd>Eén blokje koershistorie: open, hoogste, laagste en
+        slotkoers over vier uur. Alle analyse draait hierop. Het lijfje is open tot slot, de sprieten
+        zijn de uitersten binnen die vier uur.</dd></div>
+      <div class="term"><dt>RSI (14)</dt><dd>Meet op een schaal van 0 tot 100 hoe hard de koers
+        recent steeg of daalde. Onder 30 oversold, boven 70 overbought. De bot koopt bij voorkeur in
+        de herstelzone: niet meer in vrije val, nog niet duur.</dd></div>
+      <div class="term"><dt>EMA en EMA-gap</dt><dd>Voortschrijdend gemiddelde dat recente candles
+        zwaarder weegt. De bot vergelijkt een snelle met een trage EMA; snel boven traag telt als
+        uptrend. De gap is dat verschil in procenten.</dd></div>
+      <div class="term"><dt>MACD-hist</dt><dd>Momentum: verschil tussen de MACD-lijn en zijn
+        signaallijn. Een omslag van negatief naar positief is vers opwaarts momentum. De absolute
+        waarde schaalt met de koers, vandaar grote getallen bij BTC.</dd></div>
+      <div class="term"><dt>ATR (14)</dt><dd>Gemiddelde beweging per candle. Hierop staan SL en TP:
+        rustige markt geeft krappe niveaus, wilde markt ruime. Zo is het risico per trade
+        vergelijkbaar tussen markten die heel anders bewegen.</dd></div>
+      <div class="term"><dt>Bollinger Bands</dt><dd>Banden op twee standaarddeviaties rond het
+        gemiddelde van 20 candles. Koers bij de onderband betekent laag ten opzichte van de eigen
+        recente beweging.</dd></div>
+
+      <h3>Beslissen</h3>
+      <div class="term"><dt>Score</dt><dd>Aantal bevestigende koopcondities tegelijk. De drempel
+        staat op 3; score 2 is in de backtest bewezen slecht (overtrading, en dus fee-dood).</dd></div>
+      <div class="term"><dt>p* (break-even-trefkans)</dt><dd>Welk percentage winnende trades deze
+        setup nodig heeft om na kosten quitte te spelen: p* = (m·a + c) / (m·a · (1+r)), met a = ATR
+        als percentage van de prijs. Bij ATR 1% is dat ongeveer 52%, bij ATR 3% ongeveer 44%. De vaak
+        genoemde 40% geldt alleen zonder kosten.</dd></div>
+      <div class="term"><dt>Verwachte move en vereist</dt><dd>Verwachte gunstige beweging tot de TP
+        tegenover round-trip fees plus spread en minimale winst. Dit was de oude fee-gate; hij
+        blokkeerde in twee jaar backtest 0,0% van de signalen en is daarom vervangen door p*, maar
+        blijft als rapportage staan.</dd></div>
+      <div class="term"><dt>Spread</dt><dd>Verschil tussen bied- en laatprijs, een onzichtbare kost
+        bovenop de fees. Bij kleine coins vaak groter dan de fee zelf; telt daarom mee in
+        "vereist", één keer per round-trip.</dd></div>
+      <div class="term"><dt>Cooldown</dt><dd>Wachttijd per markt na een trade. Voorkomt
+        fee-vretend heen-en-weer handelen in dezelfde coin.</dd></div>
+      <div class="term"><dt>Correlatie en cluster-cap</dt><dd>Twee coins die vrijwel gelijk bewegen
+        zijn geen spreiding maar twee keer hetzelfde risico. Boven de drempel tellen ze als één
+        cluster, en per cluster mag maar een beperkt aantal posities open staan.</dd></div>
+
+      <h3>Positie en risico</h3>
+      <div class="term"><dt>SL (stop loss)</dt><dd>Mechanische verkoop op entry min 2×ATR. Begrenst
+        het verlies per trade, zonder AI-inspraak, bewaakt per 60 seconden.</dd></div>
+      <div class="term"><dt>TP (take profit)</dt><dd>Mechanische verkoop op entry plus de
+        stop-afstand maal de reward/risk-ratio.</dd></div>
+      <div class="term"><dt>Time-stop</dt><dd>Sluit een positie die na een aantal candles noch TP
+        noch SL raakte en per saldo rond nul staat. Kapitaal dat niets doet kost slots.</dd></div>
+      <div class="term"><dt>Breakeven-stop</dt><dd>Zodra de piek ver genoeg boven de entry lag,
+        wordt de stop opgetrokken tot entry plus de werkelijke round-trip fee. Winst die er was mag
+        geen verlies worden.</dd></div>
+      <div class="term"><dt>Bucket-sizing</dt><dd>Vast bedrag per positie; het aantal slots groeit
+        mee met het kapitaal. Groei voegt dus posities toe in plaats van bestaande posities te
+        vergroten, en schaalt vanzelf terug bij drawdown.</dd></div>
+      <div class="term"><dt>Slots</dt><dd>Aantal posities dat tegelijk open mag staan, begrensd door
+        zowel het kapitaal als een hard plafond.</dd></div>
+
+      <h3>Meten</h3>
+      <div class="term"><dt>Shadow versus bindend</dt><dd>Een shadow-gate logt zijn oordeel maar
+        blokkeert niets, zodat de echte uitkomst van de geblokkeerde kandidaat alsnog meetbaar is.
+        Bindend maken mag pas na bewijs en is eenrichtingsverkeer.</dd></div>
+      <div class="term"><dt>Netto gate</dt><dd>Vermeden verlies min gemiste winst. Positief betekent
+        dat de gate per saldo waarde toevoegt, negatief dat hij geld kost.</dd></div>
+      <div class="term"><dt>Config-hash</dt><dd>Vingerafdruk van de meet-relevante configuratie.
+        Verandert die, dan begint een nieuwe meetcohorte; anders zouden uitkomsten van twee
+        instellingen in één cijfer belanden. Elke gate heeft een eigen hash.</dd></div>
+      <div class="term"><dt>Alfa</dt><dd>Rendement min blootstelling maal marktrendement. Zonder deze
+        correctie meet je vooral hoe lang je in de markt zat, niet of de timing goed was. Dit is de
+        maat waarop fase 2 op "geen edge" uitkwam.</dd></div>
+      <div class="term"><dt>Win-rate, netto P&amp;L, max drawdown</dt><dd>Percentage winstgevende
+        gesloten trades, totaalresultaat na fees, en de grootste terugval van piek naar dal.</dd></div>
+      <div class="term"><dt>run_purpose</dt><dd>Waarom de lopende run draait. Staat er
+        "infrastructuurtest", dan valideert deze run geen strategie en mogen de resultaten niet als
+        bewijs voor een edge gelezen worden.</dd></div>
+
+    </dl>
+  </div>
+
+</section>
+
+</main>
+
+<script src="static/vendor/uPlot.iife.min.js"></script>
+<script src="static/charts.js"></script>
+<script src="static/app.js"></script>
+</body>
+</html>
