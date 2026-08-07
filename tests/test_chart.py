@@ -21,6 +21,22 @@ def test_chart_payload_shapes():
     assert d["interval"] == "4h"
 
 
+def test_chart_payload_carries_ohlc_for_candlesticks():
+    """Een lijn van slotkoersen verbergt de intrabar-uitslag, en juist daar gaan SL
+    en TP op af. De front-end tekent daarom candles en heeft open/high/low nodig."""
+    candles = make_candles()
+    d = build_chart_payload("BTC-EUR", candles, make_cfg())
+    for key in ("open", "high", "low"):
+        assert len(d[key]) == 50, key
+    assert d["open"][0] == candles[0].open
+    assert d["high"][7] == candles[7].high
+    assert d["low"][7] == candles[7].low
+    # De front-end labelt de EMA-lijnen met hun periode; zonder deze velden zou
+    # de legenda "EMAundefined" tonen zodra de config verandert.
+    assert d["ema_fast_period"] == 12
+    assert d["ema_slow_period"] == 26
+
+
 def test_chart_payload_with_position():
     from datetime import datetime, timezone
     pos = Position("BTC-EUR", 1.0, 120.0, 110.0, 140.0, datetime.now(timezone.utc))
@@ -49,7 +65,55 @@ def test_mode_endpoint_reports_the_running_version(memory_db):
 def test_dashboard_header_renders_the_version():
     """Het API-veld alleen is niet genoeg: verdwijnt de span uit de header, dan staat
     de versie er wel in de response maar niet op het scherm."""
-    from tradebot.web import DASHBOARD_HTML
+    from tradebot.web import STATIC_DIR
 
-    assert 'id="ver"' in DASHBOARD_HTML
-    assert "botVersion" in DASHBOARD_HTML
+    page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'id="ver"' in page
+    assert "botVersion" in script
+
+
+def test_mode_endpoint_carries_the_run_label(memory_db):
+    """De statusbalk bovenaan leest `run_purpose` en `run_until`. Zolang de lopende
+    run een infrastructuurtest is, mogen P&L en win-rate niet als strategiebewijs
+    gelezen worden; zonder deze velden staat dat label nergens op het scherm."""
+    from tradebot.web import mode
+
+    md = mode()
+    assert "run_purpose" in md
+    assert "run_until" in md
+    assert set(md["gates"]) == {"veto", "regime", "breakeven", "chase", "timestop"}
+
+
+# --- front-end als losse bestanden -----------------------------------------
+
+def test_static_assets_are_present_and_wired():
+    """De front-end zit sinds v0.22.0 niet meer als string in web.py. Deze test
+    bewaakt dat de assets bestaan en dat index.html ze ook echt binnenhaalt: een
+    hernoemd bestand zou anders pas in de browser opvallen.
+
+    De paden zijn bewust RELATIEF (geen leading slash). Achter HA-ingress draait de
+    app onder een prefix, en een absoluut pad zou daar buiten wijzen."""
+    from tradebot.web import STATIC_DIR
+
+    assets = ["app.css", "app.js", "charts.js",
+              "vendor/uPlot.iife.min.js", "vendor/uPlot.min.css"]
+    for name in assets:
+        assert (STATIC_DIR / name).is_file(), name
+    page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for name in assets:
+        assert f'"static/{name}"' in page, name
+    assert 'href="/static' not in page
+    assert 'src="/static' not in page
+
+
+def test_dashboard_route_serves_the_index_file(memory_db):
+    from fastapi.testclient import TestClient
+
+    from tradebot.web import app
+
+    client = TestClient(app)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "AI Trade Platform" in r.text
+    assert client.get("/static/app.js").status_code == 200

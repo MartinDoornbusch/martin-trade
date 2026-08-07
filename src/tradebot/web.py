@@ -1,8 +1,22 @@
-"""FastAPI dashboard: markten, paper portfolio, echte Bitvavo-balans, trades, signalen, LLM."""
+"""FastAPI dashboard: markten, paper portfolio, echte Bitvavo-balans, trades, signalen, LLM.
+
+Dit bestand is sinds v0.22.0 puur API. De front-end staat als losse bestanden in
+`static/` (index.html, app.css, app.js, charts.js, vendor/uPlot). Reden voor de
+splitsing: de HTML zat als Python-string in dit bestand, waardoor elke
+opmaakwijziging een diff in de API-module gaf en syntax highlighting, linting en
+browser-caching allemaal wegvielen.
+
+`static/` ligt bewust BINNEN het package. `Dockerfile` doet `COPY src/ src/` en
+`tradebot-addon/sync.sh` doet `cp -r ../src/. src/`, dus de assets reizen mee
+zonder dat aan de add-on-build iets hoeft te veranderen.
+"""
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -25,6 +39,12 @@ from .scanner import scan
 from .strategy import build_snapshot, evaluate_buy
 
 app = FastAPI(title="AI Trade Platform", docs_url=None, redoc_url=None)
+
+STATIC_DIR = Path(__file__).parent / "static"
+# Assets zijn bewust NIET achter `check_token`: ze bevatten geen data, alleen
+# opmaak en code. De data-endpoints houden hun token. Zo kan de browser ze ook
+# gewoon cachen zonder token in de URL.
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 _feed: BitvavoClient | None = None
 
@@ -240,14 +260,24 @@ def lists_edit(edit: ListEdit):
 
 
 def build_chart_payload(market: str, candles, cfg, position=None) -> dict:
-    """Puur en testbaar: koers + EMA-reeksen + positieniveaus voor de grafiek."""
+    """Puur en testbaar: OHLC + EMA-reeksen + positieniveaus voor de grafiek.
+
+    Open/high/low zitten er sinds v0.22.0 bij zodat de front-end candlesticks kan
+    tekenen in plaats van alleen een slotkoerslijn. Een lijn van closes verbergt
+    precies wat voor deze bot telt: de intrabar-uitslag waar SL en TP op afgaan.
+    """
     closes = [c.close for c in candles]
     ef = ema(closes, int(cfg.strategy["ema_fast"]))
     es = ema(closes, int(cfg.strategy["ema_slow"]))
     return {
         "market": market,
         "interval": cfg.schedule["candle_interval"],
+        "ema_fast_period": int(cfg.strategy["ema_fast"]),
+        "ema_slow_period": int(cfg.strategy["ema_slow"]),
         "ts": [c.ts for c in candles],
+        "open": [round(c.open, 8) for c in candles],
+        "high": [round(c.high, 8) for c in candles],
+        "low": [round(c.low, 8) for c in candles],
         "close": [round(v, 8) for v in closes],
         "ema_fast": [round(float(v), 8) for v in ef],
         "ema_slow": [round(float(v), 8) for v in es],
@@ -274,12 +304,34 @@ def chart(market: str):
 @app.get("/api/mode", dependencies=[Depends(check_token)])
 def mode():
     secrets = get_secrets()
+    cfg = get_config()
+    meta = getattr(cfg, "meta", {}) or {}
     # `version` erbij zodat je op het dashboard ziet welke build er draait. De Pi
     # loopt achter tot de HA-add-on is bijgewerkt, en dan wijkt het gedrag af van
     # wat in git staat; zonder dit getal zie je dat verschil niet.
+    #
+    # `run_purpose` en `run_until` staan sinds v0.22.0 in de statusbalk bovenaan
+    # en niet meer alleen bij de gate-secties. Reden: het dashboard opende met
+    # P&L, win-rate en drawdown, en die drie lezen als strategievalidatie. Sinds
+    # het "geen edge"-verdict van 2026-08-06 is dat precies de verkeerde lezing;
+    # de lopende run is een infrastructuurtest. Het label hoort dus vóór de
+    # cijfers te staan, niet eronder.
     return {"mode": secrets.trading_mode, "paused": is_paused(),
             "live_max_capital_eur": secrets.live_max_capital_eur,
-            "version": __version__}
+            "version": __version__,
+            "run_purpose": meta.get("run_purpose"),
+            "run_until": str(meta.get("run_until")) if meta.get("run_until") else None,
+            "candle_interval": cfg.schedule.get("candle_interval"),
+            "analysis_interval_minutes": cfg.schedule.get("analysis_interval_minutes"),
+            "sizing": cfg.risk.get("sizing"),
+            "bucket_eur": cfg.risk.get("bucket_eur"),
+            "gates": {
+                "veto": bool(cfg.decision.get("llm_veto_binding")),
+                "regime": bool((cfg.regime or {}).get("binding")),
+                "breakeven": bool(((cfg.exits or {}).get("breakeven_stop") or {}).get("binding")),
+                "chase": bool(cfg.strategy.get("chase_guard_binding")),
+                "timestop": bool((cfg.exits or {}).get("time_stop_binding")),
+            }}
 
 
 class PauseEdit(BaseModel):
@@ -487,379 +539,14 @@ def chase_analysis(scope: str = "current"):
     return _gate_analysis("chase", analyze_chase, scope)
 
 
-DASHBOARD_HTML = """<!doctype html><html lang="nl"><head><meta charset="utf-8">
-<title>AI Trade Platform</title><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-:root{--bg:#0b1220;--panel:#151e2e;--line:#26334a;--txt:#e2e8f0;--sub:#8ea0b8}
-body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--txt)}
-header{padding:14px 24px;background:var(--panel);border-bottom:1px solid var(--line);
-display:flex;justify-content:space-between;align-items:center}
-h1{font-size:17px;margin:0}#upd{font-size:12px;color:var(--sub)}
-main{padding:20px;display:grid;gap:16px;max-width:1200px;margin:auto}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
-.card span{font-size:12px;color:var(--sub)}.card b{font-size:20px;display:block;margin-top:2px}
-table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
-th{color:var(--sub);font-weight:500;font-size:12px}
-th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
-th.num,td.num{text-align:right}
-h2{font-size:14px;margin:0 0 10px;color:var(--txt)}
-.pos{color:#4ade80}.neg{color:#f87171}.muted{color:var(--sub)}
-.up{color:#4ade80}.down{color:#f87171}
-section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto}
-.bar{display:inline-block;height:6px;background:#3b82f6;border-radius:3px;vertical-align:middle;margin-right:6px}
-.chip{display:inline-flex;align-items:center;gap:6px;background:#0b1220;border:1px solid var(--line);border-radius:14px;padding:3px 10px;margin:2px 4px 2px 0;font-size:13px}
-.chip button,.rowbtn{background:#26334a;border:0;color:var(--txt);border-radius:6px;padding:1px 7px;font-size:12px;cursor:pointer}
-.chip button:hover,.rowbtn:hover{background:#3b82f6}
-#addmarket,#chartsel{background:#0b1220;border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:5px 8px}
-#addmarket{width:130px}
-#listmsg{font-size:12px;margin-left:8px}
-</style></head><body>
-<header><h1>AI Trade Platform <span id="ver" class="chip"></span><span id="modebadge" class="chip"></span></h1><span id="upd"></span></header>
-<main>
-<div class="cards" id="cards"></div>
-<section><h2>Instellingen — markten</h2>
-<div id="listbox"></div>
-<div style="margin-top:10px">
-  <input id="addmarket" placeholder="bijv. SOL-EUR">
-  <button class="rowbtn" onclick="act('watchlist', document.getElementById('addmarket').value, 'add')">+ watchlist</button>
-  <button class="rowbtn" onclick="act('markets', document.getElementById('addmarket').value, 'add')">+ trading</button>
-  <span id="listmsg" class="muted"></span>
-  <button id="pausebtn" class="rowbtn" style="float:right" onclick="togglePause()"></button>
-</div>
-<p class="muted" style="margin-bottom:0">Wijzigingen gelden direct (volgende analysecyclus), geen herstart nodig. Trading max 5 markten (bewust), watchlist max 15. Frequentie, candle-interval, positiegrootte, cooldown en API-keys beheer je in HA: Add-on → Configuratie.</p>
-</section>
-<section><h2>Equity-verloop (paper)</h2><svg id="equity" width="100%" height="80" preserveAspectRatio="none"></svg></section>
-<section><h2>Markten (wat de bot ziet)</h2><table id="markets"></table></section>
-<section><h2>Grafiek <select id="chartsel" onchange="loadChart(this.value)"></select> <span class="muted" id="chartinfo"></span></h2><svg id="chart" width="100%" height="260" preserveAspectRatio="none"></svg></section>
-<section><h2>Instap-advies <span class="muted">(watchlist wordt niet door de bot verhandeld)</span></h2><table id="advice"></table></section>
-<section><h2>Scanner — alle Bitvavo-markten <span class="muted">(kandidaten; toevoegen via add-on-config, elk half uur ververst)</span></h2><table id="scanner"></table></section>
-<section><h2>Paper portfolio — open posities <span class="muted" id="posmax"></span></h2><table id="positions"></table></section>
-<section><h2>Echte Bitvavo-balans <span class="muted">(incl. in order; bot handelt hier niet op)</span></h2><table id="balance"></table></section>
-<section><h2>Beslissingen / signalen</h2><table id="signals"></table></section>
-<section><h2>Trades (P&amp;L na fees)</h2><table id="trades"></table></section>
-<section><h2>LLM second opinions</h2><table id="llm"></table></section>
-<section><h2>Veto-analyse <span class="muted">(counterfactual + echte shadow-uitkomst; alleen huidige config)</span></h2>
-<div id="vetoanalysis"></div></section>
-<section><h2>Regime-gate <span class="muted">(gecodeerd, markt-breed; echte shadow-uitkomst)</span></h2>
-<div id="regimeanalysis"></div></section>
-<section><h2>Breakeven-stop <span class="muted">(exit-gate; hypothetische exit vs. werkelijke exit)</span></h2>
-<div id="breakevenanalysis"></div></section>
-<section><h2>Chase-guard <span class="muted">(entry-drift tussen signaalclose en fill)</span></h2>
-<div id="chaseanalysis"></div></section>
-<section><details><summary style="cursor:pointer;font-size:14px"><b>Uitleg van de begrippen</b></summary>
-<dl style="font-size:13px;line-height:1.5">
-<dt><b>Candle (4h)</b></dt><dd>Eén blokje koershistorie: open-, hoogste, laagste en slotkoers over 4 uur. Alle analyse draait op deze candles.</dd>
-<dt><b>RSI (14)</b></dt><dd>Relative Strength Index, 0-100: meet hoe hard de koers recent steeg of daalde. Onder ~30 = oversold, boven ~70 = overbought. De bot koopt bij voorkeur in de herstelzone (35-45): niet meer in vrije val, nog niet duur.</dd>
-<dt><b>EMA &amp; EMA-gap</b></dt><dd>Exponential Moving Average: voortschrijdend koersgemiddelde dat recente candles zwaarder weegt. De bot vergelijkt een snelle (12 candles) met een trage (26). Snel boven traag = uptrend. De EMA-gap is dat verschil in %.</dd>
-<dt><b>MACD-hist</b></dt><dd>Momentum-meter: verschil tussen de MACD-lijn en zijn signaallijn. Omslag van negatief naar positief = vers opwaarts momentum (telt zwaar in de score). De absolute waarde schaalt met de koers, vandaar grote getallen bij BTC.</dd>
-<dt><b>ATR (14)</b></dt><dd>Average True Range: hoeveel de koers gemiddeld per candle beweegt. Hierop worden SL en TP gezet: rustige markt = krappe niveaus, wilde markt = ruime.</dd>
-<dt><b>Bollinger Bands</b></dt><dd>Banden op ±2 standaarddeviaties rond het 20-candle gemiddelde. Koers bij de onderband = relatief laag t.o.v. de eigen recente beweging.</dd>
-<dt><b>Score</b></dt><dd>Aantal bevestigende koopcondities tegelijk (uptrend, RSI-herstelzone, MACD-omslag, koers bij onderband). Pas bij 3+ ontstaat een kandidaat-signaal.</dd>
-<dt><b>SL (stop loss)</b></dt><dd>Mechanische verkoop bij entry − 2×ATR: begrenst het verlies per trade. Geen AI-inspraak.</dd>
-<dt><b>TP (take profit)</b></dt><dd>Mechanische verkoop bij entry + 4×ATR (2× de stop-afstand, reward/risk 2:1).</dd>
-<dt><b>p* (break-even-trefkans)</b></dt><dd>Welk percentage winnende trades deze setup nodig heeft om na kosten quitte te spelen: p* = (m·a + c) / (m·a · (1+r)), met a = ATR als % van de prijs. Bij ATR 1% is dat ~52%, bij ATR 3% ~44%. De vaak genoemde 40% geldt alleen zonder kosten. Dit vervangt sinds v0.20.0 de oude fee-gate, die in twee jaar backtest nul kandidaten blokkeerde omdat hij vroeg of het doel ver genoeg weg lag in plaats van of de verwachtingswaarde positief is.</dd>
-<dt><b>Verw. move / vereist</b></dt><dd>Verwachte gunstige beweging tot de TP (ATR-gebaseerd) versus het minimum: round-trip fees (0,50%) + spread/slippage + minimale winst (0,50%). Alleen kopen als verwacht &gt; vereist: de fee-gate, dé les uit de vorige bot.</dd>
-<dt><b>Spread</b></dt><dd>Verschil tussen bied- en laatprijs; onzichtbare kost bovenop de fees. Bij kleine coins vaak groter dan de fee zelf, daarom telt de scanner hem mee in "vereist".</dd>
-<dt><b>Cooldown</b></dt><dd>Wachttijd per markt na een trade (12u): voorkomt fee-vretend heen-en-weer handelen.</dd>
-<dt><b>Correlatie-gate</b></dt><dd>Geen tweede positie in een markt die vrijwel gelijk beweegt met een open positie (correlatie &gt; 0,85): twee keer hetzelfde risico is geen spreiding.</dd>
-<dt><b>Win-rate / Netto P&amp;L / Max drawdown</b></dt><dd>Percentage winstgevende gesloten trades; totaalresultaat ná fees; grootste terugval van piek naar dal. De fase 2 go/no-go kijkt naar alle drie.</dd>
-<dt><b>LLM veto-rate</b></dt><dd>Hoe vaak de AI-second-opinion een kandidaat-koop blokkeerde. De AI mag alleen "nee" zeggen tegen een signaal dat alle mechanische gates al doorstond, nooit zelf kopen.</dd>
-</dl></details></section>
-</main>
-<script>
-const T = new URLSearchParams(location.search).get('token') || '';
-const B = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
-const q = p => fetch(B + p + (p.includes('?')?'&':'?') + 'token=' + T).then(r=>r.json());
-const fmt = (n,d=2) => n==null?'—':Number(n).toLocaleString('nl-NL',{minimumFractionDigits:d,maximumFractionDigits:d});
-// koersformatter: schaalt decimalen mee met de magnitude, zodat sub-cent coins (bv. PUMP) niet als 0,00 tonen
-const fmtp = n => {
-  if (n==null) return '—';
-  const a = Math.abs(n);
-  if (a===0) return fmt(0);
-  const d = a>=1 ? 2 : Math.min(8, Math.max(2, 2 - Math.floor(Math.log10(a))));
-  return Number(n).toLocaleString('nl-NL',{minimumFractionDigits:d,maximumFractionDigits:d});
-};
-// nette as-schaal: geeft tick-waarden + passend aantal decimalen voor een bereik
-function niceScale(lo,hi,n){
-  const span=(hi-lo)||Math.abs(hi)||1;
-  const mag=Math.pow(10,Math.floor(Math.log10(span/n)));
-  const norm=(span/n)/mag;
-  const step=(norm<1.5?1:norm<3?2:norm<7?5:10)*mag;
-  const ticks=[]; for(let v=Math.ceil(lo/step)*step; v<=hi+step*1e-6; v+=step) ticks.push(v);
-  return {ticks, dec:Math.min(8,Math.max(0,-Math.floor(Math.log10(step))))};
-}
-// datumlabels langs de x-as op ~count posities
-function xAxis(ts,X,yText,count){
-  const m=ts.length, k=Math.min(count,m); let s='';
-  for(let j=0;j<k;j++){
-    const i=k>1?Math.round(j*(m-1)/(k-1)):0;
-    const anchor=j===0?'start':(j===k-1?'end':'middle');
-    const dt=new Date(ts[i]).toLocaleDateString('nl-NL',{day:'numeric',month:'numeric'});
-    s+=`<text x="${X(i).toFixed(1)}" y="${yText}" fill="var(--sub)" font-size="10" text-anchor="${anchor}">${dt}</text>`;
-  }
-  return s;
-}
-let botPaused = false;
-async function togglePause(){
-  const r = await fetch(B + 'api/pause?token=' + T, {method:'POST',
-    headers:{'content-type':'application/json'}, body: JSON.stringify({paused: !botPaused})}).then(x=>x.json());
-  botPaused = r.paused; renderMode();
-}
-let botMode = 'paper';
-let botVersion = '?';
-function renderMode(){
-  const v = document.getElementById('ver');
-  v.textContent = 'v' + botVersion;
-  v.style.color = '#8ea0b8';
-  const b = document.getElementById('modebadge');
-  b.textContent = botMode + (botPaused ? ' — GEPAUZEERD' : '');
-  b.style.color = botMode === 'live' ? '#f87171' : (botPaused ? '#f59e0b' : '#4ade80');
-  const btn = document.getElementById('pausebtn');
-  btn.textContent = botPaused ? '▶ kopen hervatten' : '⏸ kopen pauzeren (kill-switch)';
-}
-let chartMarket = null;
-async function loadChart(market){
-  chartMarket = market;
-  const d = await q('api/chart?market=' + market);
-  const svg = document.getElementById('chart');
-  const w = svg.clientWidth || 900, h = 260, padL = 68, padR = 12, padT = 12, padB = 26;
-  const series = [d.close, d.ema_fast, d.ema_slow];
-  let lo = Math.min(...series.map(a=>Math.min(...a))), hi = Math.max(...series.map(a=>Math.max(...a)));
-  if (d.position){ lo = Math.min(lo, d.position.stop_loss); hi = Math.max(hi, d.position.take_profit); }
-  const span = (hi-lo)||1;
-  const n = d.close.length;
-  const X = i => padL + (n>1? i/(n-1):0)*(w-padL-padR);
-  const Y = v => padT + (1-(v-lo)/span)*(h-padT-padB);
-  const line = (arr,color,width,dash='') => `<polyline points="${arr.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="${width}" ${dash?`stroke-dasharray="${dash}"`:''}/>`;
-  const hline = (v,color,label) => `<line x1="${padL}" y1="${Y(v).toFixed(1)}" x2="${w-padR}" y2="${Y(v).toFixed(1)}" stroke="${color}" stroke-dasharray="5,4"/><text x="${w-padR-4}" y="${(Y(v)-4).toFixed(1)}" fill="${color}" font-size="11" text-anchor="end">${label} ${fmtp(v)}</text>`;
-  const sc = niceScale(lo, hi, 5);
-  let out = '';
-  for (const t of sc.ticks){
-    const y = Y(t).toFixed(1);
-    out += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="#1e2a40"/>`
-         + `<text x="${padL-6}" y="${(Y(t)+3).toFixed(1)}" fill="var(--sub)" font-size="11" text-anchor="end">${fmt(t,sc.dec)}</text>`;
-  }
-  out += `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${(h-padB).toFixed(1)}" stroke="var(--line)"/>`
-       + `<line x1="${padL}" y1="${(h-padB).toFixed(1)}" x2="${w-padR}" y2="${(h-padB).toFixed(1)}" stroke="var(--line)"/>`
-       + xAxis(d.ts, X, h-8, 6)
-       + line(d.ema_slow, '#f59e0b', 1) + line(d.ema_fast, '#22d3ee', 1) + line(d.close, '#3b82f6', 2);
-  if (d.position){
-    out += hline(d.position.stop_loss, '#f87171', 'SL') + hline(d.position.take_profit, '#4ade80', 'TP') + hline(d.position.entry, '#8ea0b8', 'entry');
-  }
-  svg.innerHTML = out;
-  const from = new Date(d.ts[0]).toLocaleDateString('nl-NL');
-  document.getElementById('chartinfo').textContent = `${d.close.length} candles (${d.interval}) sinds ${from} — blauw: koers, cyaan: EMA-snel, oranje: EMA-traag`;
-}
-function fillChartSel(l){
-  const sel = document.getElementById('chartsel');
-  const all = [...l.markets, ...l.watchlist];
-  sel.innerHTML = all.map(m=>`<option value="${m}" ${m===chartMarket?'selected':''}>${m}</option>`).join('');
-  if (!chartMarket && all.length) loadChart(all[0]);
-}
-function renderLists(l){
-  fillChartSel(l);
-  const chip = (m, listName) => `<span class="chip">${m}` +
-    (listName==='watchlist' ? ` <button title="promoveer naar trading" onclick="act('markets','${m}','add')">→ trade</button>` : '') +
-    ((listName==='markets' && l.markets.length<=1) ? '' : ` <button title="verwijder" onclick="act('${listName}','${m}','remove')">✕</button>`) + '</span>';
-  document.getElementById('listbox').innerHTML =
-    `<div><b>Trading</b> (${l.markets.length}/${l.max_markets}): ` + l.markets.map(m=>chip(m,'markets')).join('') + '</div>' +
-    `<div style="margin-top:6px"><b>Watchlist</b> (${l.watchlist.length}/${l.max_watchlist}): ` + (l.watchlist.length? l.watchlist.map(m=>chip(m,'watchlist')).join('') : '<span class="muted">leeg</span>') + '</div>' +
-    ((l.auto_fill && l.auto_fill.length) ? `<div style="margin-top:6px"><b>Auto-fill</b> <span class="muted">(scanner, deze cyclus)</span>: ` + l.auto_fill.map(m=>`<span class="chip">${m}</span>`).join('') + '</div>' : '') +
-    ((l.quiet && l.quiet.length) ? `<div style="margin-top:6px" class="neg"><b>Quiet</b> <span class="muted">(0 koopsignalen, overweeg naar watchlist)</span>: ` + l.quiet.map(q=>`<span class="chip">${q.market} <span class="muted">${q.days==null?'nooit':q.days+'d'}</span></span>`).join('') + '</div>' : '');
-}
-async function act(listName, market, action){
-  if(!market){ return; }
-  const r = await fetch(B + 'api/lists?token=' + T, {method:'POST',
-    headers:{'content-type':'application/json'},
-    body: JSON.stringify({list_name:listName, market:market.trim().toUpperCase(), action:action})}).then(x=>x.json());
-  const msg = document.getElementById('listmsg');
-  msg.textContent = r.message; msg.className = r.ok ? 'pos' : 'neg';
-  renderLists(r.lists);
-  if(r.ok){ document.getElementById('addmarket').value=''; load(); }
-}
-const cls = n => n>=0?'pos':'neg';
-function renderVeto(d){
-  const el = document.getElementById('vetoanalysis');
-  if(!d || d.error){ el.innerHTML = `<span class="muted">${d && d.error ? 'fout: '+d.error : 'geen data'}</span>`; return; }
-  if(!d.n_vetos){ el.innerHTML = '<span class="muted">nog geen veto\\'s om te analyseren — zodra een koopsignaal alle mechanische gates passeert en de LLM blokkeert, verschijnt hier de counterfactual</span>'; return; }
-  const model = (s, title) => {
-    if(!s) return '';
-    const g = s.net_gate_eur;
-    const margin = s.precision_margin_pp!=null ? ` ±${fmt(s.precision_margin_pp,1)}pp` : '';
-    return `<div class="card" style="min-width:260px">
-      <span>${title}</span>
-      <div style="margin-top:6px;font-size:13px">
-        veto-precisie: <b>${fmt(s.veto_precision_pct,1)}%</b>${margin} (${s.n_avoided}/${s.n})<br>
-        vermeden verlies: <b class="pos">€ ${fmt(s.avoided_eur)}</b><br>
-        gemiste winst: <b class="neg">€ ${fmt(s.missed_eur)}</b><br>
-        netto gate: <b class="${cls(g)}">€ ${fmt(g)}</b> ${g>=0?'(voegt waarde toe)':'(kost geld)'}
-      </div></div>`;
-  };
-  const bd = (rows) => '<tr><th>groep</th><th class="num">n</th><th class="num">precisie</th><th class="num">vermeden</th><th class="num">gemist</th><th class="num">netto gate</th></tr>' +
-    rows.map(r=>`<tr><td>${r.group}</td><td class="num">${r.n}</td><td class="num">${fmt(r.veto_precision_pct,1)}% ±${fmt(r.precision_margin_pp,1)}</td><td class="num pos">€ ${fmt(r.avoided_eur)}</td><td class="num neg">€ ${fmt(r.missed_eur)}</td><td class="num ${cls(r.net_gate_eur)}">€ ${fmt(r.net_gate_eur)}</td></tr>`).join('');
-  const suspect = d.suspect_reason_count
-    ? `<p class="neg" style="font-size:13px">⚠ ${d.suspect_reason_count} van de ${d.n_vetos} veto's voeren "koers bij onderste Bollinger-band" aan als reden om te blokkeren, terwijl de strategie datzelfde signaal juist als koopreden telt. Richting-technisch tegenstrijdig.</p>`
-    : '<p class="muted" style="font-size:13px">Geen richting-verdachte veto-redenen gevonden.</p>';
-  const real = d.real_outcome
-    ? model(d.real_outcome, 'Echte shadow-uitkomst ('+d.n_real_matched+' gekoppeld)')
-    : '<div class="card" style="min-width:260px"><span>Echte shadow-uitkomst</span><div style="margin-top:6px;font-size:13px" class="muted">nog geen afgewikkelde shadow-trade aan een veto gekoppeld</div></div>';
-  const progress = `<p class="muted" style="font-size:12px">config-scope: <b>${d.config_hash||'alle'}</b> · voortgang naar schone meting: <b>${d.n_real_matched||0}/${d.target_resolved}</b> afgewikkelde shadow-trades gekoppeld ${(d.n_real_matched||0)<d.target_resolved?'(nog te weinig voor een harde uitspraak)':'(genoeg voor een eerste uitspraak)'}</p>`;
-  el.innerHTML =
-    `<div class="cards" style="margin-bottom:12px">${model(d.fixed_horizon, 'Vaste horizon ('+d.params.horizon_candles+' candles)')}${model(d.tpsl, 'TP/SL (ATR '+d.params.atr_stop_multiplier+'x, R/R '+d.params.reward_risk_ratio+')')}${real}</div>` +
-    progress +
-    `<p class="muted" style="font-size:12px">${d.n_vetos} veto's · positie € ${fmt(d.position_size_eur)} · round-trip kosten ${fmt(d.cost_pct,2)}% · netto negatief = veto voorkwam verlies, positief = veto sneed winst weg · marge = 95% Wilson</p>` +
-    suspect +
-    '<h2 style="margin-top:14px">Per veto-reden (vaste horizon)</h2><table>' + bd(d.by_reason||[]) + '</table>' +
-    '<h2 style="margin-top:14px">Per markt (vaste horizon)</h2><table>' + bd(d.by_market||[]) + '</table>' +
-    '<h2 style="margin-top:14px">Per confidence (vaste horizon)</h2><table>' + bd(d.by_confidence||[]) + '</table>';
-}
-function renderGate(elId, d, opts){
-  const el = document.getElementById(elId);
-  if(!el) return;
-  if(!d || d.error){ el.innerHTML = `<span class="muted">${d && d.error ? 'fout: '+d.error : 'geen data'}</span>`; return; }
-  const mode = d.binding ? 'bindend' : 'shadow';
-  if(!d.n_events){ el.innerHTML = `<span class="muted">${opts.leeg} (${mode})</span>`; return; }
-  const s = d.summary;
-  let card;
-  if(s){
-    const g = s.net_gate_eur;
-    card = `<div class="card" style="min-width:260px"><span>Netto gate (echte uitkomst)</span>
-      <div style="margin-top:6px;font-size:13px">
-        gate-precisie: <b>${fmt(s.veto_precision_pct,1)}%</b> ±${fmt(s.precision_margin_pp,1)}pp (${s.n_avoided}/${s.n})<br>
-        vermeden verlies: <b class="pos">€ ${fmt(s.avoided_eur)}</b><br>
-        gemiste winst: <b class="neg">€ ${fmt(s.missed_eur)}</b><br>
-        netto gate: <b class="${cls(g)}">€ ${fmt(g)}</b> ${g>=0?'(voegt waarde toe)':'(kost geld)'}
-      </div></div>`;
-  } else {
-    card = '<div class="card" style="min-width:260px"><span>Netto gate (echte uitkomst)</span><div style="margin-top:6px;font-size:13px" class="muted">events gevonden, nog geen gekoppeld aan een afgewikkelde trade</div></div>';
-  }
-  const dedup = d.n_deduped ? ` · ${d.n_deduped} herhaalde treffers samengevoegd tot de eerste per positie` : '';
-  const doel = (d.run_purpose && d.run_purpose.length) ? d.run_purpose.join(', ') : 'onbekend';
-  const doelvlag = doel.indexOf('infrastructuur') >= 0 ? ' <b class="neg">(geen strategievalidatie)</b>' : '';
-  const tot = (d.run_until && d.run_until.length) ? d.run_until.join(', ') : '';
-  const verstreken = tot && tot < new Date().toISOString().slice(0,10);
-  const totvlag = tot ? ` · venster tot <b>${tot}</b>${verstreken ? ' <b class="neg">VERSTREKEN, stop of verleng met reden</b>' : ''}` : '';
-  const progress = `<p class="muted" style="font-size:12px">doel van de run: <b>${doel}</b>${doelvlag}${totvlag} · ${opts.params} · modus: <b>${mode}</b> · positie € ${fmt(d.position_size_eur)} · voortgang: <b>${d.n_resolved}/${d.target_resolved}</b> afgewikkelde trades ${d.n_resolved<d.target_resolved?'(nog te weinig voor een harde uitspraak)':'(genoeg voor een eerste uitspraak)'}</p>`;
-  const note = `<p class="muted" style="font-size:12px">${d.n_events} events · ${d.n_unresolved} nog niet afgewikkeld${dedup} · netto positief = de gate voorkwam per saldo verlies, negatief = hij sneed winst weg · marge = 95% Wilson · alleen de huidige config (eigen hash per gate)</p>`;
-  const bd = (d.per_market && d.per_market.length)
-    ? '<h2 style="margin-top:14px">Per markt</h2><table><tr><th>groep</th><th class="num">n</th><th class="num">precisie</th><th class="num">vermeden</th><th class="num">gemist</th><th class="num">netto gate</th></tr>' +
-      d.per_market.map(r=>`<tr><td>${r.group}</td><td class="num">${r.n}</td><td class="num">${fmt(r.veto_precision_pct,1)}% ±${fmt(r.precision_margin_pp,1)}</td><td class="num pos">€ ${fmt(r.avoided_eur)}</td><td class="num neg">€ ${fmt(r.missed_eur)}</td><td class="num ${cls(r.net_gate_eur)}">€ ${fmt(r.net_gate_eur)}</td></tr>`).join('') + '</table>'
-    : '';
-  el.innerHTML = `<div class="cards" style="margin-bottom:12px">${card}</div>` + progress + note + bd;
-}
-function renderRegimeGate(d){
-  const proxy = d && d.proxy_market || 'BTC-EUR';
-  renderGate('regimeanalysis', d, {
-    params: `proxy: <b>${proxy}</b>`,
-    leeg: `nog geen regime-down entries om te meten — zodra de bot koopt terwijl ${proxy} in down-trend staat, verschijnt hier de echte uitkomst`});
-}
-function renderBreakevenGate(d){
-  renderGate('breakevenanalysis', d, {
-    params: `trigger <b>${fmt(d.trigger_atr,2)}x ATR</b> · offset <b>${fmt(d.offset_pct,2)}%</b>`,
-    leeg: 'nog geen breakeven-treffers om te meten — zodra een positie ver genoeg in de winst stond en terugzakt tot de drempel, verschijnt hier wat uitstappen zou hebben opgeleverd tegenover doorhouden'});
-}
-function renderChaseGate(d){
-  renderGate('chaseanalysis', d, {
-    params: `drempel <b>${fmt(d.max_chase_atr,2)}x ATR</b>`,
-    leeg: 'nog geen chase-treffers om te meten — zodra de live prijs te ver van de signaalclose af staat bij een koopsignaal, verschijnt hier de echte uitkomst van die entry'});
-}
-async function load(){
-  const [s, pf, bal, mkts, adv, lst, md] = await Promise.all([
-    q('api/stats'), q('api/portfolio'), q('api/balance'), q('api/markets'), q('api/advice'), q('api/lists'), q('api/mode')]);
-  botMode = md.mode; botPaused = md.paused; botVersion = md.version || '?'; renderMode();
-  renderLists(lst);
-  document.getElementById('cards').innerHTML = [
-    ['Paper portfolio', '€ '+fmt(pf.total_eur)],
-    ['Cash', '€ '+fmt(pf.cash_eur)],
-    ['Closed trades', s.closed_trades],
-    ['Win-rate', s.win_rate_pct==null?'—':s.win_rate_pct+'%'],
-    ['Netto P&L', '€ '+fmt(s.net_pnl_eur)],
-    ['Totaal fees', '€ '+fmt(s.total_fees_eur)],
-    ['Max drawdown', s.max_drawdown_pct==null?'—':s.max_drawdown_pct+'%'],
-    ['LLM veto-rate', s.llm_veto_rate_pct==null?'—':s.llm_veto_rate_pct+'% ('+s.llm_calls+')'],
-  ].map(([k,v])=>`<div class="card"><span>${k}</span><b>${v}</b></div>`).join('');
-  document.getElementById('markets').innerHTML =
-    '<tr><th>markt</th><th class="num">koers</th><th class="num" title="koersverandering laatste 24 uur">24h</th><th class="num" title="momentum 0-100: onder 30 oversold, boven 70 overbought; koopzone 35-45">RSI</th><th title="EMA-snel boven EMA-traag = uptrend">trend</th><th class="num" title="verschil snelle en trage EMA in procenten; groter = sterkere trend">EMA-gap</th><th class="num" title="momentum-omslag: van negatief naar positief = koopconditie">MACD-hist</th><th class="num" title="gemiddelde beweging per candle; bepaalt SL/TP-afstand">ATR</th></tr>' +
-    mkts.map(m=> m.error
-      ? `<tr><td>${m.market}</td><td colspan="7" class="muted">${m.error}</td></tr>`
-      : `<tr><td>${m.market}</td><td class="num">€ ${fmtp(m.price)}</td><td class="num ${cls(m.change_24h_pct)}">${fmt(m.change_24h_pct,1)}%</td><td class="num">${fmt(m.rsi,0)}</td><td class="${m.trend}">${m.trend==='up'?'▲ up':'▼ down'}</td><td class="num">${fmt(m.ema_gap_pct)}%</td><td class="num ${cls(m.macd_hist)}">${fmt(m.macd_hist,4)}</td><td class="num">${fmt(m.atr_pct,1)}%</td></tr>`).join('');
-  document.getElementById('advice').innerHTML =
-    '<tr><th>markt</th><th>type</th><th>advies</th><th class="num">score</th><th class="num" title="break-even-trefkans: welk percentage winnende trades deze setup nodig heeft om quitte te spelen, uit ATR en de kosten. De veelgenoemde 40% is de kostenloze asymptoot">p*</th><th class="num">verw. move</th><th class="num">vereist</th><th class="num">correlatie</th><th>toelichting</th></tr>' +
-    adv.map(a=> a.error
-      ? `<tr><td>${a.market}</td><td colspan="7" class="muted">${a.error}</td></tr>`
-      : `<tr><td>${a.market}</td><td class="muted">${a.tradeable?'trade':'watch'}</td><td class="${a.advies.startsWith('instappen')?'pos':(a.advies.startsWith('vermijden')?'neg':'muted')}">${a.advies}</td><td class="num">${a.score}/${a.score_needed}</td><td class="num ${a.breakeven_win_rate_pct>50?'neg':''}">${a.breakeven_win_rate_pct==null?'—':fmt(a.breakeven_win_rate_pct,1)+'%'}</td><td class="num ${a.fee_ok?'pos':'neg'}">${fmt(a.expected_move_pct)}%</td><td class="num">${fmt(a.min_edge_pct)}%</td><td class="num">${a.correlation==null?'—':fmt(a.correlation)+(a.correlation_with?' ('+a.correlation_with+')':'')}</td><td>${(a.reasons||[]).join('; ')||'—'}</td></tr>`).join('');
-  if(pf.max_positions!=null){ document.getElementById('posmax').textContent = `(${pf.open_positions}/${pf.max_positions} slots)`; }
-  document.getElementById('positions').innerHTML =
-    '<tr><th>markt</th><th class="num">aantal</th><th class="num">entry</th><th class="num">nu</th><th class="num">waarde</th><th class="num">ongereal. P&L</th><th class="num">SL</th><th class="num">TP</th></tr>' +
-    (pf.positions.length ? pf.positions.map(p=>`<tr><td>${p.market}</td><td class="num">${p.amount.toFixed(6)}</td><td class="num">${fmtp(p.entry_price)}</td><td class="num">${fmtp(p.current_price)}</td><td class="num">€ ${fmt(p.value_eur)}</td><td class="num ${cls(p.unrealized_pnl_eur)}">€ ${fmt(p.unrealized_pnl_eur)}</td><td class="num">${fmtp(p.stop_loss)}</td><td class="num">${fmtp(p.take_profit)}</td></tr>`).join('')
-      : '<tr><td colspan="8" class="muted">geen open posities — de bot wacht op een signaal dat door alle gates komt</td></tr>');
-  let balRows;
-  if (bal.enabled) {
-    balRows = '<tr><th>asset</th><th class="num">aantal</th><th class="num">waarde</th><th>aandeel</th></tr>' +
-      bal.assets.map(a=>`<tr><td>${a.symbol}</td><td class="num">${a.amount}</td><td class="num">€ ${fmt(a.value_eur)}</td><td><span class="bar" style="width:${Math.max(2,a.share_pct)}px"></span>${fmt(a.share_pct,1)}%</td></tr>`).join('');
-    if (bal.dust) balRows += `<tr><td class="muted">overig (${bal.dust.count} assets &lt; €1)</td><td></td><td class="num muted">€ ${fmt(bal.dust.value_eur)}</td><td></td></tr>`;
-    balRows += `<tr><td><b>Totaal</b></td><td></td><td class="num"><b>€ ${fmt(bal.total_eur)}</b></td><td></td></tr>`;
-  } else {
-    balRows = `<tr><td class="muted">${bal.error ? 'fout: '+bal.error : 'geen Bitvavo API-key geconfigureerd'}</td></tr>`;
-  }
-  document.getElementById('balance').innerHTML = balRows;
-  const sig = await q('api/signals?limit=20');
-  document.getElementById('signals').innerHTML =
-    '<tr><th>tijd</th><th>markt</th><th>signaal</th><th>besluit</th><th>reden</th></tr>' +
-    sig.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.market}</td><td>${r.action}</td><td>${r.decision}</td><td>${r.reason}</td></tr>`).join('');
-  const tr = await q('api/trades?limit=20');
-  document.getElementById('trades').innerHTML =
-    '<tr><th>tijd</th><th>markt</th><th>kant</th><th class="num">prijs</th><th class="num">fee</th><th class="num">P&L</th></tr>' +
-    (tr.length ? tr.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.market}</td><td>${r.side}</td><td class="num">${fmtp(r.price)}</td><td class="num">${fmt(r.fee_eur)}</td><td class="num ${cls(r.pnl_eur)}">${fmt(r.pnl_eur)}</td></tr>`).join('')
-      : '<tr><td colspan="6" class="muted">nog geen trades</td></tr>');
-  const llm = await q('api/llm?limit=15');
-  document.getElementById('llm').innerHTML =
-    '<tr><th>tijd</th><th>provider</th><th>markt</th><th>verdict</th><th class="num">conf</th><th>reden</th></tr>' +
-    (llm.length ? llm.map(r=>`<tr><td>${r.ts.slice(0,16).replace('T',' ')}</td><td>${r.provider}</td><td>${r.market}</td><td>${r.verdict}</td><td class="num">${fmt(r.confidence)}</td><td>${r.reasoning}</td></tr>`).join('')
-      : '<tr><td colspan="6" class="muted">nog geen LLM-calls — die volgen zodra een koopsignaal alle mechanische gates passeert</td></tr>');
-  q('api/veto-analysis').then(renderVeto);
-  q('api/regime-analysis').then(renderRegimeGate);
-  q('api/breakeven-analysis').then(renderBreakevenGate);
-  q('api/chase-analysis').then(renderChaseGate);
-  const sc = await q('api/scanner');
-  const scStats = sc.stats ? `<tr><td colspan="9" class="muted">trechter: ${sc.stats.eur_markets} EUR-markten gescand → ${sc.stats.liquid} door liquiditeitsfilter (volume ≥ € ${Number(sc.stats.min_volume_eur).toLocaleString('nl-NL')}, spread ≤ ${sc.stats.max_spread_pct}%) → ${sc.stats.analyzed} geanalyseerd → top ${sc.stats.shown} getoond</td></tr>` : '';
-  document.getElementById('scanner').innerHTML = sc.error
-    ? `<tr><td class="muted">fout: ${sc.error}</td></tr>`
-    : (scStats + '<tr><th>markt</th><th class="num">24h volume</th><th class="num">spread</th><th class="num">score</th><th>trend</th><th class="num">RSI</th><th class="num" title="break-even-trefkans: welk percentage winnende trades deze setup nodig heeft om quitte te spelen, uit ATR en de kosten. De veelgenoemde 40% is de kostenloze asymptoot">p*</th><th class="num">verw. move</th><th class="num">vereist</th><th>actie</th></tr>' +
-       sc.results.map(r=>`<tr><td>${r.market}</td><td class="num">€ ${Number(r.volume_eur).toLocaleString('nl-NL')}</td><td class="num">${fmt(r.spread_pct)}%</td><td class="num">${r.score}/${r.score_needed}</td><td class="${r.trend}">${r.trend==='up'?'▲':'▼'}</td><td class="num">${fmt(r.rsi,0)}</td><td class="num ${r.fee_ok?'pos':'neg'}">${fmt(r.expected_move_pct)}%</td><td class="num">${fmt(r.required_pct)}%</td><td>${r.in_markets?'<span class="muted">in trading</span>':(r.in_watchlist?`<span class="muted">in watchlist</span> <button class="rowbtn" onclick="act('markets','${r.market}','add')">→ trade</button>`:`<button class="rowbtn" onclick="act('watchlist','${r.market}','add')">+ watch</button> <button class="rowbtn" onclick="act('markets','${r.market}','add')">+ trade</button>`)}</td></tr>`).join(''));
-  const eq = await q('api/equity');
-  const eqEl = document.getElementById('equity');
-  if (eq.length >= 2) {
-    const vals = eq.map(e=>e.total_eur), ts = eq.map(e=>e.ts);
-    const lo = Math.min(...vals), hi = Math.max(...vals), span = (hi-lo)||1;
-    const h = 120, padL = 68, padR = 12, padT = 10, padB = 22;
-    const w = eqEl.clientWidth || 600;
-    const X = i => padL + (vals.length>1? i/(vals.length-1):0)*(w-padL-padR);
-    const Y = v => padT + (1-(v-lo)/span)*(h-padT-padB);
-    const sc = niceScale(lo, hi, 4);
-    let out = '';
-    for (const t of sc.ticks){
-      const y = Y(t).toFixed(1);
-      out += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="#1e2a40"/>`
-           + `<text x="${padL-6}" y="${(Y(t)+3).toFixed(1)}" fill="var(--sub)" font-size="11" text-anchor="end">${fmt(t,sc.dec)}</text>`;
-    }
-    out += `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${(h-padB).toFixed(1)}" stroke="var(--line)"/>`
-         + `<line x1="${padL}" y1="${(h-padB).toFixed(1)}" x2="${w-padR}" y2="${(h-padB).toFixed(1)}" stroke="var(--line)"/>`
-         + xAxis(ts, X, h-6, 5)
-         + `<polyline points="${vals.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ')}" fill="none" stroke="#3b82f6" stroke-width="2"/>`;
-    eqEl.setAttribute('height', h);
-    eqEl.innerHTML = out;
-  } else {
-    eqEl.outerHTML = '<span class="muted">nog te weinig equity-snapshots (elke 6 uur één)</span>';
-  }
-  document.getElementById('upd').textContent = 'bijgewerkt ' + new Date().toLocaleTimeString('nl-NL');
-}
-load(); setInterval(load, 60000);
-</script></body></html>"""
+@app.get("/")
+def dashboard(request: Request):
+    """Serveert de single-page front-end uit `static/index.html`.
 
-
-@app.get("/", response_class=HTMLResponse, dependencies=[Depends(check_token)])
-def dashboard():
-    # Serveert het single-page dashboard (incl. veto-analyse-sectie).
-    return DASHBOARD_HTML
+    De tokencheck staat hier expliciet in de body en niet als `Depends`, zodat een
+    ontbrekend token een leesbare pagina kan opleveren in plaats van een kale 401
+    van FastAPI. `check_token` gooit nog steeds bij een FOUT token; alleen het
+    ontbreken van elk token levert de uitleg-pagina.
+    """
+    check_token(request)
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
