@@ -117,3 +117,46 @@ def test_dashboard_route_serves_the_index_file(memory_db):
     assert r.status_code == 200
     assert "AI Trade Platform" in r.text
     assert client.get("/static/app.js").status_code == 200
+
+
+def test_the_dashboard_busts_its_own_asset_cache(memory_db):
+    """v0.23.0 draaide met een oude front-end: de kop toonde de nieuwe versie maar
+    de nieuwe providerkaart ontbrak, want die zit in app.js en index.html en
+    `StaticFiles` stuurt geen `max-age`, waarna de browser heuristisch cachet.
+
+    Twee dingen moeten daarom kloppen: de asset-URL's dragen een sleutel die
+    verandert zodra een asset verandert, en de pagina zelf wordt niet bewaard.
+    """
+    from fastapi.testclient import TestClient
+
+    from tradebot import web
+    from tradebot.web import app
+
+    client = TestClient(app)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-store"
+
+    versie = web.asset_version()
+    for asset in ("static/app.js", "static/app.css", "static/charts.js"):
+        assert f'{asset}?v={versie}' in r.text, asset
+    # De gevendorde uPlot krijgt hem ook: die wisselt zelden, maar een uitzondering
+    # zou precies het bestand zijn waar niemand aan denkt bij een upgrade.
+    assert "static/vendor/uPlot.iife.min.js?v=" in r.text
+
+
+def test_the_asset_version_changes_when_an_asset_changes(tmp_path, monkeypatch):
+    """Sleutel uit de mtimes en niet uit `__version__`, zodat hij ook bust bij een
+    wijziging zonder versiebump. Anders is de test hierboven groen terwijl de
+    browser nog steeds oude JS draait."""
+    from tradebot import web
+
+    nep = tmp_path / "static"
+    nep.mkdir()
+    for naam in ("index.html", "app.css", "app.js", "charts.js"):
+        (nep / naam).write_text("x", encoding="utf-8")
+    monkeypatch.setattr(web, "STATIC_DIR", nep)
+    eerste = web.asset_version()
+    import os
+    os.utime(nep / "app.js", (1_700_000_000, 1_700_000_000))
+    assert web.asset_version() != eerste

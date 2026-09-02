@@ -12,10 +12,12 @@ zonder dat aan de add-on-build iets hoeft te veranderen.
 """
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -656,6 +658,23 @@ def chase_analysis(scope: str = "current"):
     return _gate_analysis("chase", analyze_chase, scope)
 
 
+ASSET_REF = re.compile(r'(href|src)="(static/[^"?]+)"')
+
+
+def asset_version() -> str:
+    """Korte sleutel die verandert zodra een asset verandert.
+
+    Bewust de mtimes en niet `__version__`: dan bust hij ook tijdens ontwikkelen,
+    wanneer je de JS aanpast zonder de versie te bumpen. Vier stat-calls per
+    paginabezoek, en een paginabezoek is zeldzaam vergeleken met de API-polls.
+    """
+    stempels = []
+    for naam in ("index.html", "app.css", "app.js", "charts.js"):
+        pad = STATIC_DIR / naam
+        stempels.append(str(int(pad.stat().st_mtime)) if pad.exists() else "0")
+    return hashlib.sha256("|".join(stempels).encode()).hexdigest()[:8]
+
+
 @app.get("/")
 def dashboard(request: Request):
     """Serveert de single-page front-end uit `static/index.html`.
@@ -664,6 +683,18 @@ def dashboard(request: Request):
     ontbrekend token een leesbare pagina kan opleveren in plaats van een kale 401
     van FastAPI. `check_token` gooit nog steeds bij een FOUT token; alleen het
     ontbreken van elk token levert de uitleg-pagina.
+
+    De asset-URL's krijgen een `?v=` mee en de pagina zelf gaat met `no-store` de
+    deur uit. Zonder dat serveert `StaticFiles` de JS zonder `max-age`, waarna de
+    browser heuristisch cachet: na een add-on-update draait dan een nieuwe backend
+    achter een oude front-end. Dat is geen theoretisch risico, het is gebeurd bij
+    v0.23.0: het dashboard toonde de nieuwe versie in de kop maar niet de nieuwe
+    providerkaart, want die zit in `app.js` en `index.html`. Een storing die je
+    alleen ziet als je hem toevallig verwacht, en dus precies het soort dat deze
+    release moest wegnemen.
     """
     check_token(request)
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+    versie = asset_version()
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = ASSET_REF.sub(lambda m: f'{m.group(1)}="{m.group(2)}?v={versie}"', html)
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
