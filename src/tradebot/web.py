@@ -30,11 +30,21 @@ from .analysis import (
 from .backtest import max_drawdown_pct
 from .config import gate_fingerprint, get_config, get_secrets
 from .correlation import correlation_from_closes
-from .db import EquityRow, KVRow, LLMCallRow, PositionRow, SignalRow, TradeRow, session
+from .db import (
+    EquityRow,
+    KVRow,
+    LLMAttemptRow,
+    LLMCallRow,
+    PositionRow,
+    SignalRow,
+    TradeRow,
+    session,
+)
 from .decision import FeeModel, RiskManager, breakeven_win_rate
 from .exchange import BitvavoClient
 from .indicators import ema
 from .lists import get_lists, is_paused, modify, set_paused
+from .llm import LLMRouter, build_router
 from .scanner import scan
 from .strategy import build_snapshot, evaluate_buy
 
@@ -63,6 +73,23 @@ def get_feed() -> BitvavoClient:
         _feed = BitvavoClient(s.bitvavo_api_key, s.bitvavo_api_secret,
                               cfg.fees["maker_pct"], cfg.fees["taker_pct"])
     return _feed
+
+
+def get_router() -> LLMRouter:
+    """De router die de ENGINE gebruikt, als die er is.
+
+    `main.create_app` hangt hem op `app.state`. Dat is geen netheid maar een
+    meetkwestie: de dagbudgetten leven als teller in het routerobject, dus een
+    tweede router zou een eigen boekhouding bijhouden en zou het dashboard
+    budgetten laten tonen die niets met de productieketen te maken hebben. Buiten
+    de app (tests, losse uvicorn) valt hij terug op een eigen exemplaar.
+    """
+    router = getattr(app.state, "llm_router", None)
+    if router is None:
+        cfg, s = get_config(), get_secrets()
+        router = build_router(cfg.llm_providers, s, int(cfg.llm.get("timeout_seconds", 20)))
+        app.state.llm_router = router
+    return router
 
 
 def check_token(request: Request) -> None:
@@ -325,6 +352,8 @@ def mode():
             "analysis_interval_minutes": cfg.schedule.get("analysis_interval_minutes"),
             "sizing": cfg.risk.get("sizing"),
             "bucket_eur": cfg.risk.get("bucket_eur"),
+            "llm": {"enabled": bool(cfg.decision.get("use_llm_second_opinion")),
+                    "binding": bool(cfg.decision.get("llm_veto_binding"))},
             "gates": {
                 "veto": bool(cfg.decision.get("llm_veto_binding")),
                 "regime": bool((cfg.regime or {}).get("binding")),
@@ -441,9 +470,97 @@ def signals(limit: int = 100):
 def llm_calls(limit: int = 50):
     with session() as s:
         rows = s.execute(select(LLMCallRow).order_by(LLMCallRow.ts.desc()).limit(limit)).scalars().all()
-    return [{"ts": r.ts.isoformat(), "provider": r.provider, "market": r.market,
-             "verdict": r.verdict, "confidence": r.confidence,
+    return [{"ts": r.ts.isoformat(), "provider": r.provider, "model": r.model,
+             "market": r.market, "verdict": r.verdict, "confidence": r.confidence,
              "reasoning": r.reasoning, "latency_ms": r.latency_ms} for r in rows]
+
+
+def _laatste(provider: str, *, ok: bool) -> LLMAttemptRow | None:
+    with session() as s:
+        return s.execute(
+            select(LLMAttemptRow)
+            .where(LLMAttemptRow.provider == provider, LLMAttemptRow.ok.is_(ok))
+            .order_by(LLMAttemptRow.ts.desc()).limit(1)).scalars().first()
+
+
+@app.get("/api/llm/health", dependencies=[Depends(check_token)])
+def llm_health():
+    """Toestand van de providerketen, inclusief wat er STUK is.
+
+    Bestaat omdat falen tot v0.22.0 nergens landde: `second_opinion` logde een
+    warning en schoof door, en `llm_calls` bevat alleen geslaagde calls. Een
+    uitgevallen provider was daardoor niet te onderscheiden van een stille markt,
+    en dat verschil is precies wat je wilt zien.
+    """
+    cfg = get_config()
+    router = get_router()
+    keten = []
+    for i, p in enumerate(cfg.llm_providers, start=1):
+        # Sleutelaanwezigheid uit de ROUTER en niet opnieuw uit de secrets:
+        # `build_router` laat een provider zonder sleutel weg, dus zijn afwezigheid
+        # daar is wat er feitelijk draait. Twee bronnen voor dezelfde waarheid is
+        # precies hoe een dashboard iets anders kan tonen dan de engine doet.
+        state = router.provider(p.name)
+        heeft_sleutel = state is not None and bool(state.api_key)
+        gebruikt = int(state.used_today) if state is not None else 0
+        ok_rij, fout_rij = _laatste(p.name, ok=True), _laatste(p.name, ok=False)
+        if not heeft_sleutel:
+            status = "geen sleutel"
+        elif gebruikt >= p.daily_budget:
+            status = "budget op"
+        elif fout_rij is not None and (ok_rij is None or fout_rij.ts > ok_rij.ts):
+            status = "fout"
+        elif ok_rij is not None:
+            status = "ok"
+        else:
+            status = "ongetest"
+        keten.append({
+            "order": i, "provider": p.name, "model": p.model,
+            "key_present": heeft_sleutel,
+            "used_today": gebruikt, "daily_budget": p.daily_budget,
+            "status": status,
+            "last_ok": ok_rij.ts.isoformat() if ok_rij is not None else None,
+            "last_error": None if fout_rij is None else {
+                "ts": fout_rij.ts.isoformat(), "model": fout_rij.model,
+                "http_status": fout_rij.http_status, "message": fout_rij.error},
+        })
+    # De keten wordt op volgorde afgelopen; de eerste met sleutel en budget is
+    # degene die een echte kandidaat zou beoordelen. Een eerdere fout sluit hem
+    # niet uit, want de router probeert het gewoon opnieuw. Dat is bewust zo
+    # gerapporteerd: anders suggereert het dashboard een uitsluiting die er niet is.
+    actief = next((r["provider"] for r in keten
+                   if r["key_present"] and r["used_today"] < r["daily_budget"]), None)
+    meta = getattr(cfg, "meta", {}) or {}
+    return {
+        "enabled": bool(cfg.decision.get("use_llm_second_opinion")),
+        "binding": bool(cfg.decision.get("llm_veto_binding")),
+        "run_purpose": meta.get("run_purpose"),
+        "active": actief,
+        "chain": keten,
+    }
+
+
+class LLMTest(BaseModel):
+    provider: str
+
+
+@app.post("/api/llm/test", dependencies=[Depends(check_token)])
+def llm_test(body: LLMTest):
+    """Eén echte call langs het productiepad, met een vaste testkandidaat.
+
+    Schrijft `llm_attempts` (met `purpose=test`) maar bewust geen `llm_calls`:
+    een oordeel over een verzonnen kandidaat hoort niet in de meetreeks van de
+    veto-gate. Dit is ook de enige manier om te verifiëren of een modelnaam nog
+    bestaat: aanbieders zetten modellen uit en melden dat pas in de body van het
+    antwoord, niet in een statuspagina.
+    """
+    a = get_router().probe(body.provider)
+    return {"ok": a.ok, "provider": a.provider, "model": a.model,
+            "latency_ms": a.latency_ms, "http_status": a.http_status,
+            "error": a.error,
+            "verdict": None if a.verdict is None else {
+                "agree": a.verdict.agree, "confidence": a.verdict.confidence,
+                "reasoning": a.verdict.reasoning}}
 
 
 @app.get("/api/equity", dependencies=[Depends(check_token)])

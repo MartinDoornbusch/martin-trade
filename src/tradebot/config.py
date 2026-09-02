@@ -118,7 +118,18 @@ CORE_SECTIONS = ("strategy", "decision", "fees", "universe")
 # gescheiden worden, wat juist het doel van de scoping is.
 SHADOW_GATES = {
     "veto": {
-        "section": None,                      # parameters staan in de kern (`decision`)
+        # Schakelaars staan in de kern (`decision`), maar WIE het oordeel geeft
+        # staat onder `llm`: providervolgorde en modelnaam. Sinds v0.23.0 is dat
+        # de eigen sectie van deze gate, en dat is geen cosmetiek. Het model is
+        # de beoordelaar zelf; twee modellen geven aantoonbaar andere oordelen op
+        # dezelfde kandidaat. Viel `llm` buiten elke hash, dan kon een
+        # modelwissel de veto-cohorte stilletjes doorlopen en beland je met
+        # oordelen van twee beoordelaars in één precisiecijfer. Dat is precies
+        # het soort vervuiling waar de per-gate scoping tegen is bedacht, en het
+        # werd acuut toen de modelnaam een add-on-optie werd: een knop die geen
+        # deploy vergt en de meting stilletjes breekt is erger dan een
+        # config-regel die dat wel doet.
+        "section": "llm",
         "binding": ("decision", "llm_veto_binding"),
         "params": [("decision", "llm_min_confidence"),
                    ("decision", "use_llm_second_opinion")],
@@ -303,4 +314,19 @@ def get_config() -> AppConfig:
     auto_fill = os.environ.get("TRADEBOT_AUTO_FILL", "").strip().lower()
     if auto_fill in ("true", "false", "1", "0", "yes", "no"):
         data.setdefault("universe", {})["auto_fill"] = auto_fill in ("true", "1", "yes")
+    use_llm = os.environ.get("TRADEBOT_USE_LLM", "").strip().lower()
+    if use_llm in ("true", "false", "1", "0", "yes", "no"):
+        data["decision"]["use_llm_second_opinion"] = use_llm in ("true", "1", "yes")
+    # Modelnaam per provider. Uitzondering op de regel dat alleen operationele
+    # knoppen een add-on-optie mogen zijn: een aanbieder kan een model van de ene
+    # op de andere dag uitzetten (Groq deed dat met `llama-3.1-8b-instant` op
+    # 2026-08-16) en dan is de LLM-laag stuk tot de volgende deploy. Wat de regel
+    # eigenlijk beschermt is de meting, niet de deploy-drempel, en die is hier
+    # afgedekt: `llm` zit in de fingerprint van de veto-gate, dus een modelwissel
+    # opent een eigen cohorte in plaats van de oude te vervuilen.
+    for provider in data.get("llm", {}).get("providers", []):
+        override = os.environ.get(f"TRADEBOT_{str(provider.get('name', '')).upper()}_MODEL",
+                                  "").strip()
+        if override:
+            provider["model"] = override
     return AppConfig(**data)

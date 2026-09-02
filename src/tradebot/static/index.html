@@ -186,6 +186,19 @@
   </div>
 
   <div class="panel span-12">
+    <div class="panel-h"><h2>LLM-providers</h2><span class="tag" id="llmstate"></span>
+      <span class="spacer"></span><span class="tag" id="llmactive"></span></div>
+    <p class="hint">De keten wordt op volgorde afgelopen: de eerste provider met een sleutel en
+      resterend dagbudget beoordeelt de kandidaat, valt die om dan schuift hij door. Een fout
+      sluit een provider niet uit, hij wordt de volgende keer gewoon opnieuw geprobeerd.
+      <b>Test</b> doet één echte call langs precies het productiepad; dat is de enige manier om
+      te zien of een modelnaam nog bestaat, want aanbieders zetten modellen uit en melden dat
+      pas in het antwoord.</p>
+    <div class="scroll"><table id="llmhealth"></table></div>
+    <p class="hint" id="llmtestout"></p>
+  </div>
+
+  <div class="panel span-12">
     <div class="panel-h"><h2>LLM second opinions</h2><span class="tag" id="llmtag"></span></div>
     <p class="hint">De LLM mag alleen nee zeggen tegen een kandidaat die alle mechanische gates al
       doorstond, nooit zelf kopen. Gemeten waarde tot nu toe: netto negatief, met de meeste veto's

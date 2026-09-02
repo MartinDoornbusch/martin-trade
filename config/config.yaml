@@ -92,10 +92,17 @@ export:                              # lichte meetexport naast de HA-image-back-
   share_keep: 7                      # hoeveel exports daar blijven staan (kleiner, want /share is de grijpvoorraad en niet het archief)
   interval_hours: 24
 
-llm:
+llm:                                 # sinds v0.23.0 de EIGEN SECTIE van de veto-gate in de
+                                     # meet-scoping: het model is de beoordelaar zelf, dus een
+                                     # modelwissel hoort een nieuwe cohorte te openen en niet
+                                     # stilletjes door de oude heen te lopen. Zie SHADOW_GATES.
   providers:                          # volgorde = voorkeursvolgorde
     - name: groq
-      model: llama-3.1-8b-instant
+      model: openai/gpt-oss-20b       # was llama-3.1-8b-instant; Groq heeft dat model op
+                                      # 2026-08-16 uitgezet voor free en developer tier en wijst
+                                      # zelf dit model aan als opvolger. Niet live geverifieerd
+                                      # toen het gebeurde, want de laag stond uit sinds 2026-08-06;
+                                      # gebruik de testknop op het dashboard voor je hem aanzet
       daily_budget: 200               # max calls per dag (ruim onder 14.400 free tier)
     - name: gemini
       model: gemini-2.5-flash

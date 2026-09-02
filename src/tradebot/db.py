@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     Integer,
@@ -83,6 +84,33 @@ class LLMCallRow(Base):
     reasoning: Mapped[str] = mapped_column(String(2000), default="")
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     config_hash: Mapped[str] = mapped_column(String(16), default="")
+
+
+class LLMAttemptRow(Base):
+    """Elke POGING een provider te bereiken, geslaagd of niet.
+
+    Bewust een aparte tabel naast `llm_calls`. Die laatste is het OORDEELlogboek
+    en wordt door `analysis/veto.py` als meetreeks gelezen; mislukte pogingen
+    daarin schrijven zou de veto-rate en de gate-meting vervuilen. Maar zolang
+    falen nergens landt is een dode provider onzichtbaar: `second_opinion` logde
+    alleen een warning en schoof door naar de volgende, dus de tabel toonde
+    uitsluitend wat lukte. Precies zo kan een uitgevallen LLM-laag wekenlang
+    onopgemerkt blijven.
+
+    `purpose` scheidt de echte second opinions van de handmatige testknop, zodat
+    een geslaagde test niet als bewijs van een gezonde productieketen leest.
+    """
+
+    __tablename__ = "llm_attempts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    provider: Mapped[str] = mapped_column(String(20))
+    model: Mapped[str] = mapped_column(String(60), default="")
+    purpose: Mapped[str] = mapped_column(String(10), default="veto")  # veto | test
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    http_status: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(String(300), default="")
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class EquityRow(Base):

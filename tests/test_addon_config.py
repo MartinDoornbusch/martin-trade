@@ -80,6 +80,14 @@ def test_option_defaults_match_app_config():
     assert opts["regime_enabled"] == cfg["regime"]["enabled"]
     assert opts["regime_binding"] == cfg["regime"]["binding"]
     assert opts["llm_veto_binding"] == cfg["decision"]["llm_veto_binding"]
+    assert opts["use_llm_second_opinion"] == cfg["decision"]["use_llm_second_opinion"]
+    # De modelnamen zijn de uitzondering op "opties zijn operationeel" (zie de
+    # toelichting boven de optielijst): ze scopen zichzelf uit de meting via de
+    # `llm`-sectie in de veto-fingerprint. De default moet daarom net zo goed de
+    # yaml herhalen, anders draait de Pi stilletjes op een ander model dan de repo.
+    modellen = {p["name"]: p["model"] for p in cfg["llm"]["providers"]}
+    for naam, model in modellen.items():
+        assert opts[f"{naam}_model"] == model
     assert opts["analysis_interval_minutes"] == cfg["schedule"]["analysis_interval_minutes"]
     assert opts["candle_interval"] == cfg["schedule"]["candle_interval"]
     assert opts["markets"] == ",".join(cfg["markets"])

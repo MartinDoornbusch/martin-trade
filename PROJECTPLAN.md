@@ -307,7 +307,7 @@ volgende.
 
 | Gate | Bindend sinds | Gemeten? | Actie |
 |------|---------------|----------|-------|
-| LLM-veto | nooit (shadow) | ja, netto negatief | blijft shadow |
+| LLM-veto | nooit (shadow) | ja, netto negatief (totaalmeting `--all`); de GESCOPEDE meting stond sinds v0.20.0 op nul door een hash-mismatch, gerepareerd in v0.23.0, cohorte begint opnieuw | blijft shadow |
 | regime | nooit (shadow) | loopt | — |
 | breakeven-stop | nooit (shadow) | loopt sinds v0.20.0 | — |
 | chase-guard | nooit (shadow) | loopt sinds v0.20.0 | — |
@@ -320,6 +320,17 @@ Elke run heeft een doel én een einddatum, en allebei reizen mee met het bewijs 
 | Van | Tot | Doel | Scope | Verlengd? |
 |-----|-----|------|-------|-----------|
 | 2026-08-06 | **2026-09-15** | infrastructuurtest | paper-handel aan, **LLM uit** | — |
+
+**Openstaande scope-wijziging (2026-09-02).** De LLM-laag is in v0.23.0 gerepareerd en meetbaar
+gemaakt, en het voornemen is om de veto-cohorte opnieuw te laten lopen. Dat is een VERBREDING van
+de scope hierboven, dus hij hoort als eigen regel in dit register op het moment dat
+`use_llm_second_opinion` daadwerkelijk aan gaat, met de datum erbij. De schakelaar staat sinds
+v0.23.0 in de add-on-opties en `config/config.yaml` houdt `false` als default: het besluit hoort
+een handeling te zijn die je opschrijft, niet een waarde die stilzwijgend meelift met een deploy.
+Let op wat het kost: de gate-status van 2026-09-02 telde 2 regime-events en 1 chase-event over vier
+weken, dus ongeveer twee buys per maand. Twintig afgewikkelde trades is in dat tempo ruwweg een
+jaar. Zet je hem aan, doe dat dan omdat je de KETEN wilt oefenen en de meting wilt laten lopen,
+niet omdat je binnen dit venster een go/no-go verwacht.
 
 **Waarom een datum en niet "tot L1-L5 gesloten zijn".** Die blockers zijn fase 3-werk, en fase 3 is met het "geen edge"-verdict van de kaart. Er is nu geen reden om ze te sluiten, dus die voorwaarde zou nooit vuren en in de praktijk blijft dan alleen de kalender over met een ontsnappingsluik ernaast. Precies het mechanisme waardoor "infrastructuurtest" in maand vier niet meer te onderscheiden is van "hij draait nog steeds".
 
@@ -335,6 +346,7 @@ Elke omzetting is een gedateerde gebeurtenis, geen knop: hij reset de meetcohort
 
 | Datum | Gate | Van | Naar | n bij besluit | Duur van het gat | Aanleiding |
 |-------|------|-----|------|---------------|------------------|------------|
+| 2026-09-02 | LLM-veto | shadow | shadow (**cohorte reset**) | 0 afgewikkeld | n.v.t. | Geen flip maar een hash-wijziging, en die hoort hier om dezelfde reden: hij verklaart een sprong in de meetdata. Twee oorzaken tegelijk. (a) `llm.py` schreef sinds v0.20.0 nog de globale `config_fingerprint` terwijl `analysis/veto.py` op `gate_fingerprint(cfg, "veto")` filtert; die twee verschilden (gemeten: `f4dce99df56b` tegen `98bbb5e4b0ad`), dus elke gescopede veto-meting gaf structureel nul rijen. Alle rijen van vóór v0.23.0 blijven daardoor buiten de gescopede meting; `--all` ziet ze wel. (b) `llm` is de eigen sectie van deze gate geworden, waardoor het model meetelt. Veto-hash `98bbb5e4b0ad` -> `8684b648bf81`; **de andere vier hashes zijn ongewijzigd geverifieerd** (chase `d7c37a4885f3`, regime `4d70b556e318`, breakeven `bc7d8db135cd`, timestop `ada0f9b56e15`) |
 | 2026-08-06 | time-stop | bindend (sinds v0.18.0) | shadow | 114 trades in de backtest, 0 in shadow | n.v.t. (eerste flip) | Eerste meting ooit voor deze gate: `calibrate --vergelijk` in portfolio-modus over 6 maanden en 5 markten gaf -15,7 procentpunt en een tekenwissel van +3,52% naar -12,17%, met 84 -> 114 trades. Ging in v0.18.0 bindend zonder meting, tegen regel 1 in |
 
 De kolom **duur van het gat** hoort erbij omdat een cohorte na terugzetten niet aaneengesloten is in de tijd: je poolt dan observaties van vóór en ná een periode waarin het marktregime volledig veranderd kan zijn, terwijl de drempel van 20 een homogene steekproef veronderstelt. Twee dingen om te weten bij een flip:
@@ -385,6 +397,7 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 
 | Datum | Wijziging | Getest |
 |-------|-----------|--------|
+| 2026-09-02 | v0.23.0, LLM-laag: van onzichtbaar naar meetbaar. Aanleiding was de vraag waarom de second opinions leeg bleven; het antwoord was het besluit van 2026-08-06 (`use_llm_second_opinion: false`), maar het zoeken legde twee echte defecten bloot. (1) **Hash-mismatch**: `llm.py` schreef de globale `config_fingerprint` terwijl de analyzer op `gate_fingerprint(cfg, "veto")` filtert, dus de gescopede veto-meting gaf structureel nul rijen, ongeacht of de LLM draaide. Gelijkgetrokken, plus een AST-test die kale `config_fingerprint`-aanroepen buiten `config.py` verbiedt: die vangt de klasse en niet alleen dit geval. (2) **Stil falen**: een mislukte call deed niets meer dan een `log.warning`, en `llm_calls` bevat alleen geslaagde calls, dus een dode provider was niet te onderscheiden van een stille markt. Nieuwe tabel `llm_attempts` (elke poging, met HTTP-status en de body van het antwoord, want een uitgezet model meldt zich in de body), `/api/llm/health` met de keten, en een providerkaart plus een banner die zegt dat de laag uit staat. Ook: een mislukte call verbruikte geen dagbudget, waardoor een dode provider bij elke kandidaat opnieuw als eerste werd geprobeerd. Verder modelnaam en `use_llm_second_opinion` als add-on-optie met een testknop (`POST /api/llm/test`, echte call langs het productiepad, schrijft geen `llm_calls`), en `llm` als eigen fingerprint-sectie van de veto-gate zodat een modelwissel een eigen cohorte opent. Groq-model naar `openai/gpt-oss-20b`: `llama-3.1-8b-instant` is op 2026-08-16 uitgezet voor free en developer tier | 306 tests (15 nieuw), ruff, bandit exit 0, `node --check`, en een jsdom-rendertest van 15 checks op de providerkaart, de foutweergave en de testknop |
 | 2026-08-07 | v0.22.0 dashboard herbouwd. Front-end uit `web.py` gehaald naar `src/tradebot/static/` (index.html, app.css, app.js, charts.js, gevendorde uPlot 1.6.32); `web.py` is puur API en 865 → 552 regels. Layout van vijftien secties onder elkaar in een kolom van 1200 px naar vijf tabbladen (Overzicht, Markten & scanner, Posities & handel, Meetgates, Uitleg) op een 12-koloms grid over de volle vensterbreedte. Grafieken vervangen: candlesticks met EMA-overlay en SL/TP/entry-niveaus in plaats van een lijn van slotkoersen (`/api/chart` levert nu OHLC), equity met cashlijn, een kostenlek-grafiek die cumulatieve fees tegen cumulatief netto zet, en P&L per gesloten trade als staafgrafiek met payoff-ratio ernaast. Statusbalk bovenaan toont `run_purpose` en `run_until` uit `/api/mode`: het dashboard opende met P&L, win-rate en drawdown en die drie lezen als strategievalidatie, terwijl de lopende run een infrastructuurtest is. Nieuw: gate-statustabel die de vier shadow-gates naast elkaar zet met voortgang naar de drempel van 20, en een uitlegtabblad met de beslisketen in zes stappen plus 26 begrippen. Bewust géén wijziging aan strategie, gates of meetscoping | 291 tests (5 nieuw), ruff, plus een headless rendertest met jsdom tegen een gemockte feed: 27 controles op DOM en tabbladen, 0 JS-fouten, en een canvas-spion die bevestigt dat de candle-hook 140 candles binnen het plotvlak tekent en de SL/TP/entry-lijnen bij een open positie plaatst |
 | 2026-08-06 | Ruwe kalibratie-uitvoer alsnog gecommit (`docs/kalibratie-v0.20.0-uitvoer.txt`). Stond ongetrackt in de werkboom: precies de bewijsklasse waarvan het verdwijnen deze hele reviewronde in gang zette. Omgezet van UTF-16 naar UTF-8 zodat git een leesbare diff geeft, aangevuld met de drie ontbrekende runs (`--vergelijk`, de gepinde attributie en de beslissende tweejaarsrun) en voorzien van een manifest dat per blok zegt hoe het is vastgelegd. De ankerrun ontbreekt nog en staat als transcriptie gemarkeerd, met het commando om hem te herhalen | n.v.t. (bewijsmateriaal) |
 | 2026-08-06 | Run-venster vastgelegd: infrastructuurtest tot 2026-09-15, met `meta.run_until` mee in elk bewijsstuk en een luide waarschuwing zodra de datum verstreken is (geen automatische stop; stilvallen verbergt de beslissing). Bewust een datum en geen koppeling aan L1-L5, want die blockers zijn fase 3-werk en fase 3 is met het 'geen edge'-verdict van de kaart, dus die voorwaarde zou nooit vuren. Scope versmald: `use_llm_second_opinion: false`, want de LLM zit niet in het geteste pad; geverifieerd dat alleen de veto-cohorte daardoor reset | 285 tests (3 nieuw), ruff, bandit exit 0, node --check op de dashboard-JS |

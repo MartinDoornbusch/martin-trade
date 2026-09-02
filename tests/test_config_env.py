@@ -103,3 +103,39 @@ def test_invalid_numeric_env_ignored(monkeypatch, tmp_path, clear_cache):
     monkeypatch.setenv("TRADEBOT_INTERVAL_MINUTES", "abc")
     cfg = cfgmod.get_config()
     assert cfg.schedule["analysis_interval_minutes"] == 60  # ongeldige waarde genegeerd
+
+
+BASIS_LLM = (
+    "markets: [BTC-EUR]\nwatchlist: []\nschedule: {}\nstrategy: {}\nfees: {}\n"
+    "decision: {use_llm_second_opinion: false}\nrisk: {}\n"
+    "llm:\n  providers:\n"
+    "    - {name: groq, model: openai/gpt-oss-20b, daily_budget: 200}\n"
+    "    - {name: gemini, model: gemini-2.5-flash, daily_budget: 100}\n")
+
+
+def test_model_and_llm_switch_come_from_the_addon(monkeypatch, tmp_path, clear_cache):
+    """Waarom dit een optie mag zijn: een aanbieder kan een model van de ene op de
+    andere dag uitzetten (Groq deed dat op 2026-08-16 met llama-3.1-8b-instant) en
+    dan ligt de laag plat tot de volgende deploy. De meting is apart afgedekt:
+    `llm` zit in de fingerprint van de veto-gate."""
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text(BASIS_LLM)
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", yaml_file)
+    monkeypatch.setenv("TRADEBOT_GROQ_MODEL", "openai/gpt-oss-120b")
+    monkeypatch.setenv("TRADEBOT_USE_LLM", "true")
+    cfg = cfgmod.get_config()
+    modellen = {p.name: p.model for p in cfg.llm_providers}
+    assert modellen["groq"] == "openai/gpt-oss-120b"
+    assert modellen["gemini"] == "gemini-2.5-flash"   # niet gezet, dus yaml wint
+    assert cfg.decision["use_llm_second_opinion"] is True
+
+
+def test_empty_model_env_keeps_yaml(monkeypatch, tmp_path, clear_cache):
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text(BASIS_LLM)
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", yaml_file)
+    monkeypatch.setenv("TRADEBOT_GROQ_MODEL", "   ")
+    monkeypatch.setenv("TRADEBOT_USE_LLM", "")
+    cfg = cfgmod.get_config()
+    assert {p.name: p.model for p in cfg.llm_providers}["groq"] == "openai/gpt-oss-20b"
+    assert cfg.decision["use_llm_second_opinion"] is False

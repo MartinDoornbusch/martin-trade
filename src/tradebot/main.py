@@ -83,6 +83,11 @@ def create_app():
     scheduler.add_job(cycle.check_exits_fast, "interval", seconds=guard_s, id="guard",
                       max_instances=1, coalesce=True)
 
+    # Het dashboard leest de dagbudgetten uit dit routerobject: die teller leeft
+    # in het geheugen, niet in de DB, dus een tweede router zou een eigen
+    # boekhouding tonen die niets met de productieketen te maken heeft.
+    app.state.llm_router = cycle.llm
+
     @asynccontextmanager
     async def lifespan(_app):
         scheduler.start()

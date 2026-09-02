@@ -1,6 +1,6 @@
 # Home Assistant add-on manifest (local add-on)
 name: AI Trade Platform
-version: "0.22.0"
+version: "0.23.0"
 slug: tradebot
 description: Fee-bewust AI swing-tradingplatform (Bitvavo, paper trading)
 url: "https://github.com/MartinDoornbusch/martin-trade"
@@ -31,7 +31,14 @@ map:
 # Regel voor deze lijst (zie ook config.py): opties zijn OPERATIONEEL, de
 # strategie staat in config/config.yaml. Een knop hoort hier alleen thuis als
 # omzetten een bedrijfsvoeringsbeslissing is die geen deploy mag vergen én de
-# gemeten strategie niet verandert. Elke default hier moet gelijk zijn aan
+# gemeten strategie niet verandert, OF als de wijziging zichzelf uit de meting
+# scoopt via een eigen fingerprint-sectie. Die tweede uitweg bestaat sinds
+# v0.23.0 en heeft precies één gebruiker: de modelnamen. Een aanbieder kan een
+# model van de ene op de andere dag uitzetten (Groq deed dat met
+# llama-3.1-8b-instant op 2026-08-16) en dan ligt de LLM-laag plat tot de
+# volgende deploy. Wat de regel beschermt is de meting, niet de deploy-drempel,
+# en `llm` zit sinds v0.23.0 in de fingerprint van de veto-gate: een modelwissel
+# opent daar een eigen cohorte in plaats van de oude te vervuilen. Elke default hier moet gelijk zijn aan
 # config/config.yaml, want entrypoint.py zet elke ingevulde optie als env-var en
 # die overschrijft de yaml. Lege string = optie overslaan, dan wint de yaml.
 options:
@@ -50,6 +57,10 @@ options:
   regime_enabled: true
   regime_binding: false
   llm_veto_binding: false
+  use_llm_second_opinion: false
+  groq_model: openai/gpt-oss-20b
+  gemini_model: gemini-2.5-flash
+  mistral_model: mistral-small-latest
   live_confirm: ""
   live_max_capital_eur: 100
   bitvavo_api_key: ""
@@ -80,6 +91,10 @@ schema:
   regime_enabled: bool
   regime_binding: bool
   llm_veto_binding: bool
+  use_llm_second_opinion: bool
+  groq_model: str
+  gemini_model: str
+  mistral_model: str
   live_confirm: str
   live_max_capital_eur: int(10,1000)
   bitvavo_api_key: str

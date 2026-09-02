@@ -41,6 +41,10 @@ def cfg(**over) -> SimpleNamespace:
                                   "trigger_atr": 1.0, "offset_pct": 0.55}},
         regime={"enabled": True, "binding": False, "proxy_market": "BTC-EUR"},
         risk={"bucket_eur": 250.0},
+        # `llm` is sinds v0.23.0 de eigen sectie van de veto-gate: het model is de
+        # beoordelaar, dus een modelwissel hoort een eigen cohorte te openen.
+        llm={"providers": [{"name": "groq", "model": "openai/gpt-oss-20b"}],
+             "timeout_seconds": 20},
     )
     for key, value in over.items():
         base[key] = {**base[key], **value} if isinstance(value, dict) else value
@@ -198,3 +202,62 @@ def test_the_entry_gate_order_matches_the_engine():
     assert posities == sorted(posities), (
         "de volgorde van de gates in run_once wijkt af van ENTRY_GATE_ORDER")
     assert ENTRY_GATE_ORDER == ("regime", "chase", "veto")
+
+
+# --- v0.23.0: schrijver en lezer moeten dezelfde hash gebruiken ------------------
+
+
+def test_no_module_outside_config_calls_the_bare_fingerprint():
+    """De regressie die elke gescopede veto-meting leegmaakte, als klasse afgevangen.
+
+    `llm.py` bleef na v0.20.0 `config_fingerprint(cfg)` schrijven terwijl
+    `analysis/veto.py` op `gate_fingerprint(cfg, "veto")` filtert. Dat kostte
+    niets zichtbaars: geen fout, geen lege pagina, alleen een `where` die nooit
+    matcht en dus een meting die structureel nul rijen geeft. Precies het soort
+    stille drift waar deze testmodule voor bestaat.
+
+    De regel is daarom hard: buiten `config.py` bestaat alleen `gate_fingerprint`.
+    Wie een hash schrijft moet zeggen bij welke gate hij hoort, want de lezer doet
+    dat ook. AST in plaats van tekst zoeken, zodat een verwijzing in een docstring
+    of commentaar (die staan er, met opzet) de test niet laat afgaan.
+    """
+    import ast
+
+    src = Path(__file__).resolve().parent.parent / "src" / "tradebot"
+    overtreders = []
+    for pad in src.rglob("*.py"):
+        if pad.name == "config.py":
+            continue
+        boom = ast.parse(pad.read_text(encoding="utf-8"))
+        for node in ast.walk(boom):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "config_fingerprint"):
+                overtreders.append(f"{pad.relative_to(src)}:{node.lineno}")
+    assert not overtreders, (
+        "gebruik gate_fingerprint(cfg, <gate>) zodat schrijver en lezer dezelfde "
+        f"hash gebruiken; kale config_fingerprint gevonden in: {overtreders}")
+
+
+def test_the_model_is_part_of_the_veto_hash_and_of_no_other():
+    """Het model is de beoordelaar zelf.
+
+    Sinds de modelnaam een add-on-optie is, kan hij zonder deploy wisselen. Viel
+    `llm` buiten elke hash, dan liep de veto-cohorte gewoon door en stonden er
+    oordelen van twee verschillende beoordelaars in één precisiecijfer. De andere
+    gates hebben er niets mee te maken zolang de veto in shadow staat.
+    """
+    a = cfg(llm={"providers": [{"name": "groq", "model": "openai/gpt-oss-20b"}]})
+    b = cfg(llm={"providers": [{"name": "groq", "model": "llama-3.1-8b-instant"}]})
+    assert gate_fingerprint(a, "veto") != gate_fingerprint(b, "veto")
+    for gate in ("regime", "breakeven", "chase", "timestop"):
+        assert gate_fingerprint(a, gate) == gate_fingerprint(b, gate), gate
+
+
+def test_a_binding_veto_puts_the_model_in_everyones_scope():
+    """Spiegel van de shadow-semantiek: zodra de veto bindend is bepaalt de
+    beoordelaar welke buys er zijn, en dan gaat hij iedereen aan."""
+    aan = {"decision": {"llm_veto_binding": True}}
+    a = cfg(llm={"providers": [{"name": "groq", "model": "openai/gpt-oss-20b"}]}, **aan)
+    b = cfg(llm={"providers": [{"name": "groq", "model": "llama-3.1-8b-instant"}]}, **aan)
+    assert "llm" in gate_sections(a, "regime")
+    assert gate_fingerprint(a, "regime") != gate_fingerprint(b, "regime")

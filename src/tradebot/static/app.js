@@ -76,14 +76,19 @@ function renderBanner(md) {
       ? ` Venster tot <b>${md.run_until}</b> is <b>verstreken</b>: stop de run of verleng hem met een opgeschreven reden.`
       : ` Venster loopt tot <b>${md.run_until}</b> (nog ${days} dagen).`;
   }
-  if (infra || verstreken) {
+  const llmUit = md.llm && md.llm.enabled === false;
+  const llmRegel = llmUit
+    ? ' De <b>LLM second opinion staat uit</b>, dus er komen geen nieuwe veto-oordelen bij ' +
+      'en de veto-gate telt niet verder.'
+    : '';
+  if (infra || verstreken || llmUit) {
     el.className = 'banner ' + (verstreken ? 'neg' : 'warn');
     el.innerHTML = `<span class="ico">${verstreken ? '⛔' : '⚠'}</span><div>` +
       `Doel van deze run: <b>${esc(doel)}</b>.` +
       (infra ? ' Dit is <b>geen strategievalidatie</b>. De fase 2-vraag is beantwoord met "geen edge" ' +
         '(tweejarige backtest, stijgend én dalend venster, alfa gecorrigeerd voor blootstelling). ' +
         'Lees P&amp;L, win-rate en drawdown hieronder als uitvoeringscijfers, niet als bewijs van een edge.' : '') +
-      rest + '</div>';
+      rest + llmRegel + '</div>';
   } else {
     el.className = 'banner';
     el.innerHTML = `<span class="ico">●</span><div>Doel van deze run: <b>${esc(doel)}</b>.${rest}</div>`;
@@ -423,15 +428,78 @@ function renderSignals(sig) {
       : '<tr><td colspan="5" class="empty">nog geen beslissingen vastgelegd</td></tr>'));
 }
 
+const LLM_STATUS_CLS = { ok: 'pos', fout: 'neg', 'budget op': 'warn', 'geen sleutel': 'muted', ongetest: 'muted' };
+
+function renderLlmHealth(h) {
+  /* Defensief: als het endpoint faalt of een oud dashboard tegen een nieuwe API
+     praat, moet de rest van de pagina blijven werken in plaats van halverwege te
+     stoppen op een undefined. */
+  h = h || {};
+  const rijen = h.chain || [];
+  const st = $('llmstate');
+  st.textContent = h.enabled ? (h.binding ? 'aan · bindend' : 'aan · shadow') : 'uit';
+  st.className = 'tag ' + (h.enabled ? (h.binding ? 'neg' : '') : 'warn');
+  $('llmactive').textContent = h.enabled
+    ? (h.active ? 'nu aan de beurt: ' + h.active : 'geen bruikbare provider')
+    : 'geen enkele provider wordt aangeroepen';
+
+  html('llmhealth',
+    '<tr><th class="num">#</th><th>provider</th><th>model</th><th>status</th>' +
+    '<th class="num">vandaag</th><th>laatst gelukt</th><th>laatste fout</th><th></th></tr>' +
+    (rijen.length ? rijen.map(r => {
+      const fout = r.last_error
+        ? `<span class="dim">${short(r.last_error.ts)}</span> ` +
+          `${r.last_error.http_status ? 'HTTP ' + r.last_error.http_status + ' ' : ''}` +
+          `${esc(r.last_error.message).slice(0, 160)}`
+        : '<span class="muted">geen</span>';
+      return `<tr><td class="num dim">${r.order}</td><td>${esc(r.provider)}</td>` +
+        `<td class="dim">${esc(r.model)}</td>` +
+        `<td class="${LLM_STATUS_CLS[r.status] || ''}">${esc(r.status)}</td>` +
+        `<td class="num">${r.used_today}/${r.daily_budget}</td>` +
+        `<td class="dim">${r.last_ok ? short(r.last_ok) : '—'}</td>` +
+        `<td class="wrap">${fout}</td>` +
+        `<td><button class="btn small" data-llmtest="${esc(r.provider)}"` +
+        `${r.key_present ? '' : ' disabled title="geen API-sleutel ingesteld"'}>test</button></td></tr>`;
+    }).join('')
+      : '<tr><td colspan="8" class="empty">geen providers geconfigureerd of geen API-sleutels ingesteld</td></tr>'));
+}
+
+$('llmhealth').addEventListener('click', async e => {
+  const btn = e.target.closest('button[data-llmtest]');
+  if (!btn) return;
+  const naam = btn.dataset.llmtest;
+  btn.disabled = true; btn.textContent = '…';
+  const out = $('llmtestout');
+  out.innerHTML = `bezig met een echte call naar <b>${esc(naam)}</b>…`;
+  try {
+    const r = await post('api/llm/test', { provider: naam });
+    out.innerHTML = r.ok
+      ? `<span class="pos">✔ ${esc(r.provider)} (${esc(r.model)}) antwoordde in ${r.latency_ms} ms: ` +
+        `${r.verdict.agree ? 'agree' : 'veto'}, confidence ${fmt(r.verdict.confidence)} — ` +
+        `${esc(r.verdict.reasoning)}</span>`
+      : `<span class="neg">✘ ${esc(r.provider)} (${esc(r.model)}) faalde` +
+        `${r.http_status ? ' met HTTP ' + r.http_status : ''}: ${esc(r.error)}</span>`;
+  } catch (err) {
+    out.innerHTML = `<span class="neg">✘ testverzoek zelf mislukt: ${esc(err)}</span>`;
+  }
+  btn.disabled = false; btn.textContent = 'test';
+  q('api/llm/health').then(renderLlmHealth);
+});
+
 function renderLlm(llm) {
   $('llmtag').textContent = botCfg.gates && botCfg.gates.veto ? 'bindend' : 'shadow';
+  const uit = botCfg.llm && botCfg.llm.enabled === false;
   html('llm',
-    '<tr><th>tijd</th><th>provider</th><th>markt</th><th>verdict</th><th class="num">conf</th><th>reden</th></tr>' +
+    '<tr><th>tijd</th><th>provider</th><th>model</th><th>markt</th><th>verdict</th>' +
+    '<th class="num">conf</th><th>reden</th></tr>' +
     (llm.length ? llm.map(r =>
-      `<tr><td class="dim">${short(r.ts)}</td><td>${r.provider}</td><td>${r.market}</td>` +
+      `<tr><td class="dim">${short(r.ts)}</td><td>${r.provider}</td><td class="dim">${esc(r.model)}</td>` +
+      `<td>${r.market}</td>` +
       `<td class="${r.verdict === 'veto' ? 'neg' : 'pos'}">${r.verdict}</td>` +
       `<td class="num">${fmt(r.confidence)}</td><td class="wrap">${esc(r.reasoning)}</td></tr>`).join('')
-      : '<tr><td colspan="6" class="empty">geen LLM-calls — de second opinion staat uit tijdens de infrastructuurtest</td></tr>'));
+      : `<tr><td colspan="7" class="empty">geen LLM-calls — ${uit
+        ? 'de second opinion staat uit (decision.use_llm_second_opinion)'
+        : 'de laag staat aan maar heeft nog geen kandidaat beoordeeld; zie de providerkaart hierboven of er fouten zijn'}</td></tr>`));
 }
 
 /* ---------- gates ---------- */
@@ -582,6 +650,7 @@ async function load() {
   renderTrades(tr);
   renderSignals(sig);
   renderLlm(llm);
+  q('api/llm/health').then(renderLlmHealth);
 
   /* Traag en niet blokkerend: gate-analyses en scanner komen na. */
   q('api/veto-analysis').then(d => { renderVeto(d); renderGateSummary(); });
