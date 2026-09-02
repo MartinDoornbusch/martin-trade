@@ -38,11 +38,13 @@ Fee-bewust AI swing-tradingplatform (Bitvavo, paper trading). Volledige document
 | `regime_enabled` | Markt-brede regime-gate op de BTC-proxy aan/uit (default aan). |
 | `regime_binding` | `false` (default) = shadow: de gate wordt gemeten maar blokkeert niets. Pas op `true` zetten bij een positieve netto gate over ≥ 20 afgewikkelde trades. |
 | `llm_veto_binding` | Idem voor het LLM-veto. Staat bewust op `false`: de meting tot nu toe is netto negatief. |
+| `use_llm_second_opinion` | Zet de hele LLM-laag aan of uit (default `false` sinds 2026-08-06). Uit = er wordt geen enkele provider aangeroepen en `llm_calls` groeit niet. Aanzetten is een verbreding van het lopende run-venster en hoort als gedateerde regel in het register in PROJECTPLAN.md. |
+| `groq_model`, `gemini_model`, `mistral_model` | Modelnaam per provider. Enige uitzondering op de vuistregel hieronder: een aanbieder kan een model van de ene op de andere dag uitzetten (Groq deed dat met `llama-3.1-8b-instant` op 2026-08-16) en dan ligt de laag plat tot de volgende deploy. Wat die regel beschermt is de meting, en die is hier afgedekt: `llm` zit in de fingerprint van de veto-gate, dus een modelwissel opent een eigen cohorte in plaats van de oude te vervuilen. **Wissel je een model, test hem dan eerst** met de testknop op de providerkaart (tab Overzicht): dat is één echte call en de enige manier om te zien of een modelnaam nog bestaat. |
 | `live_confirm` | Fase 3. Leeg = live onmogelijk. Alleen met de exacte zin "IK BEGRIJP DAT DIT ECHT GELD IS" start de bot in live mode. Niet invullen vóór de fase 2 go/no-go. |
 | `live_max_capital_eur` | Fase 3. Hard plafond op live-inleg (10-1000, default 100), los van je rekeningbalans. |
 | `bitvavo_api_key/secret` | Voor paper volstaat een key zonder trade-rechten. |
-| `groq_api_key` | Primaire LLM (gratis, console.groq.com). Minimaal één LLM-key vereist. |
-| `gemini_api_key`, `mistral_api_key` | Optionele fallbacks. |
+| `groq_api_key` | Eerste provider in de keten (gratis, console.groq.com). Alleen nodig als `use_llm_second_opinion` aan staat; zonder key valt de provider uit de keten. |
+| `gemini_api_key`, `mistral_api_key` | Volgende in de keten (ai.google.dev, console.mistral.ai). De keten wordt op volgorde afgelopen: eerste met sleutel en resterend dagbudget beoordeelt, valt die om dan schuift hij door. Cerebras zit niet in deze app. |
 | `telegram_bot_token/chat_id` | Optioneel, trade-notificaties. |
 | `dashboard_token` | Leeg laten bij gebruik via ingress (HA regelt auth). Zetten als je poort 8000 opent. |
 | `mqtt_host` | Optioneel. Zet op `core-mosquitto` (met de Mosquitto broker add-on) en de bot verschijnt als apparaat "AI Trade Platform" met 8 sensoren in HA. Leeg = uit. |
