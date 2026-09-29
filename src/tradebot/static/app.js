@@ -105,6 +105,7 @@ $('refreshbtn').onclick = () => load();
 /* ---------- kerncijfers ---------- */
 
 function renderKpis(s, pf) {
+  lastKpiArgs = [s, pf];
   const feeShare = s.total_fees_eur && s.net_pnl_eur !== null
     ? `${fmt(Math.abs(s.total_fees_eur) / Math.max(1e-9, Math.abs(s.net_pnl_eur)) * 100, 0)}% van |netto|`
     : '';
@@ -118,11 +119,41 @@ function renderKpis(s, pf) {
     ['Slots', `${pf.open_positions}/${pf.max_positions}`, 'open posities', ''],
     ['Ongerealiseerd', eur(unreal), 'in open posities', cls(unreal)],
     ['LLM veto-rate', s.llm_veto_rate_pct == null ? '—' : pct(s.llm_veto_rate_pct),
-      `${s.llm_calls} calls`, ''],
+      `${s.llm_calls} calls in huidige cohorte` + (s.llm_calls_all
+        ? ` · ooit ${s.llm_calls_all} (${pct(s.llm_veto_rate_all_pct)})` : ''), ''],
+    ...alfaCards(lastAlfa),
   ];
   html('kpis', cards.map(([k, v, sub, c]) =>
     `<div class="kpi"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="s">${sub}</div></div>`).join(''));
   $('kpiscope').textContent = `alleen ${botMode}-modus`;
+}
+
+/* Alfa van de run: rendement min blootstelling x mandje van de verhandelde markten.
+   Zelfde maat als in de kalibratie (optimizer), zie analysis/alfa.py. Komt later
+   binnen dan de rest (candles), dus de tegels bestaan eerst met een streepje. */
+let lastAlfa = null;
+let lastKpiArgs = null;
+
+function alfaCards(a) {
+  if (!a) return [['Alfa van de run', '…', 'wordt berekend', ''], ['Markt ter vergelijking', '…', '', '']];
+  if (a.error || a.alfa_pp == null) {
+    return [['Alfa van de run', '—', esc(a.error || 'geen data'), ''], ['Markt ter vergelijking', '—', '', '']];
+  }
+  const teken = n => (n > 0 ? '+' : '') + pct(n);
+  const ref = a.reference_return_pct == null ? '' : ` · BTC ${teken(a.reference_return_pct)}`;
+  return [
+    ['Alfa van de run', (a.alfa_pp > 0 ? '+' : '') + fmt(a.alfa_pp, 1) + ' pp',
+      `run ${teken(a.run_return_pct)} · passief ${teken(a.passive_expected_pct)} bij ${pct(a.exposure_pct, 0)} belegd`,
+      cls(a.alfa_pp)],
+    ['Markt ter vergelijking', teken(a.benchmark_return_pct),
+      `${a.benchmark_markets.length} markten gelijk gewogen · max. daling ` +
+      `${pct(a.benchmark_max_decline_pct)}${ref}`, cls(a.benchmark_return_pct)],
+  ];
+}
+
+function renderAlfa(a) {
+  lastAlfa = a;
+  if (lastKpiArgs) renderKpis(...lastKpiArgs);
 }
 
 /* ---------- grafieken overzicht ---------- */
@@ -504,11 +535,17 @@ function renderLlm(llm) {
 
 /* ---------- gates ---------- */
 
+/* 95%-Wilson als interval. Het ligt niet symmetrisch rond de puntschatting, dus
+   "100% ±39,7" (tot v0.23.1) suggereerde een bovengrens boven de 100%. */
+const ci = x => x.precision_lo_pct == null ? ''
+  : `${fmt(x.precision_lo_pct, 0)} tot ${fmt(x.precision_hi_pct, 0)}%`;
+
 const gateRow = r =>
-  '<tr><th>groep</th><th class="num">n</th><th class="num">precisie</th><th class="num">vermeden</th>' +
-  '<th class="num">gemist</th><th class="num">netto gate</th></tr>' +
-  r.map(x => `<tr><td>${esc(x.group)}</td><td class="num">${x.n}</td>` +
-    `<td class="num">${pct(x.veto_precision_pct)} <span class="dim">±${fmt(x.precision_margin_pp, 1)}</span></td>` +
+  '<tr><th>groep</th><th class="num">n</th><th class="num">precisie</th><th class="num">95%-interval</th>' +
+  '<th class="num">vermeden</th><th class="num">gemist</th><th class="num">netto gate</th></tr>' +
+  r.map(x => `<tr><td>${esc(x.group)}${x.pooled_groups ? ` <span class="dim">${x.pooled_groups} groepen</span>` : ''}</td>` +
+    `<td class="num">${x.n}</td><td class="num">${pct(x.veto_precision_pct)}</td>` +
+    `<td class="num dim">${ci(x)}</td>` +
     `<td class="num pos">${eur(x.avoided_eur)}</td><td class="num neg">${eur(x.missed_eur)}</td>` +
     `<td class="num ${cls(x.net_gate_eur)}">${eur(x.net_gate_eur)}</td></tr>`).join('');
 
@@ -520,7 +557,7 @@ function summaryCards(s, title) {
   const g = s.net_gate_eur;
   return [
     ['Netto gate', eur(g), g >= 0 ? 'voegt waarde toe' : 'kost geld', cls(g)],
-    ['Precisie', pct(s.veto_precision_pct), `${s.n_avoided}/${s.n} ±${fmt(s.precision_margin_pp, 1)}pp`, ''],
+    ['Precisie', pct(s.veto_precision_pct), `${s.n_avoided}/${s.n} · 95%: ${ci(s)}`, ''],
     ['Vermeden verlies', eur(s.avoided_eur), 'gate had gelijk', 'pos'],
     ['Gemiste winst', eur(s.missed_eur), 'gate had ongelijk', 'neg'],
   ].map(([k, v, sub, c]) =>
@@ -551,14 +588,15 @@ function renderGate(elId, gate, d, opts) {
     el.innerHTML = `<div class="empty">${opts.leeg}</div>`;
     return;
   }
-  const dedup = d.n_deduped ? ` · ${d.n_deduped} herhaalde treffers samengevoegd tot de eerste per positie` : '';
+  const ruw = d.n_deduped
+    ? ` · ${d.n_events} ruwe events, herhaalde treffers samengevoegd tot de eerste per positie` : '';
   el.innerHTML =
     `<div class="gatecard">${summaryCards(d.summary, 'Netto gate')}</div>` +
     progressBar(d.n_resolved || 0, d.target_resolved || 20) +
     `<p class="hint" style="margin-top:10px">${opts.params} · positie ${eur(d.position_size_eur)} · ` +
-    `${d.n_events} events, ${d.n_unresolved} nog niet afgewikkeld${dedup}</p>` +
+    `${d.n_positions} posities, waarvan ${d.n_open_positions} nog open${ruw}</p>` +
     ((d.per_market && d.per_market.length)
-      ? '<div class="scroll"><table>' + gateRow(d.per_market) + '</table></div>' : '');
+      ? '<div class="scroll"><table class="stick1">' + gateRow(d.per_market) + '</table></div>' : '');
 }
 
 function renderVeto(d) {
@@ -588,20 +626,22 @@ function renderVeto(d) {
     `round-trip kosten ${pct(d.cost_pct, 2)} · config-scope <b>${esc(d.config_hash || 'alle')}</b></p>` +
     suspect +
     '<h2 style="font-size:12px;margin:12px 0 6px" class="dim">COUNTERFACTUAL PER VETO-REDEN</h2>' +
-    '<div class="scroll"><table>' + gateRow(d.by_reason || []) + '</table></div>' +
+    '<div class="scroll"><table class="stick1">' + gateRow(d.by_reason || []) + '</table></div>' +
     '<h2 style="font-size:12px;margin:12px 0 6px" class="dim">PER MARKT</h2>' +
-    '<div class="scroll"><table>' + gateRow(d.by_market || []) + '</table></div>';
+    '<div class="scroll"><table class="stick1">' + gateRow(d.by_market || []) + '</table></div>';
 }
 
 function renderGateSummary() {
   const rows = [
     ['LLM-veto', 'veto', gateState.veto, d => d && d.n_vetos, d => d && d.real_outcome, d => d && d.n_real_matched],
-    ['Regime-filter', 'regime', gateState.regime, d => d && d.n_events, d => d && d.summary, d => d && d.n_resolved],
-    ['Breakeven-stop', 'breakeven', gateState.breakeven, d => d && d.n_events, d => d && d.summary, d => d && d.n_resolved],
-    ['Chase-guard', 'chase', gateState.chase, d => d && d.n_events, d => d && d.summary, d => d && d.n_resolved],
+    ['Regime-filter', 'regime', gateState.regime, d => d && d.n_positions, d => d && d.summary, d => d && d.n_resolved],
+    ['Breakeven-stop', 'breakeven', gateState.breakeven, d => d && d.n_positions, d => d && d.summary, d => d && d.n_resolved],
+    ['Chase-guard', 'chase', gateState.chase, d => d && d.n_positions, d => d && d.summary, d => d && d.n_resolved],
   ];
+  const gs = $('gatesum');
+  if (gs) gs.classList.add('stick1');
   html('gatesum',
-    '<tr><th>gate</th><th>modus</th><th class="num">events</th><th class="num">afgewikkeld</th>' +
+    '<tr><th>gate</th><th>modus</th><th class="num">posities</th><th class="num">afgewikkeld</th>' +
     '<th class="num">netto gate</th><th>oordeel</th></tr>' +
     rows.map(([label, key, d, nEvents, sum, resolved]) => {
       const binding = botCfg.gates ? botCfg.gates[key] : false;
@@ -609,13 +649,17 @@ function renderGateSummary() {
       const n = nEvents(d) || 0;
       const done = resolved(d) || 0;
       const target = (d && d.target_resolved) || 20;
+      /* Beslisregels staan vooraf vastgelegd in PROJECTPLAN ("Beslisregels bij 20").
+         Go vraagt een strikt positieve netto gate; nul of minder is no-go. */
       let verdict = '<span class="dim">te weinig data</span>';
-      if (s && done >= target) {
-        verdict = s.net_gate_eur >= 0
-          ? '<span class="pos">bewezen waardevol, kandidaat om bindend te maken</span>'
-          : '<span class="neg">kost geld, kandidaat om te schrappen</span>';
+      if (key === 'regime') {
+        verdict = '<span class="muted">blootstellingsknop: niet op netto € te beslissen, zie projectplan</span>';
+      } else if (s && done >= target) {
+        verdict = s.net_gate_eur > 0
+          ? '<span class="pos">go: kandidaat om bindend te maken</span>'
+          : '<span class="neg">no-go: schrappen, niet hertunen op deze data</span>';
       } else if (s) {
-        verdict = `<span class="muted">richting ${s.net_gate_eur >= 0 ? 'positief' : 'negatief'}, nog niet hard</span>`;
+        verdict = `<span class="muted">richting ${s.net_gate_eur > 0 ? 'positief' : 'negatief'}, nog niet hard</span>`;
       }
       return `<tr><td>${label}</td>` +
         `<td><span class="tag ${binding ? 'pos' : 'warn'}">${binding ? 'bindend' : 'shadow'}</span></td>` +
@@ -679,6 +723,7 @@ async function load() {
     renderGateSummary();
   });
   q('api/scanner').then(renderScanner);
+  q('api/alfa').then(renderAlfa);
 
   $('upd').textContent = 'bijgewerkt ' + new Date().toLocaleTimeString('nl-NL');
 }

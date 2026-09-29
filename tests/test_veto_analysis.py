@@ -141,7 +141,10 @@ def test_evaluate_and_summarize_rising_market():
     assert summary["n_vetos"] == 1
     assert summary["suspect_reason_count"] == 1
     assert summary["fixed_horizon"]["n_missed"] == 1
-    assert summary["by_market"][0]["group"] == "BTC-EUR"
+    # n=1 per markt valt onder de drempel en wordt gepoold (v0.24.0); per veto-reden
+    # blijft elke rij zichtbaar.
+    assert summary["by_market"][0]["group"] == veto.POOLED_LABEL
+    assert summary["by_market"][0]["pooled_groups"] == 1
 
 
 def test_entry_before_warmup_is_skipped():

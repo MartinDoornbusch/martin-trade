@@ -238,6 +238,17 @@ td {
 tbody tr:hover td { background: #16223c66; }
 tr:last-child td { border-bottom: 0; }
 th.num, td.num { text-align: right; }
+
+/* Eerste kolom blijft staan bij horizontaal scrollen. Op een telefoon is de
+   gate-statustabel breder dan het scherm en schoof de gatenaam anders buiten
+   beeld, waardoor de rijen niet meer te herkennen waren. */
+table.stick1 th:first-child,
+table.stick1 td:first-child {
+  position: sticky; left: 0; z-index: 1;
+  background: var(--panel);
+  box-shadow: 1px 0 0 var(--line);
+}
+table.stick1 th:first-child { z-index: 2; }
 td.wrap { white-space: normal; min-width: 200px; color: var(--sub); }
 
 .pos { color: var(--pos); }

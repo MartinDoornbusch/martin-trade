@@ -40,6 +40,7 @@ from .veto import (
     interval_seconds,
     load_roundtrips_from_db,
     params_from_config,
+    pool_small_groups,
 )
 
 # Volgorde waarin de entry-gates in `engine.run_once` langskomen. Load-bearing
@@ -185,6 +186,11 @@ def analyze_shadow_gate(cfg, spec: GateSpec, *, events: list[dict] | None = None
         "n_resolved": 0,
         "n_unresolved": len(events),
         "n_deduped": 0,
+        # Unieke posities in plaats van ruwe rijen: de breakeven-stop logt elke
+        # guard-check opnieuw zolang de koers onder de drempel hangt, dus
+        # `n_events` (1332) is niet vergelijkbaar met dat van een entry-gate (13).
+        "n_positions": 0,
+        "n_open_positions": 0,
         "target_resolved": TARGET_RESOLVED,
         "position_size_eur": round(p.position_size_eur, 2),
         "config_hash": gate_hash,
@@ -206,10 +212,13 @@ def analyze_shadow_gate(cfg, spec: GateSpec, *, events: list[dict] | None = None
     matcher = _MATCHERS[spec.match]
 
     gekoppeld: list[tuple[dict, RoundTrip]] = []
+    los: list[dict] = []
     for ev in events:
         rt = matcher(_to_ms(ev["ts"]), ev["market"], roundtrips, window_ms)
         if rt is not None:
             gekoppeld.append((ev, rt))
+        else:
+            los.append(ev)
 
     if spec.dedup:
         eerste: dict[tuple[str, int], tuple[dict, RoundTrip]] = {}
@@ -219,6 +228,12 @@ def analyze_shadow_gate(cfg, spec: GateSpec, *, events: list[dict] | None = None
                 eerste[sleutel] = (ev, rt)
         base["n_deduped"] = len(gekoppeld) - len(eerste)
         gekoppeld = list(eerste.values())
+
+    # Ongekoppelde events horen bij een positie die nog openstaat. Per markt staat
+    # er hooguit één open, dus bij een ontdubbelende gate is dat ook de telling.
+    base["n_open_positions"] = (len({ev["market"] for ev in los}) if spec.dedup
+                                else len(los))
+    base["n_positions"] = len(gekoppeld) + base["n_open_positions"]
 
     waarden: list[tuple[str, float]] = []
     for ev, rt in gekoppeld:
@@ -235,10 +250,5 @@ def analyze_shadow_gate(cfg, spec: GateSpec, *, events: list[dict] | None = None
     per_markt: dict[str, list[float]] = {}
     for market, val in waarden:
         per_markt.setdefault(market, []).append(val)
-    rijen = []
-    for market, vals in sorted(per_markt.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        summ = _summ(vals, p.position_size_eur)
-        if summ:
-            rijen.append({"group": market, **summ})
-    base["per_market"] = rijen
+    base["per_market"] = pool_small_groups(per_markt, p.position_size_eur)
     return base

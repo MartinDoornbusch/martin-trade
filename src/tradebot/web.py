@@ -24,6 +24,7 @@ from sqlalchemy import select
 
 from . import __version__
 from .analysis import (
+    analyze_alfa,
     analyze_breakeven,
     analyze_chase,
     analyze_regime,
@@ -65,6 +66,8 @@ SCANNER_TTL_S = 1800  # scan is duur (ticker/24h + ~40 candle-calls); max 1x per
 _scanner_cache: dict = {"ts": 0.0, "data": None}
 VETO_TTL_S = 1800  # veto-analyse haalt candle-historie per markt; max 1x per half uur
 _veto_cache: dict = {}  # per scope ("current"/"all"): {"ts": float, "data": dict}
+ALFA_TTL_S = 3600  # alfa haalt één candle-reeks per verhandelde markt; snapshots komen per 6 uur
+_alfa_cache: dict = {"ts": 0.0, "data": None}
 
 
 def get_feed() -> BitvavoClient:
@@ -586,6 +589,12 @@ def stats():
         eq = [r.total_eur for r in s.execute(
             select(EquityRow).order_by(EquityRow.ts.asc())).scalars().all()]
         llm_rows = s.execute(select(LLMCallRow)).scalars().all()
+    # Veto-rate op de HUIDIGE veto-cohorte, net als de gate-meting. Tot v0.23.1 telde
+    # deze tegel elke call ooit, over alle configs en modellen heen: 100% op 121 calls
+    # stond naast een veto-gate met 0 events en leek een actuele meting.
+    veto_hash = gate_fingerprint(get_config(), "veto")
+    cohort = [r for r in llm_rows if r.config_hash == veto_hash]
+    cohort_vetoes = [r for r in cohort if r.verdict == "veto"]
     vetoes = [r for r in llm_rows if r.verdict == "veto"]
     return {
         "closed_trades": len(sells),
@@ -593,9 +602,31 @@ def stats():
         "net_pnl_eur": round(sum(t.pnl_eur for t in sells), 2),
         "total_fees_eur": round(fees, 2),
         "max_drawdown_pct": max_drawdown_pct(eq) if len(eq) >= 2 else None,
-        "llm_calls": len(llm_rows),
-        "llm_veto_rate_pct": round(len(vetoes) / len(llm_rows) * 100, 1) if llm_rows else None,
+        "llm_calls": len(cohort),
+        "llm_veto_rate_pct": (round(len(cohort_vetoes) / len(cohort) * 100, 1)
+                              if cohort else None),
+        "llm_calls_all": len(llm_rows),
+        "llm_veto_rate_all_pct": (round(len(vetoes) / len(llm_rows) * 100, 1)
+                                  if llm_rows else None),
     }
+
+
+@app.get("/api/alfa", dependencies=[Depends(check_token)])
+def alfa(refresh: bool = False):
+    """Alfa van de lopende run: rendement min blootstelling x rendement van een
+    gelijkgewogen mandje van de verhandelde markten. Zie `analysis/alfa.py`.
+    Haalt candles op, dus gecachet."""
+    import time as _time
+    now = _time.time()
+    if not refresh and _alfa_cache["data"] is not None and now - _alfa_cache["ts"] < ALFA_TTL_S:
+        return _alfa_cache["data"]
+    try:
+        data = analyze_alfa(get_feed(), mode=get_secrets().trading_mode)
+    except Exception as exc:  # noqa: BLE001 - analyse mag het dashboard niet breken
+        return {"error": str(exc)[:200], "alfa_pp": None}
+    data["cached_at"] = now
+    _alfa_cache.update(ts=now, data=data)
+    return data
 
 
 @app.get("/api/veto-analysis", dependencies=[Depends(check_token)])

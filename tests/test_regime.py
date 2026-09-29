@@ -3,6 +3,7 @@ shadow-uitkomstmeting. Deterministisch, zonder DB of netwerk (injectie)."""
 from types import SimpleNamespace
 
 from tradebot.analysis import regime
+from tradebot.analysis.veto import POOLED_LABEL
 from tradebot.decision import Decision, apply_chase_guard, apply_regime_filter
 
 STEP_MS = 4 * 3600 * 1000
@@ -120,7 +121,9 @@ def test_analyze_regime_net_gate():
     assert s["missed_eur"] == 12.5
     assert s["net_gate_eur"] == 12.5
     assert s["veto_precision_pct"] == 50.0
-    assert {r["group"] for r in d["per_market"]} == {"MKT-A", "MKT-B"}
+    # Twee markten met elk n=1: onder de drempel, dus één gepoolde rij (v0.24.0).
+    assert [r["group"] for r in d["per_market"]] == [POOLED_LABEL]
+    assert d["per_market"][0]["pooled_groups"] == 2
 
 
 def test_analyze_regime_unresolved_event():

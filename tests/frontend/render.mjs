@@ -15,6 +15,11 @@
  * wordt, en dat de testknop daadwerkelijk POST naar api/llm/test en de uitkomst
  * toont. Dat zijn precies de dingen die in v0.23.0 zijn toegevoegd om een stille
  * storing zichtbaar te maken, dus ze stil laten falen zou de grap zijn.
+ *
+ * Sinds v0.24.0 ook de meetweergave, met de stand van 2026-09-27 als feed: de
+ * gatenaam blijft staan bij horizontaal scrollen, precisie als interval in plaats
+ * van een halfbreedte rond de puntschatting, posities in plaats van ruwe events,
+ * de vooraf vastgelegde oordelen, de gescopede veto-rate en de alfa-tegels.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,8 +39,12 @@ const FEED = {
     run_until: '2026-09-15', candle_interval: '4h', analysis_interval_minutes: 60,
     sizing: 'bucket', bucket_eur: 250, llm: { enabled: false, binding: false },
     gates: { veto: false, regime: false, breakeven: false, chase: false, timestop: false } },
-  'api/stats': { net_pnl_eur: -12.3, closed_trades: 7, total_fees_eur: 9.1, win_rate_pct: 42.0,
-    max_drawdown_pct: 4.2, llm_calls: 0, llm_veto_rate_pct: null, mode: 'paper' },
+  'api/stats': { net_pnl_eur: 110.77, closed_trades: 44, total_fees_eur: 58.25, win_rate_pct: 52.3,
+    max_drawdown_pct: 10.7, llm_calls: 0, llm_veto_rate_pct: null,
+    llm_calls_all: 121, llm_veto_rate_all_pct: 100.0, mode: 'paper' },
+  'api/alfa': { error: null, alfa_pp: -3.4, run_return_pct: 9.12, exposure_pct: 88.0,
+    benchmark_return_pct: 14.2, passive_expected_pct: 12.5, benchmark_max_decline_pct: 11.3,
+    benchmark_markets: ['A-EUR', 'B-EUR', 'C-EUR'], reference_return_pct: 6.1 },
   'api/portfolio': { total_eur: 1000, cash_eur: 900, positions: [] },
   'api/balance': { assets: [], total_eur: 0 },
   'api/markets': [], 'api/advice': [], 'api/lists': { markets: [], watchlist: [], blocklist: [], paused: false },
@@ -51,8 +60,18 @@ const FEED = {
     ] },
   'api/scanner': { results: [] },
   'api/veto-analysis': { summary: null, per_market: [] },
-  'api/regime-analysis': { summary: null, per_market: [] },
-  'api/breakeven-analysis': { summary: null, per_market: [] },
+  'api/regime-analysis': { n_events: 13, n_deduped: 0, n_resolved: 12, n_positions: 13,
+    n_open_positions: 1, target_resolved: 20, position_size_eur: 250,
+    summary: { n: 12, n_avoided: 5, n_missed: 7, veto_precision_pct: 41.7, precision_lo_pct: 19.3,
+      precision_hi_pct: 68.0, avoided_eur: 92.47, missed_eur: 147.32, net_gate_eur: -54.86 },
+    per_market: [] },
+  'api/breakeven-analysis': { n_events: 1332, n_deduped: 1145, n_resolved: 20, n_positions: 22,
+    n_open_positions: 2, target_resolved: 20, trigger_atr: 1, offset_pct: 0, position_size_eur: 250,
+    summary: { n: 20, n_avoided: 8, n_missed: 12, veto_precision_pct: 40.0, precision_margin_pp: 20.3,
+      precision_lo_pct: 21.9, precision_hi_pct: 61.3, avoided_eur: 120, missed_eur: 230, net_gate_eur: -110 },
+    per_market: [{ group: 'overige (elk n<5)', pooled_groups: 12, n: 20, n_avoided: 8, n_missed: 12,
+      veto_precision_pct: 40.0, precision_lo_pct: 21.9, precision_hi_pct: 61.3,
+      avoided_eur: 120, missed_eur: 230, net_gate_eur: -110 }] },
   'api/chase-analysis': { summary: null, per_market: [] },
 };
 
@@ -118,6 +137,26 @@ check('testknop doet een POST naar api/llm/test',
 check('POST stuurt de providernaam mee', posts[0] && posts[0].body.provider === 'groq');
 check('testuitkomst wordt getoond',
       $('llmtestout').textContent.includes('model_decommissioned'));
+/* v0.24.0: meetweergave */
+const gs = $('gatesum');
+check('gate-status houdt de naamkolom vast bij scrollen', gs.classList.contains('stick1'));
+check('gate-status toont gatenamen', gs.textContent.includes('Breakeven-stop') &&
+      gs.textContent.includes('Regime-filter'));
+check('gate-status telt posities, geen ruwe events',
+      gs.textContent.includes('22') && !gs.textContent.includes('1332'));
+check('breakeven op 20 en negatief is no-go', gs.textContent.includes('no-go'));
+check('regime wordt niet op netto € beslist', gs.textContent.includes('blootstellingsknop'));
+const be = $('breakevenanalysis').textContent;
+check('precisie als interval', be.includes('22 tot 61%'));
+check('geen halfbreedte rond de puntschatting meer', !be.includes('±'));
+check('gepoolde rij benoemd', be.includes('overige (elk n<5)') && be.includes('12 groepen'));
+check('gatekaart telt posities en noemt de ruwe events apart',
+      be.includes('22 posities, waarvan 2 nog open') && be.includes('1332 ruwe events'));
+const kp = $('kpis').textContent;
+check('veto-rate gescopet op de huidige cohorte',
+      kp.includes('0 calls in huidige cohorte') && kp.includes('ooit 121'));
+check('alfa-tegel', kp.includes('Alfa van de run') && kp.includes('-3,4 pp'));
+check('markttegel met grootste daling', kp.includes('Markt ter vergelijking') && kp.includes('max. daling 11,3%'));
 check('geen JS-fouten', errors.length === 0, errors.join(' | '));
 
 let bad = 0;

@@ -303,6 +303,24 @@ def _wilson_half_width(k: int, n: int, z: float = 1.96) -> float:
     return round(half * 100, 1)
 
 
+def _wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float] | None:
+    """95%-Wilson-interval (in procenten) voor een aandeel k/n, als (onder, boven).
+
+    Het interval ligt NIET symmetrisch rond k/n maar rond het Wilson-midden
+    (k + z²/2) / (n + z²). De halfbreedte uit `_wilson_half_width` rond de ruwe
+    proportie tonen, zoals het dashboard tot v0.23.1 deed, levert bij 1/1 een
+    bovengrens van 139,7% en bij 0/1 een ondergrens van -39,7%. Toon daarom het
+    interval zelf. `None` bij n=0.
+    """
+    if n <= 0:
+        return None
+    p = k / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return (round(max(0.0, centre - half) * 100, 1), round(min(1.0, centre + half) * 100, 1))
+
+
 # --- kern ------------------------------------------------------------------
 
 def evaluate_vetos(vetos: list[dict], candles_by_market: dict[str, list[Candle]],
@@ -377,10 +395,14 @@ def _summ(values: list[float], pos_size: float) -> dict | None:
     missed = [x for x in values if x > 0]
     avoided_eur = -sum(avoided) / 100 * pos_size
     missed_eur = sum(missed) / 100 * pos_size
+    lo, hi = _wilson_interval(len(avoided), n)
     return {
         "n": n,
         "veto_precision_pct": round(len(avoided) / n * 100, 1),
+        # Blijft voor export en CLI; het dashboard toont het interval hieronder.
         "precision_margin_pp": _wilson_half_width(len(avoided), n),
+        "precision_lo_pct": lo,
+        "precision_hi_pct": hi,
         "n_avoided": len(avoided),
         "n_missed": len(missed),
         "avoided_eur": round(avoided_eur, 2),
@@ -388,6 +410,19 @@ def _summ(values: list[float], pos_size: float) -> dict | None:
         "net_gate_eur": round(avoided_eur - missed_eur, 2),
         "avg_net_pct": round(sum(values) / n, 3),
     }
+
+
+def _pooled_breakdown(outcomes: list[VetoOutcome], key_fn, model: str,
+                      pos_size: float) -> list[dict]:
+    """Als `_breakdown`, maar met kleine groepen gepoold (zie `pool_small_groups`).
+    Alleen voor de uitsplitsing per markt: per veto-reden blijft elke rij zichtbaar,
+    want daar is juist één afwijkende reden (Bollinger) het signaal."""
+    groups: dict[str, list[float]] = {}
+    for o in outcomes:
+        val = getattr(o, model)
+        if val is not None:
+            groups.setdefault(key_fn(o), []).append(val)
+    return pool_small_groups(groups, pos_size)
 
 
 def _breakdown(outcomes: list[VetoOutcome], key_fn, model: str,
@@ -405,6 +440,35 @@ def _breakdown(outcomes: list[VetoOutcome], key_fn, model: str,
             rows.append({"group": k, **s})
     rows.sort(key=lambda r: r["net_gate_eur"])
     return rows
+
+
+MIN_GROUP_N = 5
+POOLED_LABEL = f"overige (elk n<{MIN_GROUP_N})"
+
+
+def pool_small_groups(groups: dict[str, list[float]], pos_size: float,
+                      min_n: int = MIN_GROUP_N) -> list[dict]:
+    """Uitsplitsing per groep, met alle groepen onder `min_n` samengevoegd tot één rij.
+
+    Een rij met n=1 en "100,0%" nodigt uit tot patroonzoeken op één trade. Bij de
+    huidige steekproeven (tientallen trades over tientallen markten) zegt een
+    groep pas iets vanaf een handvol waarnemingen; daaronder is de enige eerlijke
+    weergave de gepoolde rij. Grote groepen eerst, gepoolde rij altijd onderaan.
+    """
+    rijen, klein = [], []
+    for key, vals in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        if len(vals) >= min_n:
+            summ = _summ(vals, pos_size)
+            if summ:
+                rijen.append({"group": key, **summ})
+        else:
+            klein.extend(vals)
+    if klein:
+        n_groepen = sum(1 for vals in groups.values() if len(vals) < min_n)
+        summ = _summ(klein, pos_size)
+        if summ:
+            rijen.append({"group": POOLED_LABEL, "pooled_groups": n_groepen, **summ})
+    return rijen
 
 
 def _conf_bucket(conf: float) -> str:
@@ -440,8 +504,8 @@ def summarize(outcomes: list[VetoOutcome], skipped: dict, p: VetoParams,
         "real_outcome": _summ(real_vals, p.position_size_eur),
         "by_reason": _breakdown(outcomes, lambda o: o.category, "net_fixed_pct",
                                 p.position_size_eur),
-        "by_market": _breakdown(outcomes, lambda o: o.market, "net_fixed_pct",
-                                p.position_size_eur),
+        "by_market": _pooled_breakdown(outcomes, lambda o: o.market, "net_fixed_pct",
+                                       p.position_size_eur),
         "by_confidence": _breakdown(outcomes, lambda o: _conf_bucket(o.confidence),
                                     "net_fixed_pct", p.position_size_eur),
         "suspect_reason_count": len(suspect),

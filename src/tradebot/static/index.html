@@ -88,7 +88,9 @@
     <p class="hint">Elke gate wordt apart gemeten met een eigen config-hash. <b>Shadow</b> = wordt
       gelogd maar blokkeert niets. Bindend maken mag pas bij een positieve netto gate over minstens
       20 afgewikkelde trades, en is eenrichtingsverkeer: daarna levert de gate zelf geen meetbare
-      shadow-uitkomsten meer op.</p>
+      shadow-uitkomsten meer op. Vooraf vastgelegd: nul of negatief bij 20 is <b>no-go</b>, en dan
+      gaat de gate eruit in plaats van hertuned te worden op dezelfde data. Het regime-filter is een
+      blootstellingsknop en wordt niet op deze maat beslist.</p>
     <div class="scroll"><table id="gatesum"></table></div>
   </div>
 
