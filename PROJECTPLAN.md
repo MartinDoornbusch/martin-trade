@@ -76,8 +76,10 @@ Geautomatiseerd analyse- en tradingplatform voor crypto (Bitvavo, later aandelen
 - [ ] Shadow-mode-experiment (v0.13.0): `llm_veto_binding: false` in paper, 4 weken met-veto vs. zonder-veto vergelijken; daarna prompt fixen of veto schrappen
 - [~] Tussenstand v0.14.0-tool: echte shadow-uitkomst netto negatief (-€13,23), vaste horizon +€15,57 maar dat is de zwakste horizon-definitie; 9/11 veto's blokkeren op "onderste Bollinger-band" (strategie telt dat als koopreden). Conclusie: LLM-veto op de TA-as is redundant én tegenstrijdig. Besluit: LLM-veto blijft shadow ("uit tenzij bewezen"), niet bindend maken tot een variant op de echte-uitkomst-maat ≥20 afgewikkelde trades positief scoort
 - [x] Gecodeerd regime-filter i.p.v. LLM op de TA-as (v0.15.0): BTC-proxy-trend als markt-brede risk-on/off-gate, deterministisch, gratis. Shadow default (`regime.binding: false`), eigen meting `analyze_regime` + dashboardkaart. Rationale: een LLM heeft geen edge op numerieke TA; "koop niet in een zwakke markt" is een coded regel. Go/no-go per gate identiek: bindend pas bij positieve netto gate op ≥20 afgewikkelde trades
-- [ ] Regime- vs. LLM-veto vergelijken op de echte shadow-uitkomst (beide niet-bindend); de gate die netto waarde toevoegt wordt bindend, de andere gaat eruit
+- [ ] ~~Regime- vs. LLM-veto vergelijken op de echte shadow-uitkomst (beide niet-bindend); de gate die netto waarde toevoegt wordt bindend, de andere gaat eruit~~ Vervangen door de beslisregels van 2026-09-27 hieronder: regime wordt niet op netto € beslist, en de LLM-veto wijst in elke meting 100% af, dus die vergelijking beantwoordt geen van beide vragen
 - [x] Handmatige shadow-veto tracker (`docs/shadow-veto-tracker.xlsx`): koppelt elke veto aan uitkomst (TP/SL) en fictieve P&L na fees. Diende als ontwerp; nu geautomatiseerd in de app (v0.14.0). Blijft bruikbaar voor handmatige sanity-checks
+- [x] Alfa van de LOPENDE run op het dashboard (v0.24.0, `analysis/alfa.py`, `/api/alfa`). Criterium (3) hieronder stond er al, maar werd alleen in de backtest gemeten; het overzicht toonde voor de paper-run P&L, win-rate en "sinds start", en bij 4/4 bezette slots is dat vooral bèta. Zelfde formule als de optimizer, tegen een gelijkgewogen mandje van de verhandelde markten (niet BTC: dan verschijnt alt-bèta als alfa)
+- [ ] Criterium (3) op paper: één run levert één venster met één marktrichting. De markttegel toont richting en grootste daling; een go vraagt een tweede venster met de tegengestelde richting, net als in de kalibratie
 - [x] **Go/no-go criteria vervangen (2026-08-06).** Het oude voorstel was "win-rate > 45% én netto positief na fees over 100+ trades". Dat is aantoonbaar te soepel: 45% is afgeleid van de KOSTENLOZE break-even van 40%, terwijl de werkelijke lat `p* = (m·a + c) / (m·a · (1+r))` is, dus 44 tot 52% bij een realistische ATR van 1 tot 3% van de prijs. Bij ATR 1% levert 45% nog steeds -0,35% per trade op. **Het oude criterium zou fase 3 hebben vrijgegeven bij een verliesgevende strategie.** Nieuw criterium: (1) gerealiseerde trefkans boven de ATR-gewogen `p*` van de daadwerkelijk genomen trades, niet boven een vast getal; (2) netto positief na fees over 100+ trades; (3) positieve alfa t.o.v. kopen-en-vasthouden in minstens één stijgend én één dalend venster, want zonder die laatste meet je blootstelling
 
 ### Fase 3 — Live (code gebouwd in v0.11.0, activering pas na fase 2 go)
@@ -308,10 +310,61 @@ volgende.
 | Gate | Bindend sinds | Gemeten? | Actie |
 |------|---------------|----------|-------|
 | LLM-veto | nooit (shadow) | ja, netto negatief (totaalmeting `--all`); de GESCOPEDE meting stond sinds v0.20.0 op nul door een hash-mismatch, gerepareerd in v0.23.0, cohorte begint opnieuw | blijft shadow |
-| regime | nooit (shadow) | loopt | — |
-| breakeven-stop | nooit (shadow) | loopt sinds v0.20.0 | — |
-| chase-guard | nooit (shadow) | loopt sinds v0.20.0 | — |
+| regime | nooit (shadow) | loopt; 2026-09-27: 12/20, netto -€54,86 | niet op netto € te beslissen, zie beslisregels |
+| breakeven-stop | nooit (shadow) | loopt sinds v0.20.0; 2026-09-27: 14/20, netto -€76,63 | uitlopen tot 20, dan schrappen |
+| chase-guard | nooit (shadow) | loopt sinds v0.20.0; 2026-09-27: 5/20, netto -€30,94 | te vroeg, regel 1 van de beslisregels |
 | **time-stop** | v0.18.0 t/m 2026-08-06 | ja, sinds 2026-08-06: **netto negatief** | **teruggezet naar shadow** (`exits.time_stop_binding: false`) |
+
+### Beslisregels bij 20 (vooraf vastgelegd 2026-09-27)
+
+De regel "bindend pas bij een positieve netto gate over minstens 20 afgewikkelde trades" had
+alleen een go-kant. Wat er gebeurt als een gate op 20 negatief staat, stond nergens, en dat is
+precies het moment waarop je gaat hertunen tot er iets positiefs uitkomt. Daarom nu vooraf, vóór
+de uitkomst binnen is.
+
+**Stand bij vastleggen** (dashboard 2026-09-27, v0.23.1, huidige cohortes):
+
+| Gate | Afgewikkeld | Netto gate | Precisie (95%) | Nodig voor positief bij 20 |
+|------|-------------|------------|----------------|----------------------------|
+| LLM-veto | 0/20 (laag staat uit) | geen | geen | n.v.t. |
+| regime | 12/20 | -€54,86 | 5/12, 19 tot 68% | ≥ 6 van de volgende 8 raak, kans ~6% |
+| breakeven-stop | 14/20 | -€76,63 | 6/14, 21 tot 67% | 6 van de volgende 6 raak, kans < 1% |
+| chase-guard | 5/20 | -€30,94 | 2/5, 12 tot 77% | te vroeg |
+
+Kansen grof: gemiddeld bedrag per treffer (vermeden ~€18, gemist ~€21 tot €23) en de gemeten
+precisie. Alle drie de intervallen omvatten 50%. Ter vergelijking over dezelfde run: 44 gesloten
+trades, netto +€110,77, fees €58,25, win-rate 52,3% (95%: 38 tot 66%), 4/4 slots bezet.
+
+1. **Go vraagt een netto gate strikt boven nul bij minstens 20 afgewikkelde trades. Nul of minder
+   is no-go, en no-go betekent schrappen**: de gate gaat uit code en config. Geen hertuning op
+   dezelfde data. Wil je een variant (bijvoorbeeld een breakeven-trigger van 2× ATR), dan kies je
+   die in de backtester en start je hem als nieuwe cohorte met een eigen hash, met een regel in het
+   gate-flipregister.
+2. **Het regime-filter valt buiten regel 1.** De kalibratie liet zien dat het een blootstellingsknop
+   is, geen timinginstrument. Netto € over 20 trades meet dan vooral de marktrichting van dat venster:
+   in een stijgend venster verliest elke blootstellingsverlager, in een dalend wint hij. Dat is
+   dezelfde valkuil als de ingetrokken 5/5-conclusie van 2026-08-06. Regime wordt beslist als
+   risicobeleid, op rendement tegen drawdown over een volledige cyclus in de backtester. Tot dat
+   besluit blijft hij shadow en loopt de meting informatief door.
+3. **Breakeven-stop: uitlopen tot 20 voor dit register, daarna schrappen.** Backtest en live wijzen
+   dezelfde kant op: de best overlevende kalibratieconfig had `be:uit`, en live snijdt hij meer winst
+   weg (8 van 14) dan hij verlies voorkomt (6 van 14). Trigger 1× ATR ligt binnen de normale ruis.
+4. **LLM-veto: eerst de health-check, dan het besluit.** Elke meting tot nu toe wees dezelfde kant op
+   (7/7 in juli, veto's op de onderste Bollinger-band in augustus, 100% op 121 calls in totaal). Een
+   classifier die alles afwijst heeft geen onderscheidend vermogen, en bindend maken staat gelijk aan
+   de bot uitzetten. Daar zijn geen 20 trades voor nodig. De tegel op het overzicht telde tot v0.23.1
+   elke call ooit; sinds v0.24.0 toont hij de huidige cohorte, zodat "0 calls" en "100% op 121" niet
+   meer door elkaar lopen.
+
+**Twee bekende meetgrenzen, benoemd en niet opgelost:**
+
+- **Substitutie.** Met alle slots bezet is kapitaal de bindende factor. Een eerdere breakeven-exit of
+  een door chase-guard overgeslagen buy maakt €250 vrij die auto-fill elders inzet; de shadow-meting
+  telt dat als nul. Voor regime klopt nul ongeveer (dan blokkeert hij alle entries), voor breakeven en
+  chase niet.
+- **Geen onafhankelijke metingen.** Dezelfde paar trades (DRIFT, LINK, COTI, ETH) komen in meerdere
+  gates terug en drie tot vier trades bepalen per gate het grootste deel van de gemiste winst. De
+  netto's zijn dus niet optelbaar, en het effect van twee gates tegelijk is niet de som.
 
 ### Register van run-vensters
 
@@ -320,6 +373,13 @@ Elke run heeft een doel én een einddatum, en allebei reizen mee met het bewijs 
 | Van | Tot | Doel | Scope | Verlengd? |
 |-----|-----|------|-------|-----------|
 | 2026-08-06 | **2026-09-15** | infrastructuurtest | paper-handel aan, **LLM uit** | — |
+
+**Open besluit (vastgesteld 2026-09-27): het venster is op 2026-09-15 verlopen zonder geregistreerde
+verlenging.** De run draait door, en dat is precies de situatie waarvoor dit register bestaat. Er
+hoort een regel bij: verlengen tot een datum met reden (de beslisregels hierboven hebben voor regime
+en breakeven nog 6 tot 8 afgewikkelde trades nodig), of stoppen. Tempo ter onderbouwing: op
+2026-09-02 telde de regime-cohorte 2 events over vier weken, op 2026-09-27 13; de schatting "twintig
+afgewikkelde trades is ruwweg een jaar" hieronder klopt voor regime en breakeven niet meer.
 
 **Openstaande scope-wijziging (2026-09-02).** De LLM-laag is in v0.23.0 gerepareerd en meetbaar
 gemaakt, en het voornemen is om de veto-cohorte opnieuw te laten lopen. Dat is een VERBREDING van
@@ -397,6 +457,7 @@ Les: het aantal manieren om een positie te openen moet kleiner zijn dan het aant
 
 | Datum | Wijziging | Getest |
 |-------|-----------|--------|
+| 2026-09-27 | v0.24.0, meetweergave en alfa van de run, na een review van de gate-status. (1) **Alfa op het overzicht** (`analysis/alfa.py`, `/api/alfa`, gecachet 1 uur): rendement min gemiddelde blootstelling × rendement van een gelijkgewogen mandje van alle verhandelde markten, dezelfde formule als de optimizer. BTC staat er als referentie naast, niet als maatstaf, anders verschijnt alt-bèta als alfa. Plus een markttegel met richting en grootste daling, omdat één eenzijdig venster weinig bewijst. (2) **Precisie als interval**: het dashboard toonde de Wilson-halfbreedte rond de ruwe proportie, dus 1/1 werd "100,0% ±39,7" met een bovengrens van 139,7%. Nu het interval zelf (`precision_lo_pct`, `precision_hi_pct`); `precision_margin_pp` blijft voor export en CLI. (3) **Posities in plaats van ruwe rijen**: de breakeven-stop logt elke guard-check opnieuw, dus "1332 events" stond naast "13" bij regime. Nieuw `n_positions` en `n_open_positions`. (4) **Kleine groepen gepoold**: per markt alleen groepen vanaf n=5, de rest in één rij "overige (elk n<5)"; per veto-reden blijft elke rij zichtbaar. (5) **Gatenaam blijft staan** bij horizontaal scrollen: op een telefoon schoof de naamkolom buiten beeld. (6) **LLM-veto-tegel gescopet** op de huidige veto-cohorte, met het totaal ooit als subregel. (7) **Beslisregels bij 20 vooraf vastgelegd**, inclusief een no-go-kant; het oordeel in de gate-status volgt ze (go vraagt nu strikt > 0) en zegt bij regime dat die niet op netto € beslist wordt. Verlopen run-venster als open besluit gemarkeerd. Geen wijziging aan strategie, gates, hashes of meetscoping | 322 tests (14 nieuw), ruff, bandit -ll exit 0, `node --check`, jsdom-rendertest 27/27 (12 nieuw, feed met de stand van 2026-09-27) |
 | 2026-09-02 | v0.23.1, cache-busting op de front-end. Direct na de v0.23.0-update toonde het dashboard de nieuwe versie in de kop maar niet de nieuwe providerkaart: de backend was nieuw, de front-end niet. `StaticFiles` stuurt geen `max-age`, dus de browser cachet `app.js` en `index.html` heuristisch en een add-on-update wisselt wel de backend maar niet de assets. Asset-URL's krijgen nu een `?v=` uit de mtimes van de vier front-end-bestanden (bewust niet uit `__version__`, dan bust hij ook bij een wijziging zonder versiebump), en de pagina zelf gaat met `Cache-Control: no-store` de deur uit. Dit stond elke dashboardwijziging in de weg, niet alleen deze | 308 tests (2 nieuw), ruff, bandit -ll exit 0, jsdom-rendertest 15/15 |
 | 2026-09-02 | v0.23.0, LLM-laag: van onzichtbaar naar meetbaar. Aanleiding was de vraag waarom de second opinions leeg bleven; het antwoord was het besluit van 2026-08-06 (`use_llm_second_opinion: false`), maar het zoeken legde twee echte defecten bloot. (1) **Hash-mismatch**: `llm.py` schreef de globale `config_fingerprint` terwijl de analyzer op `gate_fingerprint(cfg, "veto")` filtert, dus de gescopede veto-meting gaf structureel nul rijen, ongeacht of de LLM draaide. Gelijkgetrokken, plus een AST-test die kale `config_fingerprint`-aanroepen buiten `config.py` verbiedt: die vangt de klasse en niet alleen dit geval. (2) **Stil falen**: een mislukte call deed niets meer dan een `log.warning`, en `llm_calls` bevat alleen geslaagde calls, dus een dode provider was niet te onderscheiden van een stille markt. Nieuwe tabel `llm_attempts` (elke poging, met HTTP-status en de body van het antwoord, want een uitgezet model meldt zich in de body), `/api/llm/health` met de keten, en een providerkaart plus een banner die zegt dat de laag uit staat. Ook: een mislukte call verbruikte geen dagbudget, waardoor een dode provider bij elke kandidaat opnieuw als eerste werd geprobeerd. Verder modelnaam en `use_llm_second_opinion` als add-on-optie met een testknop (`POST /api/llm/test`, echte call langs het productiepad, schrijft geen `llm_calls`), en `llm` als eigen fingerprint-sectie van de veto-gate zodat een modelwissel een eigen cohorte opent. Groq-model naar `openai/gpt-oss-20b`: `llama-3.1-8b-instant` is op 2026-08-16 uitgezet voor free en developer tier | 306 tests (15 nieuw), ruff, bandit exit 0, `node --check`, en een jsdom-rendertest van 15 checks op de providerkaart, de foutweergave en de testknop |
 | 2026-08-07 | v0.22.0 dashboard herbouwd. Front-end uit `web.py` gehaald naar `src/tradebot/static/` (index.html, app.css, app.js, charts.js, gevendorde uPlot 1.6.32); `web.py` is puur API en 865 → 552 regels. Layout van vijftien secties onder elkaar in een kolom van 1200 px naar vijf tabbladen (Overzicht, Markten & scanner, Posities & handel, Meetgates, Uitleg) op een 12-koloms grid over de volle vensterbreedte. Grafieken vervangen: candlesticks met EMA-overlay en SL/TP/entry-niveaus in plaats van een lijn van slotkoersen (`/api/chart` levert nu OHLC), equity met cashlijn, een kostenlek-grafiek die cumulatieve fees tegen cumulatief netto zet, en P&L per gesloten trade als staafgrafiek met payoff-ratio ernaast. Statusbalk bovenaan toont `run_purpose` en `run_until` uit `/api/mode`: het dashboard opende met P&L, win-rate en drawdown en die drie lezen als strategievalidatie, terwijl de lopende run een infrastructuurtest is. Nieuw: gate-statustabel die de vier shadow-gates naast elkaar zet met voortgang naar de drempel van 20, en een uitlegtabblad met de beslisketen in zes stappen plus 26 begrippen. Bewust géén wijziging aan strategie, gates of meetscoping | 291 tests (5 nieuw), ruff, plus een headless rendertest met jsdom tegen een gemockte feed: 27 controles op DOM en tabbladen, 0 JS-fouten, en een canvas-spion die bevestigt dat de candle-hook 140 candles binnen het plotvlak tekent en de SL/TP/entry-lijnen bij een open positie plaatst |
