@@ -71,6 +71,8 @@ class FakeBitvavo:
         self.timeout_on_create: set[str] = set()
         self.timeout_registers = True
         self.lookup_fails = False
+        self.lookup_errors: list[Exception] = []    # FIFO: volgende get_order-calls falen
+        self.delayed: list[dict] = []               # verzonden maar nog niet geregistreerd
         self.market_info_calls = 0
 
     # --- helpers -------------------------------------------------------------
@@ -101,9 +103,14 @@ class FakeBitvavo:
         fee = quote * fee_rate
         base, eur = self._bal(info.base), self._bal("EUR")
         if o["side"] == "buy":
-            reserved = o.pop("_reserved", Decimal(0))
-            eur["inOrder"] -= reserved
-            eur["available"] += reserved - quote - fee
+            # Alleen het gevulde deel van de reservering vrijgeven; de rest blijft
+            # vastzitten zolang de order loopt, net als op de echte exchange.
+            reserved = o.get("_reserved", Decimal(0))
+            part = min(reserved, reserved * amount / (Decimal(o["amount"])
+                                                       - Decimal(o["filledAmount"])))
+            o["_reserved"] = reserved - part
+            eur["inOrder"] -= part
+            eur["available"] += part - quote - fee
             base["available"] += amount
         else:
             src = "inOrder" if o["_reserved_base"] else "available"
@@ -184,6 +191,9 @@ class FakeBitvavo:
         if timeout:
             self.timeout_on_create.discard(otype)      # eenmalig
             if not self.timeout_registers:
+                # Kan nog binnenkomen: `register_delayed` laat hem alsnog landen,
+                # zoals bij een 503 errorCode 109 ("may or may not have succeeded").
+                self.delayed.append(dict(body))
                 raise httpx.ReadTimeout("timeout voor registratie")
         o = {"orderId": str(uuid.uuid4()), "clientOrderId": cid, "market": market,
              "side": side, "orderType": otype, "amount": qty, "amountRemaining": qty,
@@ -219,10 +229,18 @@ class FakeBitvavo:
             raise httpx.ReadTimeout("timeout na registratie")
         return self._view(o)
 
+    def register_delayed(self) -> None:
+        """Laat orders die 'onderweg' waren alsnog op de exchange landen."""
+        bodies, self.delayed = self.delayed, []
+        for body in bodies:
+            self.create_order(body)
+
     def get_order(self, market: str, order_id: str | None = None,
                   client_order_id: str | None = None) -> dict:
         if self.lookup_fails:
             raise httpx.ReadTimeout("lookup timeout")
+        if self.lookup_errors:
+            raise self.lookup_errors.pop(0)
         o = self.orders.get(client_order_id) if client_order_id else next(
             (x for x in self.orders.values() if x["orderId"] == order_id), None)
         if o is None:

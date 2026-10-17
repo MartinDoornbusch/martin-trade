@@ -86,9 +86,20 @@ class BitvavoApiError(httpx.HTTPStatusError):
 
     @property
     def definitive(self) -> bool:
-        """4xx anders dan rate limit: de order is zeker NIET geplaatst."""
+        """Op een PLAATSING: 4xx anders dan rate limit betekent zeker niet geplaatst.
+
+        Niet gebruiken op een OPVRAAG. Een 403 (errorCode 304, buiten het
+        toegangsvenster) of een 404 vlak na een timeout zegt niets over het
+        bestaan van de order; zie `not_found` en `LiveBroker._confirm_missing`.
+        """
         status = self.response.status_code
         return 400 <= status < 500 and status != 429
+
+    @property
+    def not_found(self) -> bool:
+        """errorCode 240: de order bestaat niet of is niet meer actief (HTTP 404)."""
+        return self.error_code == 240 or (self.response.status_code == 404
+                                          and self.error_code == 0)
 
 
 # Bitvavo-statussen waarna een order niet meer verandert.

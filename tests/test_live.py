@@ -12,7 +12,7 @@
 | N3 afronding op quantityDecimals en tickSize | `test_afronding_volgt_marktregels` |
 | N3 onder het marktminimum | `test_entry_onder_minimum_gaat_niet_de_deur_uit` |
 | N4 timeout na plaatsing: opvragen, niet opnieuw plaatsen | `test_timeout_na_plaatsing_vindt_order_terug` |
-| N4 timeout voor plaatsing: zeker niet geplaatst | `test_timeout_voor_plaatsing_is_afgewezen` |
+| N4 timeout voor plaatsing: onbekend tot bevestigd | `test_timeout_voor_plaatsing_blijft_onbekend_tot_bevestigd` |
 | N8 cash zonder EUR in open orders | `test_cash_telt_inorder_niet_mee` |
 """
 import threading
@@ -253,12 +253,18 @@ def test_timeout_na_plaatsing_vindt_order_terug(memory_db, ex):
     assert len(b.open_positions()) == 1
 
 
-def test_timeout_voor_plaatsing_is_afgewezen(memory_db, ex):
+def test_timeout_voor_plaatsing_blijft_onbekend_tot_bevestigd(memory_db, ex):
+    """Een 404 vlak na een timeout bewijst niets (review v0.25.0, invariant 1)."""
     ex.timeout_on_create = {"limit"}
     ex.timeout_registers = False
     b = broker_for(ex)
-    with pytest.raises(OrderRejectedError):
+    with pytest.raises(OrderStateUnknownError):
         b.buy("BTC-EUR", 50.0, 48000.0, 53000.0, "test")
+    assert orders("entry")[0].status == "unknown"
+    ex.delayed.clear()                                   # hij komt echt nooit aan
+    b.ghost_age_s = 0.0
+    problemen, notities = b.reconcile()
+    assert problemen == [] and any("nooit geplaatst" in n for n in notities)
     assert orders("entry")[0].status == "rejected"
     assert b.open_positions() == []
 
