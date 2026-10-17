@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import timezone
 
 from .exchange import Candle
 from .indicators import atr, bollinger, ema, macd, rsi
@@ -124,6 +125,18 @@ def build_snapshots(market: str, candles: list[Candle],
             change_24c_pct=(closes[i] / closes[i - 6] - 1) * 100 if i >= 6 else 0.0,
         ))
     return out
+
+
+def _epoch_ms(dt) -> int:
+    """Datetime naar unix-ms, naïef gelezen als UTC (nooit als lokale tijd).
+
+    Een naïeve `.timestamp()` rekent in de tijdzone van het proces; onder
+    `TZ=Europe/Amsterdam` scheelt dat twee uur (N5, v0.25.0). De database levert
+    sinds v0.25.0 altijd bewuste UTC, dit is het vangnet voor andere aanroepers.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
 
 
 def chase_too_far(signal_price: float, live_price: float, atr_value: float,
@@ -279,7 +292,7 @@ def breakeven_stop_hit(candles: list, opened_at, entry_price: float, current_pri
     """
     if entry_price <= 0 or atr_value <= 0 or trigger_atr <= 0:
         return False, ""
-    opened_ms = int(opened_at.timestamp() * 1000)
+    opened_ms = _epoch_ms(opened_at)
     highs = [c.high for c in candles if c.ts > opened_ms]
     if not highs:
         return False, ""
@@ -313,7 +326,7 @@ def time_stop_hit(candles: list, opened_at, entry_price: float, current_price: f
     """
     if n_candles <= 0 or entry_price <= 0:
         return False, ""
-    opened_ms = int(opened_at.timestamp() * 1000)
+    opened_ms = _epoch_ms(opened_at)
     elapsed = sum(1 for c in drop_unclosed(candles, now_ms) if c.ts > opened_ms)
     if elapsed < n_candles:
         return False, ""

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
+from . import __version__
 from .config import SHADOW_GATES, AppConfig, Secrets, gate_fingerprint
 from .db import KVRow, SignalRow, session
 from .decision import (
@@ -473,6 +474,11 @@ class TradingCycle:
             tot = str(meta.get("run_until", "")).strip()
             if tot:
                 details["run_until"] = tot
+            # Codeversie mee in het bewijsstuk: een codefix die events anders laat
+            # ontstaan (v0.25.0, N5: tijdzone van `opened_at`) verandert geen
+            # config-hash, dus zonder dit veld is de breuk in de meetreeks
+            # achteraf alleen nog op een geschatte update-datum te leggen.
+            details["versie"] = __version__
         with session() as s:
             s.add(SignalRow(market=market, action=action, decision=decision,
                             score=score, reason=reason[:1000], details=details,

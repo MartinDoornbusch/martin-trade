@@ -15,6 +15,7 @@ from sqlalchemy import (
     event,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.types import TypeDecorator
 
 
 class Base(DeclarativeBase):
@@ -25,10 +26,46 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_utc(dt: datetime | None) -> datetime | None:
+    """Naïef wordt UTC, bewust wordt naar UTC omgerekend. None blijft None."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+class UTCDateTime(TypeDecorator):
+    """DateTime die er altijd als tijdzonebewuste UTC uitkomt (N5, v0.25.0).
+
+    SQLite bewaart geen tijdzone: `DateTime(timezone=True)` levert bij het lezen
+    een naïeve datetime op. Elke `.timestamp()` daarop rekent in de LOKALE tijd
+    van het proces. HA Supervisor zet `TZ` in add-on-containers, dus onder
+    Europe/Amsterdam schoof `opened_at` twee uur naar voren: de breakeven-stop
+    bewapende op een piek van vóór de entry en de time-stop telde een candle te
+    veel. Reproductie: `tests/test_tijdzone.py`.
+
+    Repareren op de plek waar de waarde de database verlaat, niet bij elke
+    lezer: er waren er minstens vier (strategy twee keer, veto, alfa) en een
+    vijfde wordt anders vergeten. Schrijven gaat altijd als UTC, zodat ook een
+    bewuste datetime in een andere zone dezelfde wandkloktijd in de tabel krijgt
+    als alle bestaande rijen (die kwamen allemaal uit `utcnow`).
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return as_utc(value)
+
+    def process_result_value(self, value, dialect):
+        return as_utc(value)
+
+
 class TradeRow(Base):
     __tablename__ = "trades"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     market: Mapped[str] = mapped_column(String(20))
     side: Mapped[str] = mapped_column(String(4))
     amount: Mapped[float] = mapped_column(Float)
@@ -49,13 +86,13 @@ class PositionRow(Base):
     stop_loss: Mapped[float] = mapped_column(Float)
     take_profit: Mapped[float] = mapped_column(Float)
     fees_paid_eur: Mapped[float] = mapped_column(Float, default=0.0)
-    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    opened_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class SignalRow(Base):
     __tablename__ = "signals"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     market: Mapped[str] = mapped_column(String(20))
     # Nu toevoegen en niet later: zolang er alleen paper draait backfilt DEFAULT
     # 'paper' toevallig correct. Voeg je de kolom pas toe nadat er live gedraaid
@@ -75,7 +112,7 @@ class SignalRow(Base):
 class LLMCallRow(Base):
     __tablename__ = "llm_calls"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     provider: Mapped[str] = mapped_column(String(20))
     model: Mapped[str] = mapped_column(String(60))
     market: Mapped[str] = mapped_column(String(20), default="")
@@ -103,7 +140,7 @@ class LLMAttemptRow(Base):
 
     __tablename__ = "llm_attempts"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     provider: Mapped[str] = mapped_column(String(20))
     model: Mapped[str] = mapped_column(String(60), default="")
     purpose: Mapped[str] = mapped_column(String(10), default="veto")  # veto | test
@@ -116,7 +153,7 @@ class LLMAttemptRow(Base):
 class EquityRow(Base):
     __tablename__ = "equity"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     total_eur: Mapped[float] = mapped_column(Float)
     cash_eur: Mapped[float] = mapped_column(Float)
     fees_cumulative_eur: Mapped[float] = mapped_column(Float, default=0.0)
