@@ -12,6 +12,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 import httpx
 
@@ -62,6 +63,105 @@ def candle_window(candles: list[Candle]) -> str:
     return f"{fmt(candles[0].ts)} t/m {fmt(candles[-1].ts)} UTC"
 
 
+class BitvavoApiError(httpx.HTTPStatusError):
+    """HTTP-fout van Bitvavo met de `errorCode` en tekst uit de body.
+
+    `raise_for_status` gooide alleen de statusregel weg; de reden (error 429
+    "too many decimal places", 216 "insufficient balance") stond in de body.
+    Subklasse van `HTTPStatusError`, dus bestaande `except httpx.HTTPError`-paden
+    blijven werken.
+    """
+
+    def __init__(self, response: httpx.Response):
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        self.error_code = int(body.get("errorCode", 0) or 0) if isinstance(body, dict) else 0
+        self.error_text = str(body.get("error", "")) if isinstance(body, dict) else ""
+        super().__init__(
+            f"Bitvavo {response.status_code} errorCode {self.error_code}: "
+            f"{self.error_text or response.text[:200]}",
+            request=response.request, response=response)
+
+    @property
+    def definitive(self) -> bool:
+        """4xx anders dan rate limit: de order is zeker NIET geplaatst."""
+        status = self.response.status_code
+        return 400 <= status < 500 and status != 429
+
+
+# Bitvavo-statussen waarna een order niet meer verandert.
+FINAL_STATUSES = frozenset({"filled", "canceled", "cancelled", "expired", "rejected"})
+
+
+@dataclass(frozen=True)
+class MarketInfo:
+    """Handelsregels van één markt uit `GET /markets` (N3, v0.25.0).
+
+    `quantity_decimals` en `tick_size` zijn de huidige velden; `price_precision`
+    (significante cijfers) is deprecated maar dient als terugval als `tickSize`
+    ontbreekt.
+    """
+
+    market: str
+    status: str
+    base: str
+    quote: str
+    quantity_decimals: int
+    tick_size: Decimal | None
+    price_precision: int
+    min_base: Decimal
+    min_quote: Decimal
+
+    @classmethod
+    def from_api(cls, raw: dict) -> MarketInfo:
+        tick = raw.get("tickSize")
+        return cls(
+            market=str(raw["market"]), status=str(raw.get("status", "")),
+            base=str(raw.get("base", "")), quote=str(raw.get("quote", "")),
+            quantity_decimals=int(raw.get("quantityDecimals", 8)),
+            tick_size=Decimal(str(tick)) if tick not in (None, "", "0") else None,
+            price_precision=int(raw.get("pricePrecision", 5) or 5),
+            min_base=Decimal(str(raw.get("minOrderInBaseAsset", "0") or "0")),
+            min_quote=Decimal(str(raw.get("minOrderInQuoteAsset", "0") or "0")),
+        )
+
+    def amount(self, value: float) -> Decimal:
+        """Hoeveelheid naar BENEDEN op het toegestane aantal decimalen: nooit meer
+        verkopen dan er staat en nooit meer kopen dan het budget."""
+        step = Decimal(1).scaleb(-self.quantity_decimals)
+        return Decimal(str(value)).quantize(step, rounding=ROUND_FLOOR)
+
+    def price(self, value: float, up: bool = False) -> Decimal:
+        """Prijs op een veelvoud van de tick size (of op significante cijfers als
+        terugval). Standaard naar beneden: een postOnly-bied blijft dan maker."""
+        rounding = ROUND_CEILING if up else ROUND_FLOOR
+        d = Decimal(str(value))
+        if self.tick_size:
+            return ((d / self.tick_size).to_integral_value(rounding=rounding)
+                    * self.tick_size).normalize()
+        if d == 0:
+            return d
+        exp = d.adjusted() - self.price_precision + 1
+        return d.quantize(Decimal(1).scaleb(exp), rounding=rounding).normalize()
+
+    def below_minimum(self, amount: Decimal, price: float) -> str | None:
+        """Reden als de order onder het minimum van de markt valt, anders None."""
+        if amount <= 0:
+            return "hoeveelheid is nul na afronding"
+        if amount < self.min_base:
+            return f"{amount} < minimum {self.min_base} {self.base}"
+        if amount * Decimal(str(price)) < self.min_quote:
+            return f"waarde < minimum {self.min_quote} {self.quote}"
+        return None
+
+
+def fmt_decimal(d: Decimal) -> str:
+    """Decimal als string zonder exponent (Bitvavo weigert '1E-7')."""
+    return format(d, "f")
+
+
 @dataclass
 class OrderResult:
     order_id: str
@@ -107,6 +207,7 @@ class BitvavoClient(ExchangeAdapter):
         self._fallback_fees = (fallback_maker, fallback_taker)
         self._client = httpx.Client(base_url=BITVAVO_URL, timeout=15)
         self._rate_remaining = 1000
+        self._markets: dict[str, tuple[float, MarketInfo]] = {}
 
     # --- internals -------------------------------------------------------
     def _sign(self, ts: str, method: str, path: str, body: str) -> str:
@@ -132,7 +233,8 @@ class BitvavoClient(ExchangeAdapter):
             **headers, **({"content-type": "application/json"} if body_str else {})})
         self._rate_remaining = int(resp.headers.get("bitvavo-ratelimit-remaining",
                                                     self._rate_remaining))
-        resp.raise_for_status()
+        if resp.is_error:
+            raise BitvavoApiError(resp)
         return resp.json()
 
     # --- public data ------------------------------------------------------
@@ -184,23 +286,66 @@ class BitvavoClient(ExchangeAdapter):
         """Beste bied/laat: {'bid': str, 'ask': str, ...}."""
         return self._request("GET", f"/ticker/book?market={market}")
 
+    MARKET_INFO_TTL_S = 6 * 3600
+
+    def get_market_info(self, market: str) -> MarketInfo:
+        """Handelsregels van één markt, zes uur gecachet (weight 1 per call)."""
+        hit = self._markets.get(market)
+        if hit and time.monotonic() - hit[0] < self.MARKET_INFO_TTL_S:
+            return hit[1]
+        raw = self._request("GET", f"/markets?market={market}")
+        if isinstance(raw, list):
+            raw = raw[0]
+        info = MarketInfo.from_api(raw)
+        self._markets[market] = (time.monotonic(), info)
+        return info
+
+    def create_order(self, body: dict) -> dict:
+        """POST /order met `operatorId`. De aanroeper zet `clientOrderId` (een
+        UUID), zodat een order na een timeout terug te vinden is (N4)."""
+        return self._request("POST", "/order", body={**body, "operatorId": OPERATOR_ID},
+                             auth=True)
+
     def place_limit_order(self, market: str, side: str, amount: str, price: str,
-                          post_only: bool = True) -> dict:
+                          post_only: bool = True, client_order_id: str | None = None) -> dict:
         body = {"market": market, "side": side, "orderType": "limit",
-                "amount": amount, "price": price, "postOnly": post_only,
-                "operatorId": OPERATOR_ID}
-        return self._request("POST", "/order", body=body, auth=True)
+                "amount": amount, "price": price, "postOnly": post_only}
+        if client_order_id:
+            body["clientOrderId"] = client_order_id
+        return self.create_order(body)
 
-    def get_order(self, market: str, order_id: str) -> dict:
-        return self._request("GET", f"/order?market={market}&orderId={order_id}", auth=True)
+    @staticmethod
+    def _order_query(market: str, order_id: str | None, client_order_id: str | None) -> str:
+        if client_order_id:
+            return f"market={market}&clientOrderId={client_order_id}"
+        if order_id:
+            return f"market={market}&orderId={order_id}"
+        raise ValueError("orderId of clientOrderId vereist")
 
-    def cancel_order(self, market: str, order_id: str) -> dict:
-        return self._request("DELETE", f"/order?market={market}&orderId={order_id}", auth=True)
+    def get_order(self, market: str, order_id: str | None = None,
+                  client_order_id: str | None = None) -> dict:
+        q = self._order_query(market, order_id, client_order_id)
+        return self._request("GET", f"/order?{q}", auth=True)
+
+    def cancel_order(self, market: str, order_id: str | None = None,
+                     client_order_id: str | None = None) -> dict:
+        # operatorId is verplicht op cancel; tot v0.25.0 ontbrak hij hier, dus
+        # elke annulering van een live entry zou door Bitvavo geweigerd zijn.
+        q = self._order_query(market, order_id, client_order_id)
+        return self._request("DELETE", f"/order?{q}&operatorId={OPERATOR_ID}", auth=True)
+
+    def get_open_orders(self, market: str | None = None) -> list[dict]:
+        path = "/ordersOpen" + (f"?market={market}" if market else "")
+        return self._request("GET", path, auth=True)
 
     # --- authenticated -----------------------------------------------------
-    def get_balances(self) -> dict[str, float]:
+    def get_balances(self, available_only: bool = False) -> dict[str, float]:
+        """Saldo per asset. Standaard available + inOrder (wat je bezit);
+        `available_only` voor wat je nu kunt uitgeven (N8: EUR in een open
+        buy-order is wel van jou maar niet besteedbaar)."""
         raw = self._request("GET", "/balance", auth=True)
-        # available + inOrder: anders zie je alleen wat niet in een open order zit
+        if available_only:
+            return {b["symbol"]: float(b["available"]) for b in raw}
         return {b["symbol"]: float(b["available"]) + float(b.get("inOrder", 0)) for b in raw}
 
     def get_fees_pct(self) -> tuple[float, float]:
@@ -213,17 +358,18 @@ class BitvavoClient(ExchangeAdapter):
             return self._fallback_fees
 
     def place_market_order(self, market: str, side: str, amount_quote: float) -> OrderResult:
+        """Legacy-pad voor de ExchangeAdapter-interface. `LiveBroker` gebruikt
+        sinds v0.25.0 `create_order` met afronding en clientOrderId."""
         body = {
             "market": market,
             "side": side,
             "orderType": "market",
-            "operatorId": OPERATOR_ID,
         }
         if side == "buy":
             body["amountQuote"] = f"{amount_quote:.2f}"
         else:
             body["amount"] = f"{amount_quote:.8f}"  # for sell: base amount
-        raw = self._request("POST", "/order", body=body, auth=True)
+        raw = self.create_order(body)
         fills = raw.get("fills", [])
         filled = sum(float(f["amount"]) for f in fills) or float(raw.get("filledAmount", 0))
         avg = (sum(float(f["amount"]) * float(f["price"]) for f in fills) / filled) \
