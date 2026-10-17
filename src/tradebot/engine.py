@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import replace
 
 from . import __version__
@@ -11,6 +12,7 @@ from .decision import (
     Decision,
     DecisionEngine,
     FeeModel,
+    PositionGone,
     RiskManager,
     apply_chase_guard,
     apply_regime_filter,
@@ -19,7 +21,7 @@ from .decision import (
     correlated_positions,
 )
 from .exchange import BitvavoClient
-from .lists import get_lists, is_paused
+from .lists import get_lists, is_paused, set_paused
 from .live import LiveBroker
 from .llm import LLMRouter, build_router
 from .notify import Notifier
@@ -43,6 +45,16 @@ LIVE_CONFIRM_PHRASE = "IK BEGRIJP DAT DIT ECHT GELD IS"
 # MACD-slow 26 + signaal 9). Valt de afgeknipte reeks eronder, dan valt de
 # entry-beoordeling terug op de volledige reeks in plaats van op ruis.
 MIN_SNAPSHOT_CANDLES = 40
+
+# Een exit die blijft falen, faalt elke minuut opnieuw. Eén alarm per markt per
+# half uur is genoeg om het te zien zonder Telegram onbruikbaar te maken.
+EXIT_ALERT_INTERVAL_S = 1800
+
+
+def _plain(text: str) -> str:
+    """Tekst veilig voor Telegram met parse_mode Markdown: een `_` of `*` uit een
+    foutmelding laat het hele bericht anders stil weigeren (N10)."""
+    return "".join(" " if ch in "_*[]`" else ch for ch in str(text))
 
 
 class TradingCycle:
@@ -74,6 +86,7 @@ class TradingCycle:
         self.llm: LLMRouter = build_router(cfg.llm_providers, secrets,
                                            int(cfg.llm.get("timeout_seconds", 20)))
         self.notify = Notifier(secrets.telegram_bot_token, secrets.telegram_chat_id)
+        self._exit_alerted: dict[str, float] = {}
 
     def _waarschuw_bij_verstreken_venster(self) -> None:
         """Loop de einddatum van deze run na en waarschuw luid als hij voorbij is.
@@ -157,7 +170,15 @@ class TradingCycle:
                     if not should_exit:
                         should_exit, why = self._extra_exits(pos, candles, snap)
                     if should_exit:
-                        self.broker.sell(market, why)
+                        try:
+                            self.broker.sell(market, why)
+                        except PositionGone:
+                            # De guard was ons voor; geen exit-fout en dus geen alarm.
+                            positions, free, daily_pnl = self._refresh_after_trade()
+                            continue
+                        except Exception as exc:  # noqa: BLE001 - zie _exit_failed
+                            self._exit_failed(market, why, exc)
+                            continue
                         positions, free, daily_pnl = self._refresh_after_trade()
                         self._log_signal(market, "sell", "executed", 0, why, {})
                         self.notify.send(f"🔴 SELL {market} @ {snap.price:.2f}: {why}")
@@ -437,11 +458,42 @@ class TradingCycle:
                 why = f"guard: take profit geraakt ({price:.4f} >= {pos.take_profit:.4f})"
             else:
                 continue
-            self.broker.sell(pos.market, why)
+            # N1 (v0.25.0): per positie afvangen. Zonder dit brak één mislukte exit
+            # de lus af en werden de posities daarna nooit meer uitgestopt, elke
+            # minuut opnieuw zolang de eerste bleef falen.
+            try:
+                self.broker.sell(pos.market, why)
+            except PositionGone:
+                log.info("guard: %s was al gesloten door de analysecyclus", pos.market)
+                continue
+            except Exception as exc:  # noqa: BLE001 - zie _exit_failed
+                self._exit_failed(pos.market, why, exc)
+                continue
             self._log_signal(pos.market, "sell", "executed", 0, why, {})
-            self.notify.send(f"🔴 SELL {pos.market} @ {price:.4f}: {why}")
+            self.notify.send(_plain(f"🔴 SELL {pos.market} @ {price:.4f}: {why}"))
             closed += 1
         return closed
+
+    def _exit_failed(self, market: str, why: str, exc: Exception) -> None:
+        """Een exit die niet lukte: loggen, melden en in live het kopen stilzetten.
+
+        Live zet dit de bestaande kill-switch aan, zodat er geen nieuwe positie
+        bijkomt naast een positie die de bot niet kwijt kan; de gebruiker zet hem
+        na onderzoek terug via het dashboard. In paper niet: daar komt een mislukte
+        exit vrijwel altijd van een tijdelijke prijsfout, en een automatische
+        pauze zou de meetrun stilleggen op ruis.
+        """
+        log.exception("EXIT MISLUKT voor %s (%s)", market, why, exc_info=exc)
+        nu = time.monotonic()
+        if nu - self._exit_alerted.get(market, -EXIT_ALERT_INTERVAL_S) < EXIT_ALERT_INTERVAL_S:
+            return
+        self._exit_alerted[market] = nu
+        self._log_signal(market, "sell", "failed", 0, f"EXIT MISLUKT: {why} | {exc}"[:1000], {})
+        bericht = f"⚠️ EXIT MISLUKT {market}: {why} | {type(exc).__name__}: {exc}"
+        if self.broker.mode == "live" and not is_paused():
+            set_paused(True)
+            bericht += " | kopen gepauzeerd, zet terug via het dashboard"
+        self.notify.send(_plain(bericht)[:3500])
 
     def _log_signal(self, market: str, action: str, decision: str, score: int,
                     reason: str, details: dict) -> None:

@@ -138,6 +138,15 @@ def breakeven_offset_pct(be_cfg: dict, fee_model: FeeModel,
     return round(fee_model.round_trip_pct(entry_is_maker) + marge, 4)
 
 
+class PositionGone(ValueError):  # noqa: N818 - leest als toestand, niet als fout
+    """De positie bestaat niet (meer): een andere thread sloot hem al.
+
+    Subklasse van ValueError zodat bestaande aanroepers blijven werken. Engine en
+    guard vangen hem apart: "al gesloten" is geen exit-fout en mag dus geen
+    alarm of automatische pauze opleveren.
+    """
+
+
 @dataclass
 class Position:
     market: str
