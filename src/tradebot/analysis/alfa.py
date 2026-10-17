@@ -156,18 +156,20 @@ def _iso(ms: int) -> str:
 
 # --- DB en Bitvavo ------------------------------------------------------------
 
-def load_equity_from_db() -> list[EquityPoint]:
-    """Alle equity-snapshots, oudste eerst.
+def load_equity_from_db(mode: str | None = None) -> list[EquityPoint]:
+    """Equity-snapshots van één mode (None = alle), oudste eerst.
 
-    `EquityRow` heeft geen mode-kolom. Zolang er alleen paper draait is dat geen
-    probleem; bij de omschakeling naar live moet de run hier een eigen startpunt
-    krijgen, anders loopt de paper-historie mee in de live-alfa.
+    Sinds v0.25.0 heeft `EquityRow` een mode-kolom (N9). Daarvoor liep bij de
+    omschakeling naar live de paper-historie mee in de live-alfa.
     """
     from sqlalchemy import select
 
     from ..db import EquityRow, session
     with session() as s:
-        rows = s.execute(select(EquityRow).order_by(EquityRow.ts.asc())).scalars().all()
+        stmt = select(EquityRow).order_by(EquityRow.ts.asc())
+        if mode is not None:
+            stmt = stmt.where(EquityRow.mode == mode)
+        rows = s.execute(stmt).scalars().all()
     # SQLite geeft de tijdzone niet terug; opgeslagen is UTC (`db.utcnow`). Expliciet
     # zetten, anders hangt de uitlijning op de candles af van de TZ van de container.
     return [EquityPoint(_to_ms(r.ts if r.ts.tzinfo else r.ts.replace(tzinfo=timezone.utc)),
@@ -194,7 +196,7 @@ def analyze_alfa(adapter: ExchangeAdapter, *, mode: str | None = None,
     Eén candle-verzoek per markt (4h, het venster plus marge). Injecteer `points` en
     `markets` om de DB te omzeilen; het netwerk loopt via `adapter`.
     """
-    points = load_equity_from_db() if points is None else points
+    points = load_equity_from_db(mode) if points is None else points
     markets = traded_markets(mode) if markets is None else markets
     if len(points) < 2:
         return compute_alfa(points, {})

@@ -571,7 +571,8 @@ def llm_test(body: LLMTest):
 @app.get("/api/equity", dependencies=[Depends(check_token)])
 def equity(limit: int = 365):
     with session() as s:
-        rows = s.execute(select(EquityRow).order_by(EquityRow.ts.desc()).limit(limit)).scalars().all()
+        rows = s.execute(select(EquityRow).where(EquityRow.mode == get_secrets().trading_mode)
+                         .order_by(EquityRow.ts.desc()).limit(limit)).scalars().all()
     return [{"ts": r.ts.isoformat(), "total_eur": r.total_eur, "cash_eur": r.cash_eur,
              "fees_cumulative_eur": r.fees_cumulative_eur} for r in reversed(rows)]
 

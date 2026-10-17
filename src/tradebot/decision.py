@@ -156,6 +156,7 @@ class Position:
     take_profit: float
     opened_at: datetime
     fees_paid_eur: float = 0.0
+    stop_order_cid: str = ""        # live: beschermende stop op de exchange (L2)
 
 
 @dataclass

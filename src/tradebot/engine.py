@@ -22,7 +22,7 @@ from .decision import (
 )
 from .exchange import BitvavoClient
 from .lists import get_lists, is_paused, set_paused
-from .live import LiveBroker
+from .live import LiveBroker, OrderStateUnknownError
 from .llm import LLMRouter, build_router
 from .notify import Notifier
 from .paper import PaperBroker
@@ -50,6 +50,14 @@ MIN_SNAPSHOT_CANDLES = 40
 # half uur is genoeg om het te zien zonder Telegram onbruikbaar te maken.
 EXIT_ALERT_INTERVAL_S = 1800
 
+# Live met een stop op de exchange: de guard verkoopt zelf pas op de stop als de
+# koers ruim door het niveau is en de exchange-stop dus kennelijk niet vuurde.
+# Binnen deze marge laat hij het aan Bitvavo, anders verkopen bot en stop allebei.
+STOP_GRACE_PCT = 1.0
+
+# Reconciliatie (L4) bij de eerste cyclus na opstart en daarna hooguit eens per uur.
+RECONCILE_INTERVAL_S = 3300
+
 
 def _plain(text: str) -> str:
     """Tekst veilig voor Telegram met parse_mode Markdown: een `_` of `*` uit een
@@ -72,6 +80,16 @@ class TradingCycle:
                     "Live mode geweigerd: zet de add-on optie live_confirm exact op "
                     f"'{LIVE_CONFIRM_PHRASE}'. Zie PROJECTPLAN fase 2 go/no-go criteria "
                     "voordat je dit doet.")
+            open_paper = self._open_paper_positions()
+            if open_paper:
+                # L5: PositionRow.market is uniek over modi heen. Een live entry in
+                # een markt met een achtergebleven paper-positie werd op de exchange
+                # gevuld en liep daarna op een IntegrityError: coins zonder
+                # administratie en zonder stop.
+                raise RuntimeError(
+                    "Live mode geweigerd: er staan nog open paper-posities in "
+                    f"{', '.join(open_paper)}. Sluit of archiveer ze eerst "
+                    "(PROJECTPLAN, live-blocker L5).")
             self.broker = LiveBroker(self.feed, self.fee_model,
                                      secrets.live_max_capital_eur)
             log.warning("LIVE MODE ACTIEF — exposure-plafond %.2f EUR",
@@ -87,6 +105,44 @@ class TradingCycle:
                                            int(cfg.llm.get("timeout_seconds", 20)))
         self.notify = Notifier(secrets.telegram_bot_token, secrets.telegram_chat_id)
         self._exit_alerted: dict[str, float] = {}
+        self._last_reconcile = float("-inf")
+
+    @staticmethod
+    def _open_paper_positions() -> list[str]:
+        from sqlalchemy import select
+
+        from .db import PositionRow
+        with session() as s:
+            return list(s.execute(select(PositionRow.market).where(
+                PositionRow.mode == "paper")).scalars().all())
+
+    def _reconcile_if_due(self) -> None:
+        """L4: administratie tegen de exchange, bij opstart en daarna elk uur.
+
+        Notities (een order die alsnog geboekt werd) gaan naar log en Telegram.
+        Een probleem (tekort, onafmaakbare order) zet de kill-switch aan: geen
+        nieuwe positie zolang de bot niet weet wat hij heeft.
+        """
+        reconcile = getattr(self.broker, "reconcile", None)
+        if reconcile is None or time.monotonic() - self._last_reconcile < RECONCILE_INTERVAL_S:
+            return
+        self._last_reconcile = time.monotonic()
+        try:
+            problemen, notities = reconcile()
+        except Exception as exc:  # noqa: BLE001 - reconciliatie zelf faalt: ook een probleem
+            problemen, notities = [f"reconciliatie faalde: {type(exc).__name__}: {exc}"], []
+        for n in notities:
+            log.warning("reconciliatie: %s", n)
+            self.notify.send(_plain(f"ℹ️ Reconciliatie: {n}"))
+        if not problemen:
+            return
+        tekst = " | ".join(problemen)
+        log.error("RECONCILIATIE-VERSCHIL: %s", tekst)
+        self._log_signal("*", "check", "mismatch", 0, f"reconciliatie: {tekst}"[:1000],
+                         {"problemen": problemen})
+        if not is_paused():
+            set_paused(True)
+        self.notify.send(_plain(f"⚠️ Reconciliatie-verschil, kopen gepauzeerd: {tekst}")[:3500])
 
     def _waarschuw_bij_verstreken_venster(self) -> None:
         """Loop de einddatum van deze run na en waarschuw luid als hij voorbij is.
@@ -116,6 +172,7 @@ class TradingCycle:
 
     def run_once(self) -> list[Decision]:
         self._waarschuw_bij_verstreken_venster()
+        self._reconcile_if_due()
         decisions: list[Decision] = []
         interval = self.cfg.schedule["candle_interval"]
         limit = int(self.cfg.schedule["candle_limit"])
@@ -252,8 +309,17 @@ class TradingCycle:
 
                 # 5) Execute.
                 if decision.action == "buy":
-                    self.broker.buy(market, decision.amount_quote_eur,
-                                    decision.stop_loss, decision.take_profit, decision.reason)
+                    try:
+                        self.broker.buy(market, decision.amount_quote_eur, decision.stop_loss,
+                                        decision.take_profit, decision.reason)
+                    except OrderStateUnknownError as exc:
+                        # Misschien staat er een order. Niet zelf opnieuw proberen:
+                        # de reconciliatie zoekt hem op clientOrderId op, en wel
+                        # bij de volgende cyclus in plaats van over een uur.
+                        self._last_reconcile = float("-inf")
+                        self.notify.send(_plain(f"⚠️ Entry {market} status onbekend: {exc}. "
+                                                "Reconciliatie volgt bij de volgende cyclus."))
+                        raise
                     positions, free, daily_pnl = self._refresh_after_trade()
                     self.notify.send(
                         f"🟢 BUY {market} voor {decision.amount_quote_eur:.2f} EUR @ "
@@ -445,13 +511,16 @@ class TradingCycle:
         Geen indicatoren, geen AI — puur risicobeheersing tussen analysecycli in.
         Time-stop en breakeven-stop blijven bij de uurcyclus (die hebben candles
         nodig); de guard dekt precies dezelfde niveaus als `strategy.check_exit`."""
-        closed = 0
+        closed = self._sync_protection()
         for pos in self.broker.open_positions():
             try:
                 price = self.feed.get_price(pos.market)
             except Exception:  # noqa: BLE001 - prijsfout mag de guard niet stoppen
                 log.warning("guard: prijs ophalen mislukt voor %s", pos.market)
                 continue
+            if price <= pos.stop_loss and pos.stop_order_cid \
+                    and price > pos.stop_loss * (1 - STOP_GRACE_PCT / 100):
+                continue   # de stop op de exchange handelt dit af (L2)
             if price <= pos.stop_loss:
                 why = f"guard: stop loss geraakt ({price:.4f} <= {pos.stop_loss:.4f})"
             elif price >= pos.take_profit:
@@ -473,6 +542,37 @@ class TradingCycle:
             self.notify.send(_plain(f"🔴 SELL {pos.market} @ {price:.4f}: {why}"))
             closed += 1
         return closed
+
+    def _sync_protection(self) -> int:
+        """Live: stops op de exchange nalopen (L2). Paper heeft er geen.
+
+        Een stop die vuurde wordt hier geboekt en gemeld als gewone exit; een
+        positie waarvoor geen stop te plaatsen viel, levert een begrensd alarm op.
+        """
+        ensure = getattr(self.broker, "ensure_protection", None)
+        if ensure is None:
+            return 0
+        closed = 0
+        for ev in ensure():
+            market = ev["market"]
+            if ev.get("error"):
+                self._protection_alert(market, ev["error"])
+                continue
+            why = "exchange-stop geraakt"
+            self._log_signal(market, "sell", "executed", 0, why, {"amount": ev["sold"]})
+            self.notify.send(_plain(f"🔴 SELL {market}: {why} ({ev['sold']:.8f})"))
+            closed += 1
+        return closed
+
+    def _protection_alert(self, market: str, error: str) -> None:
+        nu = time.monotonic()
+        key = f"stop:{market}"
+        if nu - self._exit_alerted.get(key, -EXIT_ALERT_INTERVAL_S) < EXIT_ALERT_INTERVAL_S:
+            return
+        self._exit_alerted[key] = nu
+        log.error("GEEN STOP OP DE EXCHANGE voor %s: %s", market, error)
+        self.notify.send(_plain(f"⚠️ {market} staat open zonder stop op de exchange: {error}. "
+                                "De guard bewaakt hem zolang de bot draait.")[:3500])
 
     def _exit_failed(self, market: str, why: str, exc: Exception) -> None:
         """Een exit die niet lukte: loggen, melden en in live het kopen stilzetten.
