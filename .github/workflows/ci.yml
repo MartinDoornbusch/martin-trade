@@ -22,6 +22,11 @@ jobs:
         run: pytest -q
         env:
           PYTHONPATH: src
+      - name: Unit tests onder Europe/Amsterdam (zoals HA Supervisor TZ zet, N5)
+        run: pytest -q
+        env:
+          PYTHONPATH: src
+          TZ: Europe/Amsterdam
       - name: Security scan (bandit)
         run: bandit -r src -ll
       - name: Dependency audit (pip-audit)

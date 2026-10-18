@@ -57,7 +57,8 @@ def snapshot_equity(cycle: TradingCycle) -> None:
     with session() as s:
         s.add(EquityRow(total_eur=cycle.broker.portfolio_value_eur(),
                         cash_eur=cycle.broker.cash_eur(),
-                        fees_cumulative_eur=cycle.broker.fees_cumulative_eur()))
+                        fees_cumulative_eur=cycle.broker.fees_cumulative_eur(),
+                        mode=getattr(cycle.broker, "mode", "paper")))
         s.commit()
 
 

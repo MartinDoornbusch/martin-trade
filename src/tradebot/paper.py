@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from .db import KVRow, PositionRow, TradeRow, session
-from .decision import FeeModel, Position
+from .decision import FeeModel, Position, PositionGone
 from .exchange import ExchangeAdapter, OrderResult
+from .locks import MARKET_LOCKS
 
 log = logging.getLogger(__name__)
 
@@ -87,10 +88,19 @@ class PaperBroker:
     # --- execution ----------------------------------------------------------
     def buy(self, market: str, amount_quote_eur: float, stop_loss: float,
             take_profit: float, reason: str) -> OrderResult:
+        with MARKET_LOCKS.hold(market):
+            return self._buy(market, amount_quote_eur, stop_loss, take_profit, reason)
+
+    def _buy(self, market: str, amount_quote_eur: float, stop_loss: float,
+             take_profit: float, reason: str) -> OrderResult:
         price = self.feed.get_price(market)
         fee = amount_quote_eur * self.fees.taker_pct / 100
         amount = (amount_quote_eur - fee) / price
         with session() as s:
+            if s.execute(select(PositionRow).where(PositionRow.market == market,
+                                                   PositionRow.mode == MODE)
+                         ).scalar_one_or_none() is not None:
+                raise ValueError(f"paper-positie in {market} staat al open")
             cash = float(s.get(KVRow, CASH_KEY).value)
             if cash < amount_quote_eur:
                 raise ValueError(f"insufficient paper cash: {cash:.2f} < {amount_quote_eur:.2f}")
@@ -105,13 +115,22 @@ class PaperBroker:
         return OrderResult(str(uuid.uuid4()), market, "buy", amount, price, fee)
 
     def sell(self, market: str, reason: str) -> OrderResult:
+        with MARKET_LOCKS.hold(market):
+            return self._sell(market, reason)
+
+    def _sell(self, market: str, reason: str) -> OrderResult:
+        with session() as s:
+            if s.execute(select(PositionRow).where(PositionRow.market == market,
+                                                   PositionRow.mode == MODE)
+                         ).scalar_one_or_none() is None:
+                raise PositionGone(f"no open paper position in {market}")
         price = self.feed.get_price(market)
         with session() as s:
             pos = s.execute(select(PositionRow).where(PositionRow.market == market,
                                           PositionRow.mode == "paper")
                             ).scalar_one_or_none()
             if pos is None:
-                raise ValueError(f"no open paper position in {market}")
+                raise PositionGone(f"no open paper position in {market}")
             gross = pos.amount * price
             fee = gross * self.fees.taker_pct / 100
             net = gross - fee

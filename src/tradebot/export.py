@@ -35,6 +35,7 @@ from .db import (
     EquityRow,
     KVRow,
     LLMCallRow,
+    OrderRow,
     PositionRow,
     SignalRow,
     TradeRow,
@@ -55,6 +56,9 @@ TABELLEN = {
     "trades": TradeRow,
     "signals": SignalRow,
     "positions": PositionRow,
+    # Live-orderboek (v0.25.0): de enige plek waar staat welke order met welke
+    # clientOrderId wanneer naar Bitvavo ging. Hoort dus in het herstelpad.
+    "orders": OrderRow,
     "equity": EquityRow,
     "llm_calls": LLMCallRow,
     "kv": KVRow,

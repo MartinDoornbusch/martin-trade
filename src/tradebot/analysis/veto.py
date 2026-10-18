@@ -149,12 +149,18 @@ def interval_seconds(interval: str) -> int:
 def _to_ms(ts) -> int:
     """Timestamp (ISO-string, datetime of numeriek) naar unix-milliseconden."""
     if hasattr(ts, "timestamp"):
+        if getattr(ts, "tzinfo", None) is None:  # naïef = UTC, nooit lokale tijd (N5)
+            from datetime import timezone
+            ts = ts.replace(tzinfo=timezone.utc)
         return int(ts.timestamp() * 1000)
     if isinstance(ts, int | float):
         return int(ts if ts > 1e12 else ts * 1000)
     s = str(ts).strip().replace("Z", "+00:00")
-    from datetime import datetime
-    return int(datetime.fromisoformat(s).timestamp() * 1000)
+    from datetime import datetime, timezone
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
 
 
 # --- candle-indexering -----------------------------------------------------

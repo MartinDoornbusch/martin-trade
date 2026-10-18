@@ -15,6 +15,7 @@ from sqlalchemy import (
     event,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.types import TypeDecorator
 
 
 class Base(DeclarativeBase):
@@ -25,10 +26,46 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_utc(dt: datetime | None) -> datetime | None:
+    """Naïef wordt UTC, bewust wordt naar UTC omgerekend. None blijft None."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+class UTCDateTime(TypeDecorator):
+    """DateTime die er altijd als tijdzonebewuste UTC uitkomt (N5, v0.25.0).
+
+    SQLite bewaart geen tijdzone: `DateTime(timezone=True)` levert bij het lezen
+    een naïeve datetime op. Elke `.timestamp()` daarop rekent in de LOKALE tijd
+    van het proces. HA Supervisor zet `TZ` in add-on-containers, dus onder
+    Europe/Amsterdam schoof `opened_at` twee uur naar voren: de breakeven-stop
+    bewapende op een piek van vóór de entry en de time-stop telde een candle te
+    veel. Reproductie: `tests/test_tijdzone.py`.
+
+    Repareren op de plek waar de waarde de database verlaat, niet bij elke
+    lezer: er waren er minstens vier (strategy twee keer, veto, alfa) en een
+    vijfde wordt anders vergeten. Schrijven gaat altijd als UTC, zodat ook een
+    bewuste datetime in een andere zone dezelfde wandkloktijd in de tabel krijgt
+    als alle bestaande rijen (die kwamen allemaal uit `utcnow`).
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return as_utc(value)
+
+    def process_result_value(self, value, dialect):
+        return as_utc(value)
+
+
 class TradeRow(Base):
     __tablename__ = "trades"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     market: Mapped[str] = mapped_column(String(20))
     side: Mapped[str] = mapped_column(String(4))
     amount: Mapped[float] = mapped_column(Float)
@@ -49,13 +86,55 @@ class PositionRow(Base):
     stop_loss: Mapped[float] = mapped_column(Float)
     take_profit: Mapped[float] = mapped_column(Float)
     fees_paid_eur: Mapped[float] = mapped_column(Float, default=0.0)
-    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    opened_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    # Live (v0.25.0, L2): clientOrderId van de stop-loss die op de exchange staat.
+    # Leeg = geen beschermende order; `LiveBroker.ensure_protection` plaatst hem.
+    stop_order_cid: Mapped[str] = mapped_column(String(40), default="")
+
+
+class OrderRow(Base):
+    """Elke live order, VOORDAT hij naar Bitvavo gaat (outbox, v0.25.0).
+
+    L1/L4/N4: de order ging eerst naar de exchange en de administratie pas
+    daarna. Een crash of timeout daartussen liet coins op de exchange zonder
+    regel in de database. Nu staat de order er eerst met een eigen
+    `client_order_id` (UUID); na een timeout is hij daarmee bij Bitvavo op te
+    vragen, en de reconciliatie kan elke regel die niet `final` is afmaken.
+
+    `booked_amount` maakt het boeken van fills idempotent: alleen het deel van
+    `filled_amount` dat nog niet in een positie of trade zit, wordt geboekt. Zo
+    kunnen sell, guard en reconciliatie dezelfde stop-fill tegenkomen zonder hem
+    dubbel te boeken. `meta` bewaart bij een entry de bedoelde SL/TP en reden,
+    zodat de reconciliatie een gevulde entry zonder positie alsnog kan boeken.
+    """
+
+    __tablename__ = "orders"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+    market: Mapped[str] = mapped_column(String(20))
+    mode: Mapped[str] = mapped_column(String(6), default="live")
+    purpose: Mapped[str] = mapped_column(String(8))          # entry | exit | stop
+    side: Mapped[str] = mapped_column(String(4))
+    order_type: Mapped[str] = mapped_column(String(16))
+    client_order_id: Mapped[str] = mapped_column(String(40), unique=True)
+    exchange_order_id: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    price: Mapped[float] = mapped_column(Float, default=0.0)
+    trigger: Mapped[float] = mapped_column(Float, default=0.0)
+    filled_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    filled_quote: Mapped[float] = mapped_column(Float, default=0.0)
+    fee_eur: Mapped[float] = mapped_column(Float, default=0.0)
+    booked_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    error: Mapped[str] = mapped_column(String(300), default="")
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class SignalRow(Base):
     __tablename__ = "signals"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     market: Mapped[str] = mapped_column(String(20))
     # Nu toevoegen en niet later: zolang er alleen paper draait backfilt DEFAULT
     # 'paper' toevallig correct. Voeg je de kolom pas toe nadat er live gedraaid
@@ -75,7 +154,7 @@ class SignalRow(Base):
 class LLMCallRow(Base):
     __tablename__ = "llm_calls"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     provider: Mapped[str] = mapped_column(String(20))
     model: Mapped[str] = mapped_column(String(60))
     market: Mapped[str] = mapped_column(String(20), default="")
@@ -103,7 +182,7 @@ class LLMAttemptRow(Base):
 
     __tablename__ = "llm_attempts"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     provider: Mapped[str] = mapped_column(String(20))
     model: Mapped[str] = mapped_column(String(60), default="")
     purpose: Mapped[str] = mapped_column(String(10), default="veto")  # veto | test
@@ -116,7 +195,11 @@ class LLMAttemptRow(Base):
 class EquityRow(Base):
     __tablename__ = "equity"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    # N9 (v0.25.0): nu toevoegen, vóór de eerste live-rij. Zelfde redenering als
+    # bij SignalRow.mode: zolang er alleen paper draait backfilt DEFAULT 'paper'
+    # correct, daarna is paper en live niet meer uit elkaar te halen.
+    mode: Mapped[str] = mapped_column(String(6), default="paper")
     total_eur: Mapped[float] = mapped_column(Float)
     cash_eur: Mapped[float] = mapped_column(Float)
     fees_cumulative_eur: Mapped[float] = mapped_column(Float, default=0.0)
@@ -176,6 +259,13 @@ def init_db(database_url: str) -> None:
             if "mode" not in sig_cols:
                 conn.exec_driver_sql(
                     "ALTER TABLE signals ADD COLUMN mode VARCHAR(6) DEFAULT 'paper'")
+            if "stop_order_cid" not in pos_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE positions ADD COLUMN stop_order_cid VARCHAR(40) DEFAULT ''")
+            eq_cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info(equity)")}
+            if "mode" not in eq_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE equity ADD COLUMN mode VARCHAR(6) DEFAULT 'paper'")
             llm_cols = {r[1] for r in conn.exec_driver_sql("PRAGMA table_info(llm_calls)")}
             if "config_hash" not in llm_cols:
                 conn.exec_driver_sql(
