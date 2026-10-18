@@ -464,9 +464,15 @@ def trades(limit: int = 100):
 
 
 @app.get("/api/signals", dependencies=[Depends(check_token)])
-def signals(limit: int = 100):
+def signals(limit: int = 100, shadow: bool = True):
+    """Besluiten van de draaiende mode. `shadow=false` laat de meetregels weg (een
+    shadow-gate die iets "genegeerd" heeft): het dashboard toont alleen wat de bot
+    echt deed of liet. De meetregels blijven in de database voor de analyse."""
+    stmt = select(SignalRow).where(SignalRow.mode == get_secrets().trading_mode)
+    if not shadow:
+        stmt = stmt.where(SignalRow.decision != "shadow")
     with session() as s:
-        rows = s.execute(select(SignalRow).order_by(SignalRow.ts.desc()).limit(limit)).scalars().all()
+        rows = s.execute(stmt.order_by(SignalRow.ts.desc()).limit(limit)).scalars().all()
     return [{"ts": r.ts.isoformat(), "market": r.market, "action": r.action,
              "decision": r.decision, "score": r.score, "reason": r.reason} for r in rows]
 

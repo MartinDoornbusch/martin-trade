@@ -15,6 +15,9 @@ const html = (id, s) => { const el = $(id); if (el) el.innerHTML = s; };
 const cls = n => (n >= 0 ? 'pos' : 'neg');
 const esc = s => String(s == null ? '' : s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
 const short = ts => String(ts).slice(0, 16).replace('T', ' ');
+/* Meetannotaties ("| SHADOW-REGIME genegeerd: ...") blijven in de data voor de
+   analyse, maar horen niet in een bedieningsscherm. */
+const reden = r => String(r == null ? '' : r).replace(/ \| SHADOW-[A-Z]+ genegeerd: .*?(?= \| SHADOW-|$)/g, '');
 
 /* ---------- tabs ---------- */
 
@@ -57,42 +60,28 @@ function renderMode(md) {
   $('runsub').textContent =
     `${md.candle_interval} candles · analyse elke ${md.analysis_interval_minutes} min · ${sizing}`;
 
-  const bindend = Object.entries(md.gates || {}).filter(([, v]) => v).map(([k]) => k);
-  $('gatecnt').textContent = bindend.length ? bindend.length + ' bindend' : 'shadow';
-
   renderBanner(md);
 }
 
 function renderBanner(md) {
+  /* Alleen wat je NU moet weten om de bot te bedienen: live met echt geld, of
+     kopen gepauzeerd. Doel en einddatum van de run reizen mee in de data en de
+     logs, niet meer als banner. */
   const el = $('runbanner');
-  const doel = md.run_purpose || 'onbekend';
-  const infra = /infrastructuur/i.test(doel);
-  let rest = '';
-  let verstreken = false;
-  if (md.run_until) {
-    const days = Math.round((Date.parse(md.run_until + 'T00:00:00Z') - Date.now()) / 864e5);
-    verstreken = days < 0;
-    rest = verstreken
-      ? ` Venster tot <b>${md.run_until}</b> is <b>verstreken</b>: stop de run of verleng hem met een opgeschreven reden.`
-      : ` Venster loopt tot <b>${md.run_until}</b> (nog ${days} dagen).`;
+  const regels = [];
+  if (md.mode === 'live') {
+    regels.push(`<b>LIVE</b>: echte orders op Bitvavo, plafond <b>${eur(md.live_max_capital_eur, 0)}</b>.`);
   }
-  const llmUit = md.llm && md.llm.enabled === false;
-  const llmRegel = llmUit
-    ? ' De <b>LLM second opinion staat uit</b>, dus er komen geen nieuwe veto-oordelen bij ' +
-      'en de veto-gate telt niet verder.'
-    : '';
-  if (infra || verstreken || llmUit) {
-    el.className = 'banner ' + (verstreken ? 'neg' : 'warn');
-    el.innerHTML = `<span class="ico">${verstreken ? '⛔' : '⚠'}</span><div>` +
-      `Doel van deze run: <b>${esc(doel)}</b>.` +
-      (infra ? ' Dit is <b>geen strategievalidatie</b>. De fase 2-vraag is beantwoord met "geen edge" ' +
-        '(tweejarige backtest, stijgend én dalend venster, alfa gecorrigeerd voor blootstelling). ' +
-        'Lees P&amp;L, win-rate en drawdown hieronder als uitvoeringscijfers, niet als bewijs van een edge.' : '') +
-      rest + llmRegel + '</div>';
-  } else {
+  if (md.paused) {
+    regels.push('<b>Kopen staat gepauzeerd</b> (kill-switch). Exits en stops lopen door.');
+  }
+  if (!regels.length) {
     el.className = 'banner';
-    el.innerHTML = `<span class="ico">●</span><div>Doel van deze run: <b>${esc(doel)}</b>.${rest}</div>`;
+    el.innerHTML = '';
+    return;
   }
+  el.className = 'banner ' + (md.mode === 'live' ? 'neg' : 'warn');
+  el.innerHTML = `<span class="ico">${md.mode === 'live' ? '●' : '⏸'}</span><div>${regels.join(' ')}</div>`;
 }
 
 $('pausebtn').onclick = async () => {
@@ -118,9 +107,6 @@ function renderKpis(s, pf) {
     ['Max drawdown', s.max_drawdown_pct == null ? '—' : pct(s.max_drawdown_pct), 'piek naar dal', 'neg'],
     ['Slots', `${pf.open_positions}/${pf.max_positions}`, 'open posities', ''],
     ['Ongerealiseerd', eur(unreal), 'in open posities', cls(unreal)],
-    ['LLM veto-rate', s.llm_veto_rate_pct == null ? '—' : pct(s.llm_veto_rate_pct),
-      `${s.llm_calls} calls in huidige cohorte` + (s.llm_calls_all
-        ? ` · ooit ${s.llm_calls_all} (${pct(s.llm_veto_rate_all_pct)})` : ''), ''],
     ...alfaCards(lastAlfa),
   ];
   html('kpis', cards.map(([k, v, sub, c]) =>
@@ -217,7 +203,7 @@ function renderPositions(pf) {
           `<td class="num ${cls(p.unrealized_pnl_eur)}">${eur(p.unrealized_pnl_eur)}</td>` +
           `<td class="num neg">${fmtp(p.stop_loss)}</td><td class="num pos">${fmtp(p.take_profit)}</td></tr>`;
       }).join('')
-      : '<tr><td colspan="8" class="empty">geen open posities — de bot wacht op een setup die door alle gates komt</td></tr>'));
+      : '<tr><td colspan="8" class="empty">geen open posities — de bot wacht op een setup die door alle regels komt</td></tr>'));
 }
 
 function renderBalance(bal) {
@@ -455,218 +441,8 @@ function renderSignals(sig) {
     (sig.length ? sig.map(r =>
       `<tr><td class="dim">${short(r.ts)}</td><td>${r.market}</td><td>${r.action}</td>` +
       `<td class="${r.decision === 'executed' ? 'pos' : 'muted'}">${r.decision}</td>` +
-      `<td class="wrap">${esc(r.reason)}</td></tr>`).join('')
+      `<td class="wrap">${esc(reden(r.reason))}</td></tr>`).join('')
       : '<tr><td colspan="5" class="empty">nog geen beslissingen vastgelegd</td></tr>'));
-}
-
-const LLM_STATUS_CLS = { ok: 'pos', fout: 'neg', 'budget op': 'warn', 'geen sleutel': 'muted', ongetest: 'muted' };
-
-function renderLlmHealth(h) {
-  /* Defensief: als het endpoint faalt of een oud dashboard tegen een nieuwe API
-     praat, moet de rest van de pagina blijven werken in plaats van halverwege te
-     stoppen op een undefined. */
-  h = h || {};
-  const rijen = h.chain || [];
-  const st = $('llmstate');
-  st.textContent = h.enabled ? (h.binding ? 'aan · bindend' : 'aan · shadow') : 'uit';
-  st.className = 'tag ' + (h.enabled ? (h.binding ? 'neg' : '') : 'warn');
-  $('llmactive').textContent = h.enabled
-    ? (h.active ? 'nu aan de beurt: ' + h.active : 'geen bruikbare provider')
-    : 'geen enkele provider wordt aangeroepen';
-
-  html('llmhealth',
-    '<tr><th class="num">#</th><th>provider</th><th>model</th><th>status</th>' +
-    '<th class="num">vandaag</th><th>laatst gelukt</th><th>laatste fout</th><th></th></tr>' +
-    (rijen.length ? rijen.map(r => {
-      const fout = r.last_error
-        ? `<span class="dim">${short(r.last_error.ts)}</span> ` +
-          `${r.last_error.http_status ? 'HTTP ' + r.last_error.http_status + ' ' : ''}` +
-          `${esc(r.last_error.message).slice(0, 160)}`
-        : '<span class="muted">geen</span>';
-      return `<tr><td class="num dim">${r.order}</td><td>${esc(r.provider)}</td>` +
-        `<td class="dim">${esc(r.model)}</td>` +
-        `<td class="${LLM_STATUS_CLS[r.status] || ''}">${esc(r.status)}</td>` +
-        `<td class="num">${r.used_today}/${r.daily_budget}</td>` +
-        `<td class="dim">${r.last_ok ? short(r.last_ok) : '—'}</td>` +
-        `<td class="wrap">${fout}</td>` +
-        `<td><button class="btn small" data-llmtest="${esc(r.provider)}"` +
-        `${r.key_present ? '' : ' disabled title="geen API-sleutel ingesteld"'}>test</button></td></tr>`;
-    }).join('')
-      : '<tr><td colspan="8" class="empty">geen providers geconfigureerd of geen API-sleutels ingesteld</td></tr>'));
-}
-
-$('llmhealth').addEventListener('click', async e => {
-  const btn = e.target.closest('button[data-llmtest]');
-  if (!btn) return;
-  const naam = btn.dataset.llmtest;
-  btn.disabled = true; btn.textContent = '…';
-  const out = $('llmtestout');
-  out.innerHTML = `bezig met een echte call naar <b>${esc(naam)}</b>…`;
-  try {
-    const r = await post('api/llm/test', { provider: naam });
-    out.innerHTML = r.ok
-      ? `<span class="pos">✔ ${esc(r.provider)} (${esc(r.model)}) antwoordde in ${r.latency_ms} ms: ` +
-        `${r.verdict.agree ? 'agree' : 'veto'}, confidence ${fmt(r.verdict.confidence)} — ` +
-        `${esc(r.verdict.reasoning)}</span>`
-      : `<span class="neg">✘ ${esc(r.provider)} (${esc(r.model)}) faalde` +
-        `${r.http_status ? ' met HTTP ' + r.http_status : ''}: ${esc(r.error)}</span>`;
-  } catch (err) {
-    out.innerHTML = `<span class="neg">✘ testverzoek zelf mislukt: ${esc(err)}</span>`;
-  }
-  btn.disabled = false; btn.textContent = 'test';
-  q('api/llm/health').then(renderLlmHealth);
-});
-
-function renderLlm(llm) {
-  $('llmtag').textContent = botCfg.gates && botCfg.gates.veto ? 'bindend' : 'shadow';
-  const uit = botCfg.llm && botCfg.llm.enabled === false;
-  html('llm',
-    '<tr><th>tijd</th><th>provider</th><th>model</th><th>markt</th><th>verdict</th>' +
-    '<th class="num">conf</th><th>reden</th></tr>' +
-    (llm.length ? llm.map(r =>
-      `<tr><td class="dim">${short(r.ts)}</td><td>${r.provider}</td><td class="dim">${esc(r.model)}</td>` +
-      `<td>${r.market}</td>` +
-      `<td class="${r.verdict === 'veto' ? 'neg' : 'pos'}">${r.verdict}</td>` +
-      `<td class="num">${fmt(r.confidence)}</td><td class="wrap">${esc(r.reasoning)}</td></tr>`).join('')
-      : `<tr><td colspan="7" class="empty">geen LLM-calls — ${uit
-        ? 'de second opinion staat uit (decision.use_llm_second_opinion)'
-        : 'de laag staat aan maar heeft nog geen kandidaat beoordeeld; zie de providerkaart hierboven of er fouten zijn'}</td></tr>`));
-}
-
-/* ---------- gates ---------- */
-
-/* 95%-Wilson als interval. Het ligt niet symmetrisch rond de puntschatting, dus
-   "100% ±39,7" (tot v0.23.1) suggereerde een bovengrens boven de 100%. */
-const ci = x => x.precision_lo_pct == null ? ''
-  : `${fmt(x.precision_lo_pct, 0)} tot ${fmt(x.precision_hi_pct, 0)}%`;
-
-const gateRow = r =>
-  '<tr><th>groep</th><th class="num">n</th><th class="num">precisie</th><th class="num">95%-interval</th>' +
-  '<th class="num">vermeden</th><th class="num">gemist</th><th class="num">netto gate</th></tr>' +
-  r.map(x => `<tr><td>${esc(x.group)}${x.pooled_groups ? ` <span class="dim">${x.pooled_groups} groepen</span>` : ''}</td>` +
-    `<td class="num">${x.n}</td><td class="num">${pct(x.veto_precision_pct)}</td>` +
-    `<td class="num dim">${ci(x)}</td>` +
-    `<td class="num pos">${eur(x.avoided_eur)}</td><td class="num neg">${eur(x.missed_eur)}</td>` +
-    `<td class="num ${cls(x.net_gate_eur)}">${eur(x.net_gate_eur)}</td></tr>`).join('');
-
-function summaryCards(s, title) {
-  if (!s) {
-    return `<div class="kpi"><div class="k">${title}</div><div class="s" style="margin-top:6px">` +
-      'nog geen afgewikkelde uitkomst gekoppeld</div></div>';
-  }
-  const g = s.net_gate_eur;
-  return [
-    ['Netto gate', eur(g), g >= 0 ? 'voegt waarde toe' : 'kost geld', cls(g)],
-    ['Precisie', pct(s.veto_precision_pct), `${s.n_avoided}/${s.n} · 95%: ${ci(s)}`, ''],
-    ['Vermeden verlies', eur(s.avoided_eur), 'gate had gelijk', 'pos'],
-    ['Gemiste winst', eur(s.missed_eur), 'gate had ongelijk', 'neg'],
-  ].map(([k, v, sub, c]) =>
-    `<div class="kpi"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="s">${sub}</div></div>`).join('');
-}
-
-function progressBar(done, target) {
-  const p = Math.min(100, (done / Math.max(1, target)) * 100);
-  return `<div class="progress ${done >= target ? 'full' : ''}"><i style="width:${p}%"></i></div>` +
-    `<div class="s dim" style="font-size:11.5px">voortgang naar een uitspraak: <b>${done}/${target}</b> afgewikkelde trades` +
-    `${done < target ? ' (nog te weinig)' : ' (genoeg voor een eerste uitspraak)'}</div>`;
-}
-
-const gateState = {};
-
-function renderGate(elId, gate, d, opts) {
-  const el = $(elId);
-  if (!el) return;
-  gateState[gate] = d;
-  if (!d || d.error) {
-    el.innerHTML = `<div class="empty">${d && d.error ? 'fout: ' + esc(d.error) : 'geen data'}</div>`;
-    return;
-  }
-  const mode = d.binding ? 'bindend' : 'shadow';
-  const tag = $(opts.tagId);
-  if (tag) { tag.textContent = mode; tag.className = 'tag ' + (d.binding ? 'pos' : 'warn'); }
-  if (!d.n_events) {
-    el.innerHTML = `<div class="empty">${opts.leeg}</div>`;
-    return;
-  }
-  const ruw = d.n_deduped
-    ? ` · ${d.n_events} ruwe events, herhaalde treffers samengevoegd tot de eerste per positie` : '';
-  el.innerHTML =
-    `<div class="gatecard">${summaryCards(d.summary, 'Netto gate')}</div>` +
-    progressBar(d.n_resolved || 0, d.target_resolved || 20) +
-    `<p class="hint" style="margin-top:10px">${opts.params} · positie ${eur(d.position_size_eur)} · ` +
-    `${d.n_positions} posities, waarvan ${d.n_open_positions} nog open${ruw}</p>` +
-    ((d.per_market && d.per_market.length)
-      ? '<div class="scroll"><table class="stick1">' + gateRow(d.per_market) + '</table></div>' : '');
-}
-
-function renderVeto(d) {
-  const el = $('vetoanalysis');
-  gateState.veto = d;
-  const tag = $('vetomode');
-  tag.textContent = botCfg.gates && botCfg.gates.veto ? 'bindend' : 'shadow';
-  tag.className = 'tag ' + (botCfg.gates && botCfg.gates.veto ? 'pos' : 'warn');
-  if (!d || d.error) {
-    el.innerHTML = `<div class="empty">${d && d.error ? 'fout: ' + esc(d.error) : 'geen data'}</div>`;
-    return;
-  }
-  if (!d.n_vetos) {
-    el.innerHTML = '<div class="empty">nog geen veto\'s om te analyseren — die verschijnen zodra een ' +
-      'koopsignaal alle mechanische gates passeert en de LLM blokkeert</div>';
-    return;
-  }
-  const suspect = d.suspect_reason_count
-    ? `<p class="hint neg">⚠ ${d.suspect_reason_count} van de ${d.n_vetos} veto's blokkeren op ` +
-      '"koers bij de onderste Bollinger-band", terwijl de strategie datzelfde signaal juist als koopreden telt. ' +
-      'Richting-technisch tegenstrijdig.</p>'
-    : '<p class="hint">Geen richting-verdachte veto-redenen gevonden.</p>';
-  el.innerHTML =
-    `<div class="gatecard">${summaryCards(d.real_outcome, 'Echte shadow-uitkomst')}</div>` +
-    progressBar(d.n_real_matched || 0, d.target_resolved || 20) +
-    `<p class="hint" style="margin-top:10px">${d.n_vetos} veto's · positie ${eur(d.position_size_eur)} · ` +
-    `round-trip kosten ${pct(d.cost_pct, 2)} · config-scope <b>${esc(d.config_hash || 'alle')}</b></p>` +
-    suspect +
-    '<h2 style="font-size:12px;margin:12px 0 6px" class="dim">COUNTERFACTUAL PER VETO-REDEN</h2>' +
-    '<div class="scroll"><table class="stick1">' + gateRow(d.by_reason || []) + '</table></div>' +
-    '<h2 style="font-size:12px;margin:12px 0 6px" class="dim">PER MARKT</h2>' +
-    '<div class="scroll"><table class="stick1">' + gateRow(d.by_market || []) + '</table></div>';
-}
-
-function renderGateSummary() {
-  const rows = [
-    ['LLM-veto', 'veto', gateState.veto, d => d && d.n_vetos, d => d && d.real_outcome, d => d && d.n_real_matched],
-    ['Regime-filter', 'regime', gateState.regime, d => d && d.n_positions, d => d && d.summary, d => d && d.n_resolved],
-    ['Breakeven-stop', 'breakeven', gateState.breakeven, d => d && d.n_positions, d => d && d.summary, d => d && d.n_resolved],
-    ['Chase-guard', 'chase', gateState.chase, d => d && d.n_positions, d => d && d.summary, d => d && d.n_resolved],
-  ];
-  const gs = $('gatesum');
-  if (gs) gs.classList.add('stick1');
-  html('gatesum',
-    '<tr><th>gate</th><th>modus</th><th class="num">posities</th><th class="num">afgewikkeld</th>' +
-    '<th class="num">netto gate</th><th>oordeel</th></tr>' +
-    rows.map(([label, key, d, nEvents, sum, resolved]) => {
-      const binding = botCfg.gates ? botCfg.gates[key] : false;
-      const s = sum(d);
-      const n = nEvents(d) || 0;
-      const done = resolved(d) || 0;
-      const target = (d && d.target_resolved) || 20;
-      /* Beslisregels staan vooraf vastgelegd in PROJECTPLAN ("Beslisregels bij 20").
-         Go vraagt een strikt positieve netto gate; nul of minder is no-go. */
-      let verdict = '<span class="dim">te weinig data</span>';
-      if (key === 'regime') {
-        verdict = '<span class="muted">blootstellingsknop: niet op netto € te beslissen, zie projectplan</span>';
-      } else if (s && done >= target) {
-        verdict = s.net_gate_eur > 0
-          ? '<span class="pos">go: kandidaat om bindend te maken</span>'
-          : '<span class="neg">no-go: schrappen, niet hertunen op deze data</span>';
-      } else if (s) {
-        verdict = `<span class="muted">richting ${s.net_gate_eur > 0 ? 'positief' : 'negatief'}, nog niet hard</span>`;
-      }
-      return `<tr><td>${label}</td>` +
-        `<td><span class="tag ${binding ? 'pos' : 'warn'}">${binding ? 'bindend' : 'shadow'}</span></td>` +
-        `<td class="num">${n}</td><td class="num">${done}/${target}</td>` +
-        `<td class="num ${s ? cls(s.net_gate_eur) : 'dim'}">${s ? eur(s.net_gate_eur) : '—'}</td>` +
-        `<td class="wrap">${verdict}</td></tr>`;
-    }).join(''));
 }
 
 /* ---------- orchestratie ---------- */
@@ -686,48 +462,20 @@ async function load() {
   renderLists(lst);
   renderAdvice(adv);
 
-  const [eq, tr, sig, llm] = await Promise.all([
-    q('api/equity'), q('api/trades?limit=40'), q('api/signals?limit=40'), q('api/llm?limit=20'),
+  const [eq, tr, sig] = await Promise.all([
+    q('api/equity'), q('api/trades?limit=40'), q('api/signals?limit=40&shadow=false'),
   ]);
   renderEquity(eq);
   renderFeeDrag(eq);
   renderTrades(tr);
   renderSignals(sig);
-  renderLlm(llm);
-  q('api/llm/health').then(renderLlmHealth);
 
-  /* Traag en niet blokkerend: gate-analyses en scanner komen na. */
-  q('api/veto-analysis').then(d => { renderVeto(d); renderGateSummary(); });
-  q('api/regime-analysis').then(d => {
-    renderGate('regimeanalysis', 'regime', d, {
-      tagId: 'regimemode',
-      params: `proxy <b>${(d && d.proxy_market) || 'BTC-EUR'}</b>`,
-      leeg: 'nog geen regime-down entries om te meten — die verschijnen zodra de bot koopt terwijl de proxy in down-trend staat',
-    });
-    renderGateSummary();
-  });
-  q('api/breakeven-analysis').then(d => {
-    renderGate('breakevenanalysis', 'breakeven', d, {
-      tagId: 'bemode',
-      params: `trigger <b>${fmt(d && d.trigger_atr, 2)}× ATR</b> · offset <b>${pct(d && d.offset_pct, 2)}</b>`,
-      leeg: 'nog geen breakeven-treffers — die verschijnen zodra een positie ver genoeg in de winst stond en terugzakt tot de drempel',
-    });
-    renderGateSummary();
-  });
-  q('api/chase-analysis').then(d => {
-    renderGate('chaseanalysis', 'chase', d, {
-      tagId: 'chasemode',
-      params: `drempel <b>${fmt(d && d.max_chase_atr, 2)}× ATR</b>`,
-      leeg: 'nog geen chase-treffers — die verschijnen zodra de live prijs te ver van de signaalclose staat bij een koopsignaal',
-    });
-    renderGateSummary();
-  });
+  /* Traag en niet blokkerend: scanner en alfa komen na. */
   q('api/scanner').then(renderScanner);
   q('api/alfa').then(renderAlfa);
 
   $('upd').textContent = 'bijgewerkt ' + new Date().toLocaleTimeString('nl-NL');
 }
 
-renderGateSummary();
 load();
 setInterval(load, 60000);

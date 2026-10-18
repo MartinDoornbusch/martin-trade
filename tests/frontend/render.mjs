@@ -10,16 +10,10 @@
  * jsdom wordt vanuit de WERKMAP opgelost, dus je draait hem vanuit de map waar je
  * jsdom hebt geinstalleerd en geeft de repo als argument mee.
  *
- * Wat hij bewijst dat `node --check` niet bewijst: dat de providerkaart met een
- * echte feed rendert, dat een providerfout met status en boodschap zichtbaar
- * wordt, en dat de testknop daadwerkelijk POST naar api/llm/test en de uitkomst
- * toont. Dat zijn precies de dingen die in v0.23.0 zijn toegevoegd om een stille
- * storing zichtbaar te maken, dus ze stil laten falen zou de grap zijn.
- *
- * Sinds v0.24.0 ook de meetweergave, met de stand van 2026-09-27 als feed: de
- * gatenaam blijft staan bij horizontaal scrollen, precisie als interval in plaats
- * van een halfbreedte rond de puntschatting, posities in plaats van ruwe events,
- * de vooraf vastgelegde oordelen, de gescopede veto-rate en de alfa-tegels.
+ * Sinds v0.25.2 bewijst hij het productiedashboard: geen meetgates, geen LLM-panelen,
+ * geen run-banner meer, wel een banner zodra het om echt geld gaat of kopen is
+ * gepauzeerd, en meetannotaties die uit de besluitentabel zijn weggefilterd. De
+ * meetdata zelf blijft in de database en via de CLI-analyzers beschikbaar.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -35,8 +29,8 @@ const S = p => fs.readFileSync(path.join(ROOT, 'src/tradebot/static', p), 'utf8'
 const html = S('index.html');
 
 const FEED = {
-  'api/mode': { mode: 'paper', paused: false, version: '0.23.0', run_purpose: 'infrastructuurtest',
-    run_until: '2026-09-15', candle_interval: '4h', analysis_interval_minutes: 60,
+  'api/mode': { mode: 'paper', paused: false, version: '0.25.2', run_purpose: 'infrastructuurtest',
+    run_until: '2026-09-15', live_max_capital_eur: 100, candle_interval: '4h', analysis_interval_minutes: 60,
     sizing: 'bucket', bucket_eur: 250, llm: { enabled: false, binding: false },
     gates: { veto: false, regime: false, breakeven: false, chase: false, timestop: false } },
   'api/stats': { net_pnl_eur: 110.77, closed_trades: 44, total_fees_eur: 58.25, win_rate_pct: 52.3,
@@ -48,7 +42,11 @@ const FEED = {
   'api/portfolio': { total_eur: 1000, cash_eur: 900, positions: [] },
   'api/balance': { assets: [], total_eur: 0 },
   'api/markets': [], 'api/advice': [], 'api/lists': { markets: [], watchlist: [], blocklist: [], paused: false },
-  'api/equity': [], 'api/trades': [], 'api/signals': [], 'api/llm': [],
+  'api/equity': [], 'api/trades': [],
+  'api/signals': [{ ts: '2026-10-18T06:00:00+00:00', market: 'SOL-EUR', action: 'buy', decision: 'buy',
+    score: 3, reason: 'uptrend: EMA fast > slow | SHADOW-REGIME genegeerd: regime gate: BTC-EUR trend down' +
+    ' | SHADOW-CHASE genegeerd: chase-guard: te ver' }],
+  'api/llm': [],
   'api/llm/health': { enabled: false, binding: false, run_purpose: 'infrastructuurtest',
     active: 'groq', chain: [
       { order: 1, provider: 'groq', model: 'openai/gpt-oss-20b', key_present: true,
@@ -79,7 +77,9 @@ const posts = [];
 const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true,
                               url: 'http://localhost:8000/' });
 const { window } = dom;
+const urls = [];
 window.fetch = (url, opts) => {
+  urls.push(String(url));
   /* Langste sleutel eerst: 'api/llm' is een prefix van 'api/llm/health' en zou
      anders het verkeerde antwoord teruggeven. */
   const key = Object.keys(FEED).sort((a, b) => b.length - a.length)
@@ -113,50 +113,31 @@ const check = (naam, ok, extra = '') => checks.push({ naam, ok, extra });
 await new Promise(r => setTimeout(r, 300));
 const $ = id => window.document.getElementById(id);
 
-check('providerpaneel bestaat', !!$('llmhealth'));
-const tekst = $('llmhealth').textContent;
-check('groq-rij met model', tekst.includes('groq') && tekst.includes('openai/gpt-oss-20b'));
-check('foutstatus zichtbaar', tekst.includes('fout'));
-check('HTTP-status en boodschap zichtbaar',
-      tekst.includes('404') && tekst.includes('model_decommissioned'));
-check('budget zichtbaar', tekst.includes('3/200'));
-check('provider zonder sleutel gemarkeerd', tekst.includes('geen sleutel'));
-const knoppen = $('llmhealth').querySelectorAll('button[data-llmtest]');
-check('testknop per provider', knoppen.length === 2);
-check('knop zonder sleutel is uit', knoppen[1].disabled === true);
-check('statuslabel toont uit', $('llmstate').textContent === 'uit');
-check('banner meldt dat de LLM uit staat',
-      $('runbanner').textContent.includes('LLM second opinion staat uit'));
-check('lege oordeeltabel verwijst naar de schakelaar',
-      $('llm').textContent.includes('use_llm_second_opinion'));
-
-knoppen[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-await new Promise(r => setTimeout(r, 200));
-check('testknop doet een POST naar api/llm/test',
-      posts.length === 1 && posts[0].url.includes('api/llm/test'));
-check('POST stuurt de providernaam mee', posts[0] && posts[0].body.provider === 'groq');
-check('testuitkomst wordt getoond',
-      $('llmtestout').textContent.includes('model_decommissioned'));
-/* v0.24.0: meetweergave */
-const gs = $('gatesum');
-check('gate-status houdt de naamkolom vast bij scrollen', gs.classList.contains('stick1'));
-check('gate-status toont gatenamen', gs.textContent.includes('Breakeven-stop') &&
-      gs.textContent.includes('Regime-filter'));
-check('gate-status telt posities, geen ruwe events',
-      gs.textContent.includes('22') && !gs.textContent.includes('1332'));
-check('breakeven op 20 en negatief is no-go', gs.textContent.includes('no-go'));
-check('regime wordt niet op netto € beslist', gs.textContent.includes('blootstellingsknop'));
-const be = $('breakevenanalysis').textContent;
-check('precisie als interval', be.includes('22 tot 61%'));
-check('geen halfbreedte rond de puntschatting meer', !be.includes('±'));
-check('gepoolde rij benoemd', be.includes('overige (elk n<5)') && be.includes('12 groepen'));
-check('gatekaart telt posities en noemt de ruwe events apart',
-      be.includes('22 posities, waarvan 2 nog open') && be.includes('1332 ruwe events'));
+const doc = window.document;
+check('geen meetgates-tab', !doc.querySelector('[data-tab="gates"]') && !$('tab-gates'));
+check('geen gate-status, LLM- of veto-panelen',
+      !$('gatesum') && !$('llmhealth') && !$('llm') && !$('vetoanalysis') && !$('breakevenanalysis'));
+check('geen gate- of LLM-calls meer vanuit het dashboard',
+      !urls.some(u => /veto-analysis|regime-analysis|breakeven-analysis|chase-analysis|api\/llm/.test(u)));
+check('besluiten zonder meetregels opgevraagd', urls.some(u => u.includes('api/signals') && u.includes('shadow=false')));
+check('geen banner in paper zonder pauze, ook niet bij verlopen venster', $('runbanner').innerHTML === '');
+check('nergens "infrastructuurtest" of "shadow" in beeld',
+      !/infrastructuurtest|shadow/i.test(doc.body.textContent));
+const sg = $('signals').textContent;
+check('meetannotatie uit de besluitreden gefilterd',
+      sg.includes('uptrend: EMA fast > slow') && !sg.includes('SHADOW') && !sg.includes('genegeerd'));
 const kp = $('kpis').textContent;
-check('veto-rate gescopet op de huidige cohorte',
-      kp.includes('0 calls in huidige cohorte') && kp.includes('ooit 121'));
+check('geen veto-rate-tegel meer', !/veto/i.test(kp));
 check('alfa-tegel', kp.includes('Alfa van de run') && kp.includes('-3,4 pp'));
 check('markttegel met grootste daling', kp.includes('Markt ter vergelijking') && kp.includes('max. daling 11,3%'));
+check('uitleg zonder shadow-stap', !$('tab-uitleg').textContent.includes('Shadow'));
+
+const MD = JSON.stringify(FEED['api/mode']);
+window.eval(`renderMode(Object.assign(${MD}, { paused: true }))`);
+check('banner bij gepauzeerd kopen', $('runbanner').textContent.includes('Kopen staat gepauzeerd'));
+window.eval(`renderMode(Object.assign(${MD}, { paused: false, mode: 'live' }))`);
+check('banner bij live met plafond', $('runbanner').textContent.includes('LIVE') &&
+      $('runbanner').textContent.includes('100') && $('runbanner').classList.contains('neg'));
 check('geen JS-fouten', errors.length === 0, errors.join(' | '));
 
 let bad = 0;

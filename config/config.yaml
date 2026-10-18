@@ -67,7 +67,7 @@ exits:                               # mechanische exits bovenop SL/TP (geen AI)
   time_stop_min_net_pct: 0.0         # ... en per saldo op of onder deze netto % staat (incl. round-trip fees). 0 = break-even
   time_stop_binding: false           # TERUG NAAR SHADOW op 2026-08-06. Deze gate ging in v0.18.0 bindend zonder meting; de eerste meting (calibrate --vergelijk, portfolio-modus, 6 mnd echte data, 5 markten) gaf -15,7 procentpunt en een tekenwissel van +3,52% naar -12,17%, met 36% meer trades en dus meer fees. Meet nu mee via analysis/timestop.py; bindend maken pas bij een positieve netto gate over >= 20 afgewikkelde trades
   breakeven_stop:                    # winst die er was mag geen verlies worden
-    enabled: true
+    enabled: false                   # GESCHRAPT op 2026-10-18 conform beslisregel 3 (PROJECTPLAN): uitgelopen tot 24 afgewikkelde trades, daarna eruit. De stand (+67,97 na -76,63 tien trades eerder) is ruis van de soort die de regel moest negeren, en de events van voor v0.25.0 zijn mogelijk vervuild door de tijdzonefout (N5). Een variant (bijv. trigger 2x ATR) kan alleen terug via de backtester als nieuwe cohorte
     binding: false                   # false = shadow: treffer wordt gelogd, positie blijft open (meet gate-waarde). true pas bij positieve netto gate op >= 20 afgewikkelde trades
     trigger_atr: 1.0                 # bewapenen zodra de piek sinds entry >= 1x ATR boven de entry lag
     offset_margin_pct: 0.05          # vuren als de koers terugzakt tot <= entry + (werkelijke round-trip fee + deze marge). Paper = taker+taker = 0,50% -> drempel 0,55%; live = maker+taker = 0,40% -> drempel 0,45%. Zet `offset_pct` om de afleiding te overrulen met een vast getal
