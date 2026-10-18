@@ -86,4 +86,7 @@ def test_health_says_whether_the_layer_is_switched_on_at_all(client):
     storing en niet als een besluit."""
     body = client.get("/api/llm/health").json()
     assert body["enabled"] is False
-    assert body["run_purpose"] == "infrastructuurtest"
+    # Het doel komt uit config/config.yaml; sinds v0.25.1 een andere run, dus niet
+    # vastpinnen op de tekst, wel op de bron.
+    from tradebot.config import get_config
+    assert body["run_purpose"] == get_config().meta["run_purpose"]
